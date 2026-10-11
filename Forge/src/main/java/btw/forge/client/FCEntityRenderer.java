@@ -8,20 +8,31 @@ import btw.forge.ProxyMob;
 import btw.forge.ProxyPathfinderMob;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Generic entity renderer that captures FC's doRender() vertex output
@@ -31,6 +42,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * ModelBase/Tessellator drawing. Our GL11 tracks a real matrix stack, and
  * the Tessellator applies it to vertex positions. This renderer captures
  * the transformed vertices and pipes them to MC's VertexConsumer.</p>
+ *
+ * <p>Each captured quad also carries the GL state it was drawn with (texture,
+ * blending, lightmap override), so the quads are batched per texture and blend
+ * mode into the matching RenderType, and the 1.5.2 hurt/death red and white
+ * flash become MC overlay coords.</p>
  */
 public class FCEntityRenderer extends EntityRenderer<Entity> {
 
@@ -195,6 +211,23 @@ public class FCEntityRenderer extends EntityRenderer<Entity> {
         reg("btw.modern.EntityFishHook", new btw.modern.RenderFish());
         reg("btw.modern.EntitySnowball", new btw.modern.RenderSnowball(btw.modern.Item.snowball));
         reg("btw.modern.EntityEgg", new btw.modern.RenderSnowball(btw.modern.Item.egg));
+        // 1.5.2 RenderManager.java:65/:80. FC spawns these frozen vanilla mobs directly (the soul-urn
+        // golem, FCEntityUrn.java:370; silverfish from FCBlockSilverfish/FCEntityCow/FCTileEntityBeacon)
+        // as betterthanwolves:fc_iron_golem / fc_silverfish.
+        reg("btw.modern.EntityIronGolem", btw.modern.RenderIronGolem::new);
+        reg("btw.modern.EntitySilverfish", btw.modern.RenderSilverfish::new);
+    }
+
+    /** As {@link #reg(String, btw.modern.Render)}, but a failing renderer constructor is logged, not thrown. */
+    private static void reg(String entityClassName, java.util.function.Supplier<? extends btw.modern.Render> factory) {
+        btw.modern.Render renderer;
+        try {
+            renderer = factory.get();
+        } catch (Throwable t) {
+            LOGGER.warn("Could not create the vanilla renderer for {}: {}", entityClassName, t.toString());
+            return;
+        }
+        reg(entityClassName, renderer);
     }
 
     private static void reg(String entityClassName, btw.modern.Render renderer) {
@@ -247,28 +280,26 @@ public class FCEntityRenderer extends EntityRenderer<Entity> {
             } catch (ClassNotFoundException ignored) {}
         }
 
-        if (logOnce(entity.getId())) {
-            LOGGER.info("FCEntityRenderer.render: id={} fcEntity={} fcClassName='{}' fcRenderer={}",
-                    entity.getId(),
-                    fcEntity != null ? fcEntity.getClass().getSimpleName() : "null",
-                    fcClassName,
-                    fcRenderer != null ? fcRenderer.getClass().getSimpleName() : "null");
-        }
-
         if (fcEntity == null || fcRenderer == null) {
             renderDebugBox(poseStack, bufferSource, packedLight, entity);
             return;
         }
 
-        // Enable GL11 matrix tracking and capture Tessellator output
+        // Enable GL11 matrix tracking and capture Tessellator output. startCapturing also resets
+        // the thread's GL11 colour/blend/texture/lightmap state, as 1.5.2 RenderManager.renderEntity
+        // did per entity (glColor4f(1,1,1,1) + lightmap, RenderManager.java:203-204), so a colour
+        // left by an earlier capture (a dragon orb, a block-face shade) can't tint this one.
         btw.modern.GL11.enableMatrixTracking();
         btw.modern.Tessellator tess = btw.modern.Tessellator.instance;
         tess.startCapturing();
 
+        boolean renderFailed = false;
         try {
             fcRenderer.doRender(fcEntity, 0, 0, 0, yaw, partialTick);
         } catch (Throwable e) {
-            if (logOnce(entity.getId() + 100000)) {
+            renderFailed = true;
+            // Once per (FC class, exception type): per-entity-id keys grew without bound.
+            if (loggedKeys.add("doRender:" + fcEntity.getClass().getName() + '|' + e.getClass().getName())) {
                 LOGGER.warn("FC doRender failed for {} (renderer={}): {}",
                         fcEntity.getClass().getSimpleName(), fcRenderer.getClass().getSimpleName(),
                         e.toString(), e);
@@ -276,78 +307,274 @@ public class FCEntityRenderer extends EntityRenderer<Entity> {
         }
 
         List<btw.modern.Tessellator.CapturedQuad> quads = tess.stopCapturing();
+        boolean legacyFlip = btw.modern.GL11.usedLegacyEntityFlip();
         btw.modern.GL11.disableMatrixTracking();
 
-        if (logOnce(entity.getId() + 200000)) {
-            LOGGER.info("FC render result: {} quads for {} (renderer={})",
-                    quads.size(), fcEntity.getClass().getSimpleName(),
-                    fcRenderer.getClass().getSimpleName());
-            // Log first quad's vertex positions for debugging
-            for (btw.modern.Tessellator.CapturedQuad q : quads) {
-                if (q != null && q.vertices != null && q.vertices[0] != null) {
-                    LOGGER.info("  First quad v0: pos=({},{},{}) uv=({},{}) color=({},{},{},{})",
-                            String.format("%.2f", q.vertices[0].x), String.format("%.2f", q.vertices[0].y),
-                            String.format("%.2f", q.vertices[0].z),
-                            String.format("%.2f", q.vertices[0].u), String.format("%.2f", q.vertices[0].v),
-                            String.format("%.2f", q.vertices[0].r), String.format("%.2f", q.vertices[0].g),
-                            String.format("%.2f", q.vertices[0].b), String.format("%.2f", q.vertices[0].a));
-                    break;
-                }
-            }
-        }
-
         if (quads.isEmpty()) {
-            renderDebugBox(poseStack, bufferSource, packedLight, entity);
+            // A renderer that ran cleanly may draw nothing: 1.5.2 RenderLiving.renderModel draws no
+            // geometry for an invisible mob (RenderLiving.java:284-287). Only a failed render gets the
+            // locator box (a missing renderer is handled above).
+            if (renderFailed) {
+                renderDebugBox(poseStack, bufferSource, packedLight, entity);
+            }
             return;
         }
 
         // Render captured quads through MC's pipeline
         poseStack.pushPose();
+        try {
+            emitCaptured(entity, fcEntity, fcRenderer, quads, legacyFlip, partialTick,
+                    poseStack, bufferSource, packedLight);
+        } catch (Throwable t) {
+            if (loggedKeys.add("emit:" + fcRenderer.getClass().getName())) {
+                LOGGER.warn("Emitting captured quads failed for {} (renderer={}): {}",
+                        fcEntity.getClass().getSimpleName(), fcRenderer.getClass().getSimpleName(), t.toString(), t);
+            }
+        } finally {
+            poseStack.popPose();
+        }
+    }
 
-        // FC models are authored facing south (+Z in 1.5.2's GL coordinate
-        // system). MC 1.20.1's entity render pipeline faces north. Rotate
-        // 180° around Y to flip the model to face the correct direction.
-        poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180.0F));
+    private void emitCaptured(Entity entity, btw.modern.Entity fcEntity, btw.modern.Render fcRenderer,
+                              List<btw.modern.Tessellator.CapturedQuad> quads, boolean legacyFlip, float partialTick,
+                              PoseStack poseStack, MultiBufferSource bufferSource, int packedLight) {
+        // 1.5.2's GL frame at doRender and 1.20.1's entity PoseStack are the same (world axes,
+        // origin at the entity; LivingEntityRenderer.setupRotations = 1.5.2 rotateCorpse +
+        // glScalef(-1,-1,1)), so captures need no extra turn. Only the pre-port RenderLiving
+        // stand-in drew models with glScalef(1,-1,-1), 1.5.2's flip turned 180 degrees about Y;
+        // undo that turn for captures that used it. (This used to be applied to every capture,
+        // which turned arrows, orbs, windmills etc. around.)
+        if (legacyFlip) {
+            poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180.0F));
+        }
 
-        // Determine texture from captured quads — FC renderers bind textures
-        // via loadTexture() which records the name on the Tessellator.
-        ResourceLocation texLoc = FALLBACK_TEXTURE;
-        String foundTex = null;
+        // Group the captured quads into one MC batch per (texture, 1.5.2 blend mode, light
+        // override): a mob plus its armour, held item, wool or glowing eyes binds several
+        // textures with different GL state (1.5.2 RenderLiving.java:131-189 render passes and
+        // renderEquippedItems).
+        int overlay = computeOverlay(fcEntity, fcRenderer, partialTick);
+        String fallbackTexName = null;
         for (btw.modern.Tessellator.CapturedQuad q : quads) {
             if (q != null && q.textureName != null && !q.textureName.isEmpty()) {
-                foundTex = q.textureName;
-                texLoc = resolveEntityTexture(foundTex);
+                fallbackTexName = q.textureName;
                 break;
             }
         }
-        if (logOnce(entity.getId() + 300000)) {
-            LOGGER.info("FC entity texture: {} → {} for {}", foundTex, texLoc, fcEntity.getClass().getSimpleName());
+        Map<String, TexRef> frameTextures = new HashMap<>();
+        Map<GroupKey, List<Resolved>> groups = new LinkedHashMap<>();
+        int skippedUntextured = 0;
+        for (btw.modern.Tessellator.CapturedQuad q : quads) {
+            if (!isComplete(q)) continue;
+            if (!q.textured) {
+                // GL_TEXTURE_2D off: only additive untextured geometry (FCClientRenderLightningBolt,
+                // SRC_ALPHA/ONE) has an MC equivalent, RenderType.lightning().
+                if (q.blend && q.blendDst == btw.modern.GL11.GL_ONE) {
+                    groups.computeIfAbsent(new GroupKey(null, Blend.UNTEXTURED_ADDITIVE, -1, 0, 0, false),
+                            k -> new ArrayList<>()).add(new Resolved(q, null));
+                } else {
+                    skippedUntextured++;
+                }
+                continue;
+            }
+            String texName = q.textureName != null && !q.textureName.isEmpty() ? q.textureName : fallbackTexName;
+            TexRef ref = frameTextures.computeIfAbsent(texName != null ? texName : "", FCEntityRenderer::resolveTexRef);
+            Blend blend = blendOf(q, texName);
+            boolean iconSource = isIconTexture(texName);
+            GroupKey key;
+            if (blend == Blend.GLINT) {
+                key = new GroupKey(null, Blend.GLINT, -1, 0, 0, false);
+            } else if (blend == Blend.ADDITIVE) {
+                key = new GroupKey(ref.location(), blend, q.lightmap, q.texOffsetU, q.texOffsetV, iconSource);
+            } else {
+                key = new GroupKey(ref.location(), blend, q.lightmap, 0, 0, iconSource);
+            }
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(new Resolved(q, ref.sprite()));
+        }
+        if (skippedUntextured > 0 && loggedKeys.add("untextured:" + fcRenderer.getClass().getName())) {
+            LOGGER.debug("Skipped {} untextured quads from {} (GL_TEXTURE_2D off, not additive; no MC equivalent)",
+                    skippedUntextured, fcRenderer.getClass().getSimpleName());
+        }
+        // Once per (FC class, batch count) rather than per entity id, so the key set stays bounded.
+        if (loggedKeys.add("batches:" + fcEntity.getClass().getName() + '#' + groups.size())) {
+            LOGGER.info("FC entity batches for {}: {}", fcEntity.getClass().getSimpleName(), groups.keySet());
         }
 
-        RenderType renderType = RenderType.entityCutoutNoCull(texLoc);
-        VertexConsumer consumer = bufferSource.getBuffer(renderType);
         Matrix4f mat = poseStack.last().pose();
-
-        for (btw.modern.Tessellator.CapturedQuad quad : quads) {
-            if (quad == null || quad.vertices == null) continue;
-            boolean valid = true;
-            for (int i = 0; i < 4; i++) {
-                if (quad.vertices[i] == null) { valid = false; break; }
+        Matrix3f normalMat = poseStack.last().normal();
+        for (Map.Entry<GroupKey, List<Resolved>> group : groups.entrySet()) {
+            GroupKey key = group.getKey();
+            switch (key.blend()) {
+                case UNTEXTURED_ADDITIVE -> emitPositionColor(bufferSource.getBuffer(RenderType.lightning()), mat, group.getValue());
+                case GLINT -> emitPositionTex(bufferSource.getBuffer(RenderType.armorEntityGlint()), mat, group.getValue());
+                // 1.5.2's red/flash passes re-render only mainModel and the inheritRenderPass models,
+                // never renderEquippedItems (RenderLiving.java:189 vs :196-234): icon-drawn quads
+                // (held item, carried block, snowman pumpkin) get no overlay.
+                default -> emitEntity(bufferSource.getBuffer(renderTypeFor(key)), mat, normalMat, group.getValue(),
+                        key.blend() == Blend.ADDITIVE, lightFor(key.lightmap(), packedLight),
+                        key.iconSource() ? OverlayTexture.NO_OVERLAY : overlay);
             }
-            if (!valid) continue;
+        }
+    }
+
+    /**
+     * True for quads drawn from an Icon rather than an entity texture: a bare Icon name (NamedIcon,
+     * RenderBlocks faces) or a bind of 1.5.2's icon sheets. In a living renderer only
+     * renderEquippedItems draws those.
+     */
+    private static boolean isIconTexture(String texName) {
+        if (texName == null || texName.isEmpty()) return false;
+        String lower = texName.toLowerCase(Locale.ROOT);
+        if (lower.equals("/terrain.png") || lower.equals("/gui/items.png")) return true;
+        return lower.indexOf('/') < 0 && !lower.endsWith(".png");
+    }
+
+    /**
+     * Light for a batch. A setLightmapTextureCoords override from the capture (eyes passes:
+     * block light 15) is honoured per channel but never made darker than the host light: the
+     * other 1.5.2 callers pass getBrightnessForRender of the client-side FC entity, whose world
+     * lookup can come back 0 where MC's own packed light is right.
+     */
+    private static int lightFor(int captured, int packedLight) {
+        if (captured < 0) return packedLight;
+        int block = Math.max(captured & 0xFFFF, packedLight & 0xFFFF);
+        int sky = Math.max(captured >>> 16 & 0xFFFF, packedLight >>> 16 & 0xFFFF);
+        return block | sky << 16;
+    }
+
+    // ================================================================
+    // Captured-quad batching (1.5.2 GL state -> 1.20.1 RenderType)
+    // (package-private: FCBlockEntityRenderer batches TESR captures the same way)
+    // ================================================================
+
+    /** How a quad was blended in 1.5.2, from GL_BLEND + glBlendFunc at draw time. */
+    enum Blend { OPAQUE, TRANSLUCENT, ADDITIVE, GLINT, UNTEXTURED_ADDITIVE }
+
+    /**
+     * One MC batch. texture is null for the texture-less types (lightning, glint). iconSource:
+     * drawn from an Icon (equipped item / carried block), which takes no hurt or flash overlay.
+     */
+    private record GroupKey(ResourceLocation texture, Blend blend, int lightmap, float swirlU, float swirlV,
+                            boolean iconSource) {}
+
+    /** A resolved FC texture: a standalone texture, or (sprite != null) an Icon in the block atlas. */
+    private record TexRef(ResourceLocation location, TextureAtlasSprite sprite) {}
+
+    /** A captured quad plus the atlas sprite its 0..1 icon UVs map into (null: standalone texture). */
+    record Resolved(btw.modern.Tessellator.CapturedQuad quad, TextureAtlasSprite sprite) {}
+
+    static boolean isComplete(btw.modern.Tessellator.CapturedQuad q) {
+        if (q == null || q.vertices == null) return false;
+        for (int i = 0; i < 4; i++) {
+            if (q.vertices[i] == null) return false;
+        }
+        return true;
+    }
+
+    static Blend blendOf(btw.modern.Tessellator.CapturedQuad q, String texName) {
+        if (!q.blend) return Blend.OPAQUE;
+        // 1.5.2 RenderLiving.java:146-178 enchantment glint ("%blur%/misc/glint.png", SRC_COLOR/ONE)
+        if (texName != null && texName.endsWith("misc/glint.png")) return Blend.GLINT;
+        // ONE/ONE: spider/enderman/wolf eyes (RenderSpider.java:49), creeper/wither swirl (RenderCreeper.java:117)
+        if (q.blendDst == btw.modern.GL11.GL_ONE) return Blend.ADDITIVE;
+        if (q.blendSrc == btw.modern.GL11.GL_ONE && q.blendDst == btw.modern.GL11.GL_ZERO) return Blend.OPAQUE;
+        // SRC_ALPHA/ONE_MINUS_SRC_ALPHA: slime outer layer (RenderSlime.java:42-43)
+        return Blend.TRANSLUCENT;
+    }
+
+    private static RenderType renderTypeFor(GroupKey key) {
+        ResourceLocation tex = key.texture() != null ? key.texture() : FALLBACK_TEXTURE;
+        switch (key.blend()) {
+            case TRANSLUCENT:
+                return RenderType.entityTranslucent(tex);
+            case ADDITIVE:
+                // A GL_TEXTURE-matrix scroll (power/wither-armour swirl) maps to MC's energy swirl.
+                if (key.swirlU() != 0.0F || key.swirlV() != 0.0F) {
+                    return RenderType.energySwirl(tex, key.swirlU() % 1.0F, key.swirlV() % 1.0F);
+                }
+                return RenderType.eyes(tex);
+            case OPAQUE:
+            default:
+                return RenderType.entityCutoutNoCull(tex);
+        }
+    }
+
+    /** NEW_ENTITY-format batches (cutout, translucent, eyes, energy swirl). */
+    static void emitEntity(VertexConsumer consumer, Matrix4f mat, Matrix3f normalMat, List<Resolved> quads,
+                           boolean additive, int light, int overlay) {
+        for (Resolved r : quads) {
+            btw.modern.Tessellator.CapturedQuad q = r.quad();
+            // eyes()/energySwirl() blend ONE/ONE; 1.5.2 SRC_ALPHA/ONE weighs the source by alpha.
+            boolean premultiply = additive && q.blendSrc == btw.modern.GL11.GL_SRC_ALPHA;
             for (int i = 0; i < 4; i++) {
-                btw.modern.Tessellator.CapturedVertex v = quad.vertices[i];
+                btw.modern.Tessellator.CapturedVertex v = q.vertices[i];
+                float red = v.r, green = v.g, blue = v.b, alpha = v.a;
+                if (premultiply) {
+                    red *= alpha; green *= alpha; blue *= alpha;
+                }
+                float u = (float) v.u, tv = (float) v.v;
+                if (r.sprite() != null) {
+                    u = r.sprite().getU(v.u * 16.0);
+                    tv = r.sprite().getV(v.v * 16.0);
+                }
                 consumer.vertex(mat, (float) v.x, (float) v.y, (float) v.z)
-                        .color((float) v.r, (float) v.g, (float) v.b, (float) v.a)
-                        .uv((float) v.u, (float) v.v)
-                        .overlayCoords(OverlayTexture.NO_OVERLAY)
-                        .uv2(packedLight)
-                        .normal(poseStack.last().normal(), (float) v.nx, (float) v.ny, (float) v.nz)
+                        .color(red, green, blue, alpha)
+                        .uv(u, tv)
+                        .overlayCoords(overlay)
+                        .uv2(light)
+                        .normal(normalMat, v.nx, v.ny, v.nz)
                         .endVertex();
             }
         }
+    }
 
-        poseStack.popPose();
+    /** RenderType.lightning() (POSITION_COLOR, SRC_ALPHA/ONE). */
+    private static void emitPositionColor(VertexConsumer consumer, Matrix4f mat, List<Resolved> quads) {
+        for (Resolved r : quads) {
+            btw.modern.Tessellator.CapturedQuad q = r.quad();
+            boolean sourceOne = q.blendSrc == btw.modern.GL11.GL_ONE;
+            for (int i = 0; i < 4; i++) {
+                btw.modern.Tessellator.CapturedVertex v = q.vertices[i];
+                consumer.vertex(mat, (float) v.x, (float) v.y, (float) v.z)
+                        .color(v.r, v.g, v.b, sourceOne ? 1.0F : v.a)
+                        .endVertex();
+            }
+        }
+    }
+
+    /** RenderType.armorEntityGlint() (POSITION_TEX; MC supplies the glint texture and scroll). */
+    static void emitPositionTex(VertexConsumer consumer, Matrix4f mat, List<Resolved> quads) {
+        for (Resolved r : quads) {
+            for (int i = 0; i < 4; i++) {
+                btw.modern.Tessellator.CapturedVertex v = r.quad().vertices[i];
+                consumer.vertex(mat, (float) v.x, (float) v.y, (float) v.z)
+                        .uv((float) v.u, (float) v.v)
+                        .endVertex();
+            }
+        }
+    }
+
+    /**
+     * MC overlay coords for a living FC entity. 1.5.2 drew a red pass while hurtTime > 0 or
+     * deathTime > 0 (RenderLiving.java:196-217) and a getColorMultiplier white pass (creeper
+     * fuse flash); the capture does not draw those as geometry, MC's OverlayTexture does the
+     * same job (LivingEntityRenderer.getOverlayCoords).
+     */
+    private static int computeOverlay(btw.modern.Entity fcEntity, btw.modern.Render fcRenderer, float partialTick) {
+        if (!(fcEntity instanceof btw.modern.EntityLiving living)
+                || !(fcRenderer instanceof btw.modern.RenderLiving renderLiving)) {
+            return OverlayTexture.NO_OVERLAY;
+        }
+        float whiteness = 0.0F;
+        try {
+            whiteness = renderLiving.getOverlayWhiteness(living, partialTick);
+        } catch (Throwable t) {
+            if (loggedKeys.add("whiteness:" + fcRenderer.getClass().getName())) {
+                LOGGER.warn("getOverlayWhiteness failed for {}: {}", fcRenderer.getClass().getSimpleName(), t.toString());
+            }
+        }
+        whiteness = Math.max(0.0F, Math.min(1.0F, whiteness));
+        boolean hurt = living.hurtTime > 0 || living.deathTime > 0;
+        return OverlayTexture.pack(OverlayTexture.u(whiteness), OverlayTexture.v(hurt));
     }
 
     /** Renders a simple colored wireframe box so invisible entities are at least locatable. */
@@ -364,11 +591,6 @@ public class FCEntityRenderer extends EntityRenderer<Entity> {
         poseStack.popPose();
     }
 
-    private static final java.util.Set<Integer> loggedEntityIds = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
-    private static boolean logOnce(int id) {
-        return loggedEntityIds.add(id);
-    }
-
     private btw.modern.Render findRenderer(Class<?> fcClass) {
         for (Class<?> c = fcClass; c != null; c = c.getSuperclass()) {
             btw.modern.Render r = fcRenderers.get(c.getName());
@@ -382,43 +604,136 @@ public class FCEntityRenderer extends EntityRenderer<Entity> {
         return FALLBACK_TEXTURE;
     }
 
+    /** Once-only log keys (render/emit/overlay failures, unknown textures, skipped geometry, batch layouts). */
+    private static final java.util.Set<String> loggedKeys = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Resolves an FC texture name recorded on a captured quad. A bare Icon name (NamedIcon:
+     * held items, item billboards, block-as-item faces) uses FC's own 16x16 file when one is
+     * bundled, else the 1.20.1 block-atlas sprite (vanilla item/terrain icons such as a
+     * skeleton's "bow"); anything else is a texture path.
+     */
+    private static TexRef resolveTexRef(String name) {
+        if (name == null || name.isEmpty()) return new TexRef(FALLBACK_TEXTURE, null);
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.indexOf('/') < 0 && !lower.endsWith(".png")) {
+            Optional<ResourceLocation> file = iconFileCache.computeIfAbsent(lower, FCEntityRenderer::findIconFile);
+            if (file.isPresent()) return new TexRef(file.get(), null);
+            try {
+                // Block and item textures share the block atlas in 1.20.1. lookupSprite maps
+                // 1.5.2 terrain and item icon names (VANILLA_TEXTURE_MAP, VANILLA_ITEM_TEXTURE_MAP:
+                // swordIron -> iron_sword) and logs unknown ones once.
+                TextureAtlasSprite sprite = FCBakedModel.lookupSprite(lower);
+                if (sprite != null) return new TexRef(TextureAtlas.LOCATION_BLOCKS, sprite);
+            } catch (Throwable t) {
+                if (loggedKeys.add("icon:" + lower)) {
+                    LOGGER.warn("FC icon '{}' could not be resolved in the block atlas: {}", lower, t.toString());
+                }
+            }
+        }
+        return new TexRef(resolveEntityTexture(name), null);
+    }
+
+    /** Bare Icon name -> its bundled 16x16 file, if FC ships one. */
+    private static final Map<String, Optional<ResourceLocation>> iconFileCache = new ConcurrentHashMap<>();
+
+    private static Optional<ResourceLocation> findIconFile(String lowerIconName) {
+        // FC ships its icons as individual files under textures/item/ (textures/block/ for
+        // fcBlock* icons) and the icon's 0..1 UVs map the whole file (the soul urn draws
+        // Item.itemsList[m_iItemShiftedIndex].itemIcon this way; likewise thrown snowball/egg).
+        // FC's icon names all start with "fc"; the other files there are bundled 1.5.2 /item/*.png
+        // entity sheets (boat.png, book.png, sign.png, ...) that must not stand in for the vanilla
+        // "boat"/"book"/"sign" item icons, which resolve through the block atlas instead.
+        if (!lowerIconName.startsWith("fc")) return Optional.empty();
+        try {
+            String subdir = lowerIconName.startsWith("fcblock") ? "block/" : "item/";
+            ResourceLocation loc = new ResourceLocation(BTWForgeMod.MOD_ID, "textures/" + subdir + lowerIconName + ".png");
+            return resourceExists(loc) ? Optional.of(loc) : Optional.empty();
+        } catch (Throwable t) {
+            return Optional.empty();
+        }
+    }
+
     /**
      * Resolves an FC texture path (e.g. "/mob/cow.png", "/btwmodtex/fcwindmillent.png")
-     * to an MC 1.20.1 ResourceLocation.
+     * to an MC 1.20.1 ResourceLocation. Unknown paths are logged once.
      */
     private static final Map<String, ResourceLocation> textureCache = new ConcurrentHashMap<>();
 
     private static ResourceLocation resolveEntityTexture(String fcPath) {
-        return textureCache.computeIfAbsent(fcPath, path -> {
+        return textureCache.computeIfAbsent(fcPath, FCEntityRenderer::computeEntityTexture);
+    }
+
+    private static ResourceLocation computeEntityTexture(String path) {
+        try {
+            // 1.5.2 RenderEngine name prefixes only select filtering ("%blur%/misc/glint.png", "%clamp%...")
+            String clean = path.replace("%blur%", "").replace("%clamp%", "");
             // Strip leading slash
-            String clean = path.startsWith("/") ? path.substring(1) : path;
+            if (clean.startsWith("/")) clean = clean.substring(1);
 
             // MC 1.20.1 requires all-lowercase ResourceLocation paths
-            String lower = clean.toLowerCase(java.util.Locale.ROOT);
+            String lower = clean.toLowerCase(Locale.ROOT);
 
-            // FC BTW textures: btwmodtex/foo.png → betterthanwolves:textures/entity/foo.png
+            ResourceLocation bundled;
             if (lower.startsWith("btwmodtex/")) {
-                String name = lower.substring("btwmodtex/".length());
-                return new ResourceLocation(BTWForgeMod.MOD_ID, "textures/entity/" + name);
-            }
-
-            // Bare FC Icon name (no path separator, no extension) — comes from NamedIcon,
-            // not a loadTexture() path. Used by item-icon billboards (the soul urn draws
-            // Item.itemsList[m_iItemShiftedIndex].itemIcon; likewise thrown snowball/egg)
-            // and RenderBlocks block icons. FC ships these as individual 16x16 files under
-            // textures/item/ (or textures/block/ for fcBlock* icons), and the icon's 0..1
-            // UVs map the whole file. Without this they resolved to "textures/<name>" (no
-            // subdir, no .png) and fell back to the placeholder — the "soul urns don't
-            // render properly" bug.
-            if (!lower.contains("/") && !lower.endsWith(".png")) {
+                // FC BTW textures: btwmodtex/foo.png → betterthanwolves:textures/entity/foo.png
+                bundled = new ResourceLocation(BTWForgeMod.MOD_ID, "textures/entity/" + lower.substring("btwmodtex/".length()));
+            } else if (!lower.contains("/") && !lower.endsWith(".png")) {
+                // Bare icon name with no bundled file and no atlas sprite (see resolveTexRef)
                 String subdir = lower.startsWith("fcblock") ? "block/" : "item/";
-                return new ResourceLocation(BTWForgeMod.MOD_ID, "textures/" + subdir + lower + ".png");
+                bundled = new ResourceLocation(BTWForgeMod.MOD_ID, "textures/" + subdir + lower + ".png");
+            } else {
+                // All FC texture paths (mob/, armor/, item/, etc.) use bundled
+                // 1.5.2 originals. MC 1.20.1 textures have different dimensions
+                // (64x64 vs 64x32) and reorganized paths that break FC's UV maps.
+                bundled = new ResourceLocation(BTWForgeMod.MOD_ID, "textures/" + lower);
             }
+            if (resourceExists(bundled)) return bundled;
 
-            // All FC texture paths (mob/, armor/, item/, etc.) use bundled
-            // 1.5.2 originals. MC 1.20.1 textures have different dimensions
-            // (64x64 vs 64x32) and reorganized paths that break FC's UV maps.
-            return new ResourceLocation(BTWForgeMod.MOD_ID, "textures/" + lower);
-        });
+            ResourceLocation vanilla = vanillaFallback(lower);
+            if (vanilla != null && resourceExists(vanilla)) return vanilla;
+
+            LOGGER.warn("FC texture '{}' not found (tried {}{}); it renders as the missing texture",
+                    path, bundled, vanilla != null ? " and " + vanilla : "");
+            return bundled;
+        } catch (Throwable t) {
+            LOGGER.warn("FC texture '{}' is not a usable resource path ({}); using the placeholder", path, t.toString());
+            return FALLBACK_TEXTURE;
+        }
+    }
+
+    /** 1.5.2 armour layer path: /armor/&lt;material&gt;_&lt;1|2&gt;.png, "_b" = the leather overlay layer. */
+    private static final Pattern ARMOR_LAYER = Pattern.compile("armor/([a-z]+)_([12])(_b)?\\.png");
+
+    /** 1.20.1 equivalents for 1.5.2 paths, used only if the bundled 1.5.2 original is missing. */
+    private static ResourceLocation vanillaFallback(String lowerPath) {
+        Matcher armor = ARMOR_LAYER.matcher(lowerPath);
+        if (armor.matches()) {
+            // RenderBiped.java:68/:145 bipedArmorFilenamePrefix {cloth, chain, iron, diamond, gold}
+            String material = switch (armor.group(1)) {
+                case "cloth" -> "leather";
+                case "chain" -> "chainmail";
+                default -> armor.group(1);
+            };
+            return new ResourceLocation("minecraft", "textures/models/armor/" + material + "_layer_" + armor.group(2)
+                    + (armor.group(3) != null ? "_overlay" : "") + ".png");
+        }
+        switch (lowerPath) {
+            case "armor/power.png": return new ResourceLocation("minecraft", "textures/entity/creeper/creeper_armor.png");
+            case "armor/witherarmor.png": return new ResourceLocation("minecraft", "textures/entity/wither/wither_armor.png");
+            case "misc/glint.png": return new ResourceLocation("minecraft", "textures/misc/enchanted_glint_entity.png");
+            case "mob/sheep_fur.png": return new ResourceLocation("minecraft", "textures/entity/sheep/sheep_fur.png");
+            case "mob/spider_eyes.png": return new ResourceLocation("minecraft", "textures/entity/spider_eyes.png");
+            case "mob/enderman_eyes.png": return new ResourceLocation("minecraft", "textures/entity/enderman/enderman_eyes.png");
+            default: return null;
+        }
+    }
+
+    private static boolean resourceExists(ResourceLocation loc) {
+        try {
+            return Minecraft.getInstance().getResourceManager().getResource(loc).isPresent();
+        } catch (Throwable t) {
+            return true; // can't tell: keep the bundled path, as before
+        }
     }
 }

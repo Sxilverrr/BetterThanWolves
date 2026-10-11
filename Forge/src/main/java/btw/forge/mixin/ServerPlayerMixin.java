@@ -9,6 +9,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -20,9 +21,85 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * The mixin is a HOOK, not logic. It calls into {@link PlayerBridge}
  * which holds the real FC state and methods (penalty levels, gloom,
  * mining speed modifiers, etc.).
+ *
+ * <p>No hook here may throw: tick, NBT read/write and restoreFrom all sit on vanilla paths
+ * with no BTW-aware error handling (a throw from the FC player NBT read makes the singleplayer
+ * owner's world crash on every open; one from the write can abort the stop save before
+ * session.lock is released -- triage reentry M2/RE1).</p>
  */
 @Mixin(ServerPlayer.class)
 public abstract class ServerPlayerMixin {
+
+    @Unique
+    private static final org.apache.logging.log4j.Logger BTW$LOGGER =
+            org.apache.logging.log4j.LogManager.getLogger("BTW-PlayerHooks");
+
+    /** "hook:player" keys already logged -- each failure is reported once per player per hook. */
+    @Unique
+    private static final java.util.Set<String> BTW$FAILURES_LOGGED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * FC tick failures seen so far, keyed by exception + throw site (triage HAI-10): the first
+     * failure at a site logs one ERROR with its stack trace; repeats are only counted, with a
+     * one-line ERROR at 10, 100, 1000, ... occurrences. Replaces a 10 s time limiter that let one
+     * per-tick failure hide every other site and reported a stack every 10 s.
+     */
+    @Unique
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong> BTW$TICK_FAILURES =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    @Unique
+    private static String btw$nameOf(ServerPlayer player) {
+        try {
+            return player.getGameProfile().getName();
+        } catch (Throwable ignored) {
+            return "<unknown>";
+        }
+    }
+
+    @Unique
+    private static void btw$logTickFailure(ServerPlayer player, Throwable t) {
+        // First stack frame outside the JDK, so FC failures surfacing through e.g. ArrayList get distinct sites.
+        String site = "<no stack>";
+        for (StackTraceElement e : t.getStackTrace()) {
+            String c = e.getClassName();
+            if (!c.startsWith("java.") && !c.startsWith("jdk.") && !c.startsWith("sun.")) {
+                site = c + "." + e.getMethodName() + ":" + e.getLineNumber();
+                break;
+            }
+        }
+        String key = t.getClass().getName() + '|' + site;
+        java.util.concurrent.atomic.AtomicLong count = BTW$TICK_FAILURES.get(key);
+        if (count == null) {
+            java.util.concurrent.atomic.AtomicLong fresh = new java.util.concurrent.atomic.AtomicLong();
+            count = BTW$TICK_FAILURES.putIfAbsent(key, fresh);
+            if (count == null) {
+                count = fresh;
+            }
+        }
+        long n = count.incrementAndGet();
+        long p = 10;
+        while (p < n) {
+            p *= 10;
+        }
+        if (n == 1) {
+            BTW$LOGGER.error("FC player tick failed for {} at {} (stack trace logged once per throw site): {}",
+                    btw$nameOf(player), site, t.toString(), t);
+        } else if (p == n) {
+            BTW$LOGGER.error("FC player tick failed at {} {} times so far (last for {}: {})",
+                    site, n, btw$nameOf(player), t.toString());
+        }
+    }
+
+    @Unique
+    private static void btw$logFailureOnce(String hook, ServerPlayer player, Throwable t) {
+        String name = btw$nameOf(player);
+        if (BTW$FAILURES_LOGGED.add(hook + ":" + name)) {
+            BTW$LOGGER.error("FC player {} failed for {} (logged once per player; the vanilla {} continues without FC data): {}",
+                    hook, name, hook, t.toString(), t);
+        }
+    }
 
     /**
      * End-of-tick hook: sync state, run FC per-tick updates, sync back.
@@ -30,6 +107,15 @@ public abstract class ServerPlayerMixin {
     @Inject(method = "tick", at = @At("TAIL"))
     private void btw$tick(CallbackInfo ci) {
         ServerPlayer self = (ServerPlayer) (Object) this;
+        try {
+            btw$tickFc(self);
+        } catch (Throwable t) {
+            btw$logTickFailure(self, t);
+        }
+    }
+
+    @Unique
+    private static void btw$tickFc(ServerPlayer self) {
         PlayerBridge pb = PlayerBridge.getOrCreate(self);
 
         // Sync real MC state -> FC layer
@@ -54,17 +140,6 @@ public abstract class ServerPlayerMixin {
         pb.UpdateExhaustionWithTime();
         pb.UpdateHealthAndHungerEffects();
 
-        // Debug: log penalty levels occasionally
-        if (self.tickCount % 100 == 0) {
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Penalties").info(
-                    "food={} sat={:.1f} health={} penalties: hunger={} fat={} health={} gloom={} miningMod={:.2f}",
-                    pb.foodStats.getFoodLevel(), pb.foodStats.getSaturationLevel(),
-                    pb.health,
-                    pb.GetHungerPenaltyLevel(), pb.GetFatPenaltyLevel(),
-                    pb.GetHealthPenaltyLevel(), pb.GetGloomLevel(),
-                    pb.GetMiningSpeedModifier());
-        }
-
         // Send penalty levels to the client for HUD rendering.
         // This replaces FC's DataWatcher-based sync (IDs 22-31) with a
         // dedicated network packet. Runs every tick after penalty levels
@@ -76,68 +151,101 @@ public abstract class ServerPlayerMixin {
     }
 
     /**
-     * Load FC custom data from NBT on player load.
+     * Load FC custom data from NBT on player load. Never throws: for the singleplayer owner this
+     * runs inside PlayerList.load -> Entity.load with no try (PlayerList.java:315-328), so a throw
+     * would crash the world on every open and the bad tag would never be rewritten.
      */
     @Inject(method = "readAdditionalSaveData", at = @At("TAIL"))
     private void btw$readNBT(CompoundTag tag, CallbackInfo ci) {
         ServerPlayer self = (ServerPlayer) (Object) this;
-        PlayerBridge pb = PlayerBridge.getOrCreate(self);
+        try {
+            PlayerBridge pb = PlayerBridge.getOrCreate(self);
 
-        btw.forge.ForgeNBTCompound fcTag = new btw.forge.ForgeNBTCompound(tag);
-        pb.ReadModDataFromNBT(fcTag);
+            btw.forge.ForgeNBTCompound fcTag = new btw.forge.ForgeNBTCompound(tag);
+            pb.ReadModDataFromNBT(fcTag);
 
-        // Also load FC food data
-        if (tag.contains("foodLevel")) {
-            pb.foodStats.readNBT(fcTag);
+            // Also load FC food data
+            if (tag.contains("foodLevel")) {
+                pb.foodStats.readNBT(fcTag);
+            }
+        } catch (Throwable t) {
+            btw$logFailureOnce("NBT read", self, t);
         }
     }
 
     /**
-     * Save FC custom data to NBT on player save.
+     * Save FC custom data to NBT on player save. Never throws: IntegratedPlayerList.saveWithoutId
+     * runs outside any try (IntegratedPlayerList.java:26), and a throw during the stop save aborts
+     * MinecraftServer.stopServer before session.lock is released (MinecraftServer.java:557, :600-604).
      */
     @Inject(method = "addAdditionalSaveData", at = @At("TAIL"))
     private void btw$writeNBT(CompoundTag tag, CallbackInfo ci) {
         ServerPlayer self = (ServerPlayer) (Object) this;
-        PlayerBridge pb = PlayerBridge.getOrCreate(self);
+        try {
+            PlayerBridge pb = PlayerBridge.getOrCreate(self);
 
-        btw.forge.ForgeNBTCompound fcTag = new btw.forge.ForgeNBTCompound(tag);
-        pb.WriteModDataToNBT(fcTag);
+            btw.forge.ForgeNBTCompound fcTag = new btw.forge.ForgeNBTCompound(tag);
+            pb.WriteModDataToNBT(fcTag);
 
-        // Also save FC food data
-        pb.foodStats.writeNBT(fcTag);
+            // Also save FC food data
+            pb.foodStats.writeNBT(fcTag);
+        } catch (Throwable t) {
+            btw$logFailureOnce("NBT write", self, t);
+        }
     }
 
     /**
      * Clone FC data when player respawns or transfers dimensions.
+     *
+     * <p>1.20.1 PlayerList.respawn (PlayerList.java:440-443) builds a NEW ServerPlayer, calls this,
+     * then setId(old id). Bridges are bound to the player OBJECT (PlayerBridge.Holder), so
+     * {@code self} gets its own bridge here and keeps it after setId -- the old id-keyed cache
+     * returned the dead player's bridge for the rest of the session (triage HAI-1 / reentry M1,
+     * incl. the End-exit credits respawn(player, true) variant).</p>
      */
     @Inject(method = "restoreFrom", at = @At("TAIL"))
     private void btw$restoreFrom(ServerPlayer oldPlayer, boolean keepEverything, CallbackInfo ci) {
         ServerPlayer self = (ServerPlayer) (Object) this;
-        PlayerBridge oldBridge = PlayerBridge.getOrCreate(oldPlayer);
-        PlayerBridge newBridge = PlayerBridge.getOrCreate(self);
+        try {
+            PlayerBridge oldBridge = PlayerBridge.getOrCreate(oldPlayer);
+            PlayerBridge newBridge = PlayerBridge.getOrCreate(self);
 
-        // Always copy persistent spawn data (survives death)
-        newBridge.m_HardcoreSpawnChunk = oldBridge.m_HardcoreSpawnChunk;
-        newBridge.m_iSpawnDimension = oldBridge.m_iSpawnDimension;
-        newBridge.m_lTimeOfLastSpawnAssignment = oldBridge.m_lTimeOfLastSpawnAssignment;
-        newBridge.m_lTimeOfLastDimensionSwitch = oldBridge.m_lTimeOfLastDimensionSwitch;
-        newBridge.m_lRespawnAssignmentCooldownTimer = oldBridge.m_lRespawnAssignmentCooldownTimer;
+            // Always copy persistent spawn data (survives death)
+            newBridge.m_HardcoreSpawnChunk = oldBridge.m_HardcoreSpawnChunk;
+            newBridge.m_iSpawnDimension = oldBridge.m_iSpawnDimension;
+            newBridge.m_lTimeOfLastSpawnAssignment = oldBridge.m_lTimeOfLastSpawnAssignment;
+            newBridge.m_lTimeOfLastDimensionSwitch = oldBridge.m_lTimeOfLastDimensionSwitch;
+            newBridge.m_lRespawnAssignmentCooldownTimer = oldBridge.m_lRespawnAssignmentCooldownTimer;
 
-        if (keepEverything) {
-            // Dimension transfer: preserve ALL state
-            newBridge.m_iHungerPenaltyLevel = oldBridge.m_iHungerPenaltyLevel;
-            newBridge.m_iFatPenaltyLevel = oldBridge.m_iFatPenaltyLevel;
-            newBridge.m_iHealthPenaltyLevel = oldBridge.m_iHealthPenaltyLevel;
-            newBridge.m_iGloomLevel = oldBridge.m_iGloomLevel;
-            newBridge.m_iInGloomCounter = oldBridge.m_iInGloomCounter;
-            newBridge.m_fCurrentMiningSpeedModifier = oldBridge.m_fCurrentMiningSpeedModifier;
-            newBridge.foodStats.setFoodLevel(oldBridge.foodStats.getFoodLevel());
-            newBridge.foodStats.setFoodSaturationLevel(oldBridge.foodStats.getSaturationLevel());
+            if (keepEverything) {
+                // Dimension transfer: preserve ALL state
+                newBridge.m_iHungerPenaltyLevel = oldBridge.m_iHungerPenaltyLevel;
+                newBridge.m_iFatPenaltyLevel = oldBridge.m_iFatPenaltyLevel;
+                newBridge.m_iHealthPenaltyLevel = oldBridge.m_iHealthPenaltyLevel;
+                newBridge.m_iGloomLevel = oldBridge.m_iGloomLevel;
+                newBridge.m_iInGloomCounter = oldBridge.m_iInGloomCounter;
+                newBridge.m_fCurrentMiningSpeedModifier = oldBridge.m_fCurrentMiningSpeedModifier;
+                newBridge.foodStats.setFoodLevel(oldBridge.foodStats.getFoodLevel());
+                newBridge.foodStats.setFoodSaturationLevel(oldBridge.foodStats.getSaturationLevel());
+            }
+            // Death respawn: penalty levels stay at defaults (0),
+            // food stats stay at defaults (60/0), mining speed stays at 1.0.
+            // UpdateModStatusVariables() on the next tick will recompute
+            // everything from the fresh health/food state.
+
+            // The old player was removed by PlayerList.respawn (removePlayerImmediately). 1.5.2 marks
+            // the replaced EntityPlayerMP dead (vanilla/server ServerConfigurationManager.java:1095
+            // removePlayerEntityDangerously -> setDead, World.java:1422-1424), so FC AI holding it
+            // as a target drops it at once (EntityLiving.isEntityAlive) instead of chasing a removed
+            // player frozen at its last position (End exit keeps health > 0). Field only:
+            // EntityPlayer.setDead() would also close the old FC containers. Normally already set by
+            // PlayerMixin.btw$markBridgeDead on respawn's DISCARDED removal; kept as a fallback.
+            if (oldPlayer.isRemoved()) {
+                oldBridge.isDead = true;
+            }
+        } catch (Throwable t) {
+            btw$logFailureOnce("restoreFrom", self, t);
         }
-        // Death respawn: penalty levels stay at defaults (0),
-        // food stats stay at defaults (60/0), mining speed stays at 1.0.
-        // UpdateModStatusVariables() on the next tick will recompute
-        // everything from the fresh health/food state.
     }
 
     // =========================================================================

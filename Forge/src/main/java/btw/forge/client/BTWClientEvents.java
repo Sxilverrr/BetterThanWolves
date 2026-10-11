@@ -9,6 +9,7 @@ import net.minecraft.client.renderer.block.BlockModelShaper;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.client.resources.model.ModelResourceLocation;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
@@ -16,6 +17,7 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.EntityRenderersEvent;
 import net.minecraftforge.client.event.ModelEvent;
 import net.minecraftforge.client.event.RegisterColorHandlersEvent;
+import net.minecraftforge.client.event.TextureStitchEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 
@@ -93,7 +95,8 @@ public class BTWClientEvents {
     /**
      * Registers FC's TileEntitySpecialRenderers into btw.modern.TileEntityRenderer.
      * These were originally registered in the vanilla TileEntityRenderer constructor
-     * patch but lost due to the Modern-Common stub replacement.
+     * patch (vanilla/client TileEntityRenderer.java:67, :74-78) but lost due to the
+     * Modern-Common stub replacement.
      */
     private static void registerFcTileEntityRenderers() {
         var map = btw.modern.TileEntityRenderer.instance.GetSpecialRendererMap();
@@ -107,10 +110,19 @@ public class BTWClientEvents {
             {fcPkg + "FCTileEntityCampfire",      fcPkg + "FCTileEntityCampfireRenderer"},
             {fcPkg + "FCTileEntityFurnaceBrick",  fcPkg + "FCTileEntityFurnaceBrickRenderer"},
             {fcPkg + "FCTileEntityToolPlaced",    fcPkg + "FCTileEntityToolPlacedRenderer"},
+            // 1.5.2 TileEntityRenderer.java:77 maps this to FCTileEntityBasketWickerRenderer, whose
+            // RenderStorageStack (:40-79) draws the stored item through RenderItem, which the capture
+            // pipeline cannot texture for 1.20.1 items. Register its superclass instead: the lid pass
+            // the wicker renderer runs via super.renderTileEntityAt (:31). FCBlockEntityRenderer
+            // draws the storage stack natively (renderBasketStorageStack) and swings the captured
+            // lid about its hinge (applyBasketLidHinge), for the hamper too.
+            {fcPkg + "FCTileEntityBasketWicker",  fcPkg + "FCTileEntityBasketRenderer"},
             {fcPkg + "FCTileEntityHamper",        fcPkg + "FCTileEntityBasketRenderer"},
-            // Vanilla chest TESR — TE class is in FC, renderer is in Modern-Common
-            // Vanilla chest — TE stub in btw.modern, renderer compiled from vanilla source in Client module
-            {modernPkg + "TileEntityChest",       "net.minecraft.src.TileEntityChestRenderer"},
+            // 1.5.2 TileEntityRenderer.java:67. Client's net.minecraft.src.TileEntityChestRenderer is
+            // relocated to btw.modern by remapFcCode; string literals here are not. Renders the BTW
+            // chest (block 1035, render type 22 = no block quads), whose FCTileEntityChest extends
+            // btw.modern.TileEntityChest (found via the superclass walk).
+            {modernPkg + "TileEntityChest",       modernPkg + "TileEntityChestRenderer"},
         };
         int count = 0;
         for (String[] reg : registrations) {
@@ -122,8 +134,8 @@ public class BTWClientEvents {
                 renderer.setTileEntityRenderer(btw.modern.TileEntityRenderer.instance);
                 map.put(teClass, renderer);
                 count++;
-            } catch (Exception e) {
-                LOGGER.info("BTW: Could not register FC TESR {} → {}: {}", reg[0], reg[1], e.getMessage());
+            } catch (Throwable e) {
+                LOGGER.warn("BTW: Could not register FC TESR {} → {}: {}", reg[0], reg[1], e.toString());
             }
         }
         LOGGER.info("BTW: Registered {} FC tile entity special renderers.", count);
@@ -196,6 +208,19 @@ public class BTWClientEvents {
                 2, variantModels);
     }
 
+    /**
+     * ModifyBakingResult (below) runs in the background stage of a resource reload, before the new
+     * block atlas is uploaded on the game thread (ModelManager.apply). Live FC captures on mesh
+     * threads keep resolving sprites in between, from the old atlas; clear again once the new one
+     * is in place so none of those pre-reload sprites outlives the reload.
+     */
+    @SubscribeEvent
+    public static void onTextureStitchPost(TextureStitchEvent.Post event) {
+        if (InventoryMenu.BLOCK_ATLAS.equals(event.getAtlas().location())) {
+            FCBakedModel.clearSpriteCache();
+        }
+    }
+
     @SubscribeEvent
     public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
         Map<ResourceLocation, BakedModel> models = event.getModels();
@@ -207,6 +232,11 @@ public class BTWClientEvents {
 
         if (blockPlaceholder == null) {
             LOGGER.error("BTW: Block placeholder model not found!");
+            // No FCBakedModels are created on this path, so the lazy fallback in
+            // FCBakedModel.ensureIconsRegistered never runs; the icon pass needs no placeholder.
+            // (FCItemSubtypeModel only visits ids >= 478, so no FC ItemBlock is affected by
+            // later reloads injecting subtype models after this pass.)
+            registerBlockIconsEagerly();
             return;
         }
         if (itemPlaceholder == null) {
@@ -305,6 +335,25 @@ public class BTWClientEvents {
         LOGGER.info("BTW: Populated itemIcon on {} FC items.", itemIconsPopulated);
         int subtypeModels = FCItemSubtypeModel.injectSubtypeModels(models, iconCapturer);
         LOGGER.info("BTW: Injected subtype models for {} items with per-damage textures.", subtypeModels);
+
+        registerBlockIconsEagerly();
+    }
+
+    /**
+     * Block icons, eagerly (triage MC3-R1): 1.5.2 registered every block's icons before anything drew
+     * (TextureMap.refreshTextures). Until this pass, held/worn block items (ItemBlock sprite number 0,
+     * ItemRenderer's 3D branch) drew with null face icons, textured with the mob's own skin, and flat
+     * ones (torches, flowers) fell back to the item icon. Called AFTER injectSubtypeModels: an FC
+     * ItemBlock whose getIconFromDamage returns per-damage block icons would otherwise get a flat
+     * subtype model in place of its 3D FCBakedModel. Runs once per session (NamedIcons hold names
+     * only, so a resource reload needs no re-registration). Never throws.
+     */
+    private static void registerBlockIconsEagerly() {
+        try {
+            FCBakedModel.ensureGlobalIconsRegistered();
+        } catch (Throwable t) {
+            LOGGER.warn("BTW: Eager block icon registration failed: {}", t.toString());
+        }
     }
 
     /**

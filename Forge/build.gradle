@@ -18,6 +18,8 @@ import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.ClassVisitor
 import org.objectweb.asm.FieldVisitor
+import org.objectweb.asm.Handle
+import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 
 evaluationDependsOn(':Api')
@@ -86,11 +88,13 @@ minecraft {
                 betterthanwolves {
                     source sourceSets.main
                     source project(':Api').sourceSets.main
-                    // FC source set BEFORE Modern-Common: vanilla 1.5.2
-                    // Entity / AxisAlignedBB live in fc and must take
-                    // precedence over Modern-Common's stubs of the same
-                    // class names. ForgeGradle / TRANSFORMER classloader
-                    // resolves duplicates by source declaration order.
+                    // Dev class precedence: securejarhandler's UnionFileSystem searches these
+                    // sources in REVERSE declaration order (UnionFileSystem.java:124-127, "later
+                    // elements are first in search order"), so Modern-Common, declared last,
+                    // wins every btw.modern collision with fc. Frozen classes that must win
+                    // (Entity hierarchy, AI/path helpers, ...) are deleted from Modern-Common's
+                    // output by removeModernCommonShadowedClasses. The jar block applies the same
+                    // rule. Do not reorder without re-checking both.
                     source sourceSets.fc
                     source project(':Modern-Common').sourceSets.main
                 }
@@ -110,11 +114,9 @@ minecraft {
                 betterthanwolves {
                     source sourceSets.main
                     source project(':Api').sourceSets.main
-                    // FC source set BEFORE Modern-Common: vanilla 1.5.2
-                    // Entity / AxisAlignedBB live in fc and must take
-                    // precedence over Modern-Common's stubs of the same
-                    // class names. ForgeGradle / TRANSFORMER classloader
-                    // resolves duplicates by source declaration order.
+                    // Dev class precedence: same order and rule as the server run above
+                    // (reverse search order -> Modern-Common wins unless the class was
+                    // deleted by removeModernCommonShadowedClasses; the jar matches).
                     source sourceSets.fc
                     source project(':Modern-Common').sourceSets.main
                 }
@@ -135,6 +137,7 @@ minecraft {
                 betterthanwolves {
                     source sourceSets.main
                     source project(':Api').sourceSets.main
+                    // Same order and precedence rule as the server/client runs above.
                     source sourceSets.fc
                     source project(':Modern-Common').sourceSets.main
                 }
@@ -155,7 +158,17 @@ task remapFcCode(type: ShadowJar) {
     archiveVersion = ''
     destinationDirectory = file("$buildDir/remapped")
 
-    // FC code from the subproject modules
+    // FC code from the subproject modules.
+    // Client vs Server duplicates: every class Server compiles (318) also exists in
+    // Client (Common shares none with either). These are child specs walked in
+    // declaration order under DuplicatesStrategy.EXCLUDE (first copy wins), so the
+    // CLIENT variant of every duplicated class is the one in the fc set, for dev
+    // runs and the jar, on both physical sides; Server's output contributes no
+    // class. Client is the intended winner: it is the 1.5.2 client-jar code, which
+    // also runs the integrated server, and it carries the client-only members
+    // (render/icon/particle hooks) the Forge client bridge calls. Where a Client
+    // copy still declares a 4.B narrow hook overload that only the Server copy
+    // widened (FCEntityCreeper/Pig/Zombie), widenFcHookDescriptors (c) widens it.
     from(project(':Client').sourceSets.main.output) { exclude 'btw/api/**' }
     from(project(':Common').sourceSets.main.output) { exclude 'btw/api/**' }
     from(project(':Server').sourceSets.main.output) { exclude 'btw/api/**' }
@@ -346,15 +359,21 @@ task remapFcCode(type: ShadowJar) {
         // Tuple is a small generic pair helper used by EntityVillager's
         // trade randomizer (and some other vanilla 1.5.2 code).
         include 'net/minecraft/src/Tuple.class'
-        // ChunkCache is a read-only IBlockAccess used by PathFinder for
-        // A* pathfinding. Vanilla World.getEntityPathToXYZ creates one
-        // and passes it to PathFinder.createEntityPathTo.
+        // ChunkCache (the read-only IBlockAccess World.getEntityPathToXYZ hands to
+        // PathFinder) is deliberately NOT merged: 1.5.2's copy clips y to [0, 256),
+        // so PathFinder saw air below y=0. Modern-Common's btw.modern.ChunkCache is a
+        // port that clips to World.getFcMin/MaxBuildHeight and is the only copy.
         // Path is the internal priority queue used by PathFinder.
-        include 'net/minecraft/src/ChunkCache.class'
         include 'net/minecraft/src/Path.class'
         include 'net/minecraft/src/ModelBox.class'
         include 'net/minecraft/src/TexturedQuad.class'
         include 'net/minecraft/src/PositionTextureVertex.class'
+        // NOTE: the nine Container* below plus InventoryMerchant, SlotMerchantResult,
+        // SlotCrafting, IMerchant, IEntitySelector, EntityAIBase and
+        // EntityAIControlledByPlayer also exist in Modern-Common and are NOT on the
+        // shadow lists, so Modern-Common's copies win in dev AND in the jar (jar{}
+        // "Class precedence"); these frozen copies ship nowhere. Shadow-list a class
+        // (both lists) to make its frozen copy win.
         include 'net/minecraft/src/ContainerMerchant.class'
         include 'net/minecraft/src/ContainerFurnace.class'
         include 'net/minecraft/src/ContainerDispenser.class'
@@ -569,11 +588,9 @@ task remapFcCode(type: ShadowJar) {
         // Tuple is a small generic pair helper used by EntityVillager's
         // trade randomizer (and some other vanilla 1.5.2 code).
         include 'net/minecraft/src/Tuple.class'
-        // ChunkCache is a read-only IBlockAccess used by PathFinder for
-        // A* pathfinding. Vanilla World.getEntityPathToXYZ creates one
-        // and passes it to PathFinder.createEntityPathTo.
+        // ChunkCache deliberately not merged (Modern-Common's build-range port is the
+        // only copy; see the client block above).
         // Path is the internal priority queue used by PathFinder.
-        include 'net/minecraft/src/ChunkCache.class'
         include 'net/minecraft/src/Path.class'
         // Model rendering: vanilla 1.5.2 ModelBox/TexturedQuad compute UV
         // coordinates correctly for the 64x32 texture layout. The Modern-
@@ -583,6 +600,7 @@ task remapFcCode(type: ShadowJar) {
         include 'net/minecraft/src/PositionTextureVertex.class'
         // Container classes for GUI system — FC's displayGUI* methods
         // create these containers which get wrapped by FCContainerMenu.
+        // (Shadowed by Modern-Common in dev and jar: see the NOTE in the client block.)
         include 'net/minecraft/src/ContainerMerchant.class'
         include 'net/minecraft/src/ContainerFurnace.class'
         include 'net/minecraft/src/ContainerDispenser.class'
@@ -625,6 +643,10 @@ task remapFcCode(type: ShadowJar) {
 
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
+    // NOTE (2026-10-10): since the frozen artifact was regenerated from vanilla/ it
+    // references net.minecraft.src.btw.** directly and has no flat FC* classes, so the
+    // flat-name relocates below and the FCEntity*, FCUtils*, FCDamageSourceCustom and
+    // FCEntityLightningBolt includes above are no-ops, kept pending cleanup.
     // The frozen 1.5.2 artifact (build/classes/java/{main,server}) was compiled
     // BEFORE the FC source restructure, so its bytecode references FLAT FC names
     // (net.minecraft.src.FCX). The general rule below would relocate those to
@@ -668,6 +690,16 @@ task remapFcCode(type: ShadowJar) {
     relocate 'net.minecraft.src.FCIEntityPacketHandler', 'net.minecraft.src.btw.api.FCIEntityPacketHandler'
     relocate 'net.minecraft.src.FCIEntityIgnoreServerValidation', 'net.minecraft.src.btw.api.FCIEntityIgnoreServerValidation'
 
+    // Frozen 1.5.2 Entity / EntityItem / EntityMinecart reference the 1.5.2 server class
+    // net.minecraft.server.MinecraftServer (getServer, worldServers, worldServerForDimension,
+    // getConfigurationManager, getAllowNether) and WorldServer.getMinecraftServer() returns it
+    // (vanilla/client Entity.java:456-459,2394-2397; EntityItem.java:747,769;
+    // EntityMinecart.java:260-263). At runtime that name is the MODERN 1.20.1 server (no static
+    // getServer(), different members) -> NoSuchMethodError. Retarget to the Modern-Common
+    // stand-in FC code already links against (btw.api.MinecraftServer -> btw.modern.MinecraftServer).
+    // javap audit 2026-10-10: the ONLY net.minecraft.server.* name in the fc output.
+    // tools/LinkAudit.java "FOREIGN net.minecraft REFS" flags any new one (must stay 0).
+    relocate 'net.minecraft.server.MinecraftServer', 'btw.modern.MinecraftServer'
     relocate 'btw.api', 'btw.modern'
     // Remap vanilla MC 1.5.2 classes (Entity, EntityAI*, PathNavigate, etc.)
     // into btw.modern.* so FC code can reach the REAL vanilla AI
@@ -677,10 +709,15 @@ task remapFcCode(type: ShadowJar) {
     relocate('net.minecraft.src', 'btw.modern') {
         exclude 'net.minecraft.src.btw.**'
     }
-    // Remap GL11 calls in FC code to our no-op stub. FC CLIENT code calls
-    // org.lwjgl.opengl.GL11.glTranslatef etc. for display transforms, but
-    // MC 1.20.1 uses a core GL profile where these fixed-function calls
-    // cause a fatal JVM abort. Our btw.modern.GL11 is a safe no-op.
+    // Remap GL11 calls in FC code to btw.modern.GL11. FC client renderers call
+    // fixed-function GL11 entry points that would abort MC 1.20.1's core-profile
+    // context. btw.modern.GL11 keeps a thread-local software matrix stack plus the
+    // current color, normal, lightmap coords, GL_TEXTURE-matrix translation,
+    // glBlendFunc factors and the TEXTURE_2D (per texture unit) / BLEND / ALPHA_TEST /
+    // LIGHTING caps, which the Tessellator applies per captured vertex/quad (the FC
+    // TESR/entity capture renderers pick a RenderType from them). Depth/alpha-func/
+    // mask/polygon-offset, texture bind/params and immediate-mode begin/vertex calls
+    // are no-ops (MC's RenderType owns them).
     relocate 'org.lwjgl.opengl.GL11', 'btw.modern.GL11'
     configurations = []
 }
@@ -703,15 +740,13 @@ tasks.matching { it.name.startsWith('prepareRun') || it.name.startsWith('run') |
 }
 
 // ------------------------------------------------------------------
-// Force-delete Modern-Common's btw.modern.Entity / AxisAlignedBB stubs
-// from its build output so dev-mode classloader uses FC's vanilla
-// versions instead. The JAR-side `exclude` directives only affect the
-// built JAR; in dev (runClient/runServer), Modern-Common's classes are
-// added to the runtime classpath directly from its build output dir,
-// and ForgeGradle does NOT honor `mods { source ... }` declaration
-// order for class precedence — first-found-wins. Deleting Modern-
-// Common's .class files leaves only FC's `btw/modern/Entity.class`
-// in the classpath, so it wins by default.
+// Delete from Modern-Common's build output the stubs that the frozen 1.5.2 (fc)
+// classes must replace, so dev runs bind the fc versions. Needed because
+// securejarhandler searches mods{} sources in reverse declaration order:
+// Modern-Common (declared last) would otherwise shadow fc for every btw.modern
+// collision. This list MUST equal the jar's Modern-Common exclude list. Anything
+// not listed resolves to Modern-Common in BOTH dev and jar. AxisAlignedBB is
+// deliberately absent (the vanilla ctor is protected).
 //
 // FC's vanilla 1.5.2 Entity has the full moveEntity collision-clip
 // algorithm. We deliberately use it instead of porting/stubbing.
@@ -741,12 +776,14 @@ task removeModernCommonShadowedClasses {
          'EntityFireball.class', 'EntityFishHook.class', 'EntityItem.class', 'EntityMinecart.class',
          'EntityMinecartHopper.class',
          'EntityPainting.class', 'EntityTNTPrimed.class', 'EntityThrowable.class',
-         'EntityWeatherEffect.class', 'EntityXPOrb.class', 'FCEntityLightningBolt.class',
+         'EntityWeatherEffect.class', 'EntityXPOrb.class',
+         // FCEntityLightningBolt: no frozen copy since the 2026-10-10 regeneration; the
+         // Modern-Common stub is dead (see the matching jar exclude) and is deleted here.
+         'FCEntityLightningBolt.class',
          // Movement / AI / pathfinding helpers — these are in the remap
          // include list AND excluded from the dist jar, but Modern-Common's
-         // stubs are still on the dev classpath. ForgeGradle's dev
-         // classloader doesn't honor source-set declaration order for
-         // class precedence, so we delete the stubs here too.
+         // stubs are still on the dev classpath, where Modern-Common wins
+         // collisions (reverse search order), so we delete the stubs here too.
          'PathNavigate.class', 'PathEntity.class', 'PathPoint.class',
          'PathFinder.class', 'RandomPositionGenerator.class',
          'EntityMoveHelper.class', 'EntityJumpHelper.class',
@@ -758,9 +795,8 @@ task removeModernCommonShadowedClasses {
          // entry was a no-op; btw.modern.EntityLightningBolt comes only from fc)
          'EntityLargeFireball.class', 'EntityWitherSkull.class',
          'EntityEgg.class',
-         // ChunkCache — vanilla PathFinder uses methods on ChunkCache
-         // (doesBlockHaveSolidTopSurface, etc.) that the stub lacks.
-         'ChunkCache.class',
+         // (ChunkCache is no longer listed: there is no frozen copy, Modern-Common's
+         // build-range port is the only one, in dev and in the jar.)
          // Model rendering: the dist jar already excludes these so FC's real
          // 1.5.2 versions win (correct UVs). Delete the Modern-Common stubs in
          // dev too so dev matches the jar's class binding. ModelBox/TexturedQuad/
@@ -780,10 +816,14 @@ task removeModernCommonShadowedClasses {
 // ------------------------------------------------------------------
 // ASM bytecode patch: open up access on FC's vanilla 1.5.2 Entity.
 //
-// FC code was compiled against Modern-Common's Entity stub, which had
-// `public` fields. Vanilla 1.5.2 Entity has many `protected` fields
-// (rand, fire, fireResistance, etc.). When FC subclasses access these
-// via bytecode `getfield btw/modern/Entity.field` where the stack type
+// FC code is compiled against the btw.api placeholders (Api module, relocated to
+// btw.modern by remapFcCode), which declare these members public. The regenerated
+// frozen classes declare some of them private/protected (javap: Entity 8 private,
+// e.g. fire at vanilla/server Entity.java:163; EntityLiving 26 private + 1 protected;
+// PathNavigate 22 private). FC callers live in net.minecraft.src.btw.*, a different
+// runtime package, so those accesses hit IllegalAccessError or verifier rejection.
+// Even for protected members, when an FC subclass accesses one via bytecode
+// `getfield btw/modern/Entity.field` where the stack type
 // is `Entity` (not the subclass), the JVM verifier rejects it as
 // "Bad access to protected data in getfield" — even when the accessor
 // IS technically a subclass, because verifier strict type tracking
@@ -831,7 +871,7 @@ task openUpEntityAccess {
          // Navigation / helper classes accessed cross-package by FC code
          'PathNavigate.class', 'EntityLookHelper.class', 'EntityMoveHelper.class',
          'EntityJumpHelper.class', 'EntityBodyHelper.class',
-         'PathFinder.class', 'ChunkCache.class',
+         'PathFinder.class',
          'CombatTracker.class', 'CombatEntry.class'].each { fileName ->
             def classFile = file("${buildDir}/classes/java/fc/btw/modern/${fileName}")
             if (!classFile.exists()) {
@@ -865,6 +905,13 @@ task openUpEntityAccess {
 // ------------------------------------------------------------------
 // ASM bytecode patch #2: widen pre-restructure FC hook descriptors.
 //
+// NOTE (2026-10-10): since the frozen artifact was regenerated from vanilla/ it
+// references net.minecraft.src.btw.** directly and already declares the wide
+// hooks (fc Entity has OnKickedByCow(btw.modern.Entity) etc., vanilla/server
+// Entity.java:2351/2355/2374/2473), so passes (a) and (b) below are no-ops, kept
+// pending cleanup. Pass (c) is LIVE: it widens the narrow overrides that the
+// shipped Client FC variants still declare (see its comment).
+//
 // The frozen 1.5.2 artifact predates the hook-widening now present in
 // vanilla/ — it declares Entity.OnKickedByCow(FCEntityCow),
 // OnFlungBySquidTentacle(FCEntitySquid), OnStruckByLightning(FCEntity-
@@ -884,8 +931,9 @@ task openUpEntityAccess {
 // real callers pass EntityLiving subclasses, the cast always succeeds).
 // StackMapTable check: only Entity.OnStruckByLightning has frames, all
 // 'same'-type (no local types recorded), so ClassWriter(0) is safe.
-// Flat FCEntityCreeper/Pig/Zombie keep narrow overrides — they are
-// shadowed by Modern-Common stubs / dead code and never dispatch.
+// The pre-regeneration FLAT FCEntityCreeper/Pig/Zombie copies kept narrow
+// overrides (dead code). The LIVE net.minecraft.src.btw.entity Client
+// variants have the same narrow overrides; pass (c) widens those.
 // ------------------------------------------------------------------
 task widenFcHookDescriptors {
     dependsOn extractFcClasses
@@ -930,6 +978,115 @@ task widenFcHookDescriptors {
             classFile.bytes = writer.toByteArray()
         }
 
+        // (c) LIVE (runs before (b), which also rewrites any call site still naming a
+        // descriptor widened here): widen narrow hook OVERRIDES in FC entity subclasses.
+        // remapFcCode keeps the Client copy of every Client/Server duplicate (see its
+        // from(...) comment), and three Client copies still declare the 4.B overloads
+        //   FCEntityCreeper.OnKickedByCow(FCEntityCow), .OnStruckByLightning(FCEntityLightningBolt)
+        //     (Client FCEntityCreeper.java:188-210)
+        //   FCEntityPig.OnStruckByLightning(FCEntityLightningBolt) (Client FCEntityPig.java:179)
+        //   FCEntityZombie.OnHeadCrabbedBySquid(FCEntitySquid) (Client FCEntityZombie.java:325)
+        // while every caller invokes the wide btw/modern/Entity hook (Client FCEntityCow.java:552,
+        // FCEntityLightningBolt.java:101, Common FCEntitySquid.java:884). So they never
+        // dispatch: a cow-kicked creeper never becomes determined to explode, lightning
+        // damages creepers instead of charging them and never turns pigs into pigmen. In 4.B
+        // the base hook took the FC type, so these WERE overrides; the Server copies carry
+        // the widened @Override (Entity) form (Server FCEntityCreeper.java:188/205).
+        // Fix: give such a method the wide descriptor and prepend
+        //     aload_1; checkcast <narrow>; astore_1
+        // so the body keeps its declared parameter type. Every caller passes `this` of the
+        // narrow type, so the cast cannot fail. Frames: the class is read with EXPAND_FRAMES,
+        // so each original frame comes back in full form with local 1 still typed as the
+        // narrow class (true once the prologue ran) and ClassWriter(0) re-compresses it
+        // against the new descriptor; the prologue has no branch target and needs one
+        // stack slot. Only methods whose owner AND parameter type are btw/modern/Entity
+        // subclasses within the fc output are touched; a class that already declares the
+        // wide form, or several narrow overloads of one hook, is left alone (WARN).
+        def fcRoot = file("${buildDir}/classes/java/fc")
+        def singleRefParam = ~/\(L([^;]+);\)V/
+        Map<String, String> superOf = [:]
+        fileTree(dir: fcRoot, include: '**/*.class').each { f ->
+            ClassReader r = new ClassReader(f.bytes)
+            superOf[r.className] = r.superName
+        }
+        def isFcEntity = { String type ->
+            Set<String> seen = [] as Set
+            for (String c = type; c != null && seen.add(c); c = superOf[c]) {
+                if (c == 'btw/modern/Entity') {
+                    return true
+                }
+            }
+            return false
+        }
+        Set<String> widenedOverrides = [] as Set // name + narrow desc, consumed by (b)
+        fileTree(dir: fcRoot, include: '**/*.class').each { f ->
+            ClassReader reader = new ClassReader(f.bytes)
+            String owner = reader.className
+            if (owner == 'btw/modern/Entity' || !isFcEntity(owner)) {
+                return
+            }
+            List<Map> hooks = []
+            reader.accept(new ClassVisitor(Opcodes.ASM9) {
+                @Override
+                MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] exceptions) {
+                    if (hookNames.contains(name)) {
+                        hooks << [name: name, desc: desc, access: access]
+                    }
+                    return null
+                }
+            }, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES)
+            Map<String, String> toWiden = [:] // name + narrow desc -> narrow param type
+            hooks.each { h ->
+                java.util.regex.Matcher pm = singleRefParam.matcher(h.desc)
+                if (h.desc == wideDesc || !pm.matches()) {
+                    return
+                }
+                String narrowType = pm.group(1)
+                boolean wideDeclared = hooks.any { it.name == h.name && it.desc == wideDesc }
+                int overloads = hooks.count { it.name == h.name && it.desc != wideDesc && it.desc ==~ singleRefParam }
+                if ((h.access & Opcodes.ACC_STATIC) != 0 || !isFcEntity(narrowType) || wideDeclared || overloads > 1) {
+                    logger.warn("widenFcHookDescriptors: left ${owner}.${h.name}${h.desc} narrow " +
+                        "(static=${(h.access & Opcodes.ACC_STATIC) != 0}, param is Entity subclass=${isFcEntity(narrowType)}, " +
+                        "wide form declared=${wideDeclared}, narrow overloads=${overloads})")
+                    return
+                }
+                toWiden[h.name + h.desc] = narrowType
+            }
+            if (toWiden.isEmpty()) {
+                return
+            }
+            ClassWriter writer = new ClassWriter(0)
+            reader.accept(new ClassVisitor(Opcodes.ASM9, writer) {
+                @Override
+                MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] exceptions) {
+                    String narrowType = toWiden[name + desc]
+                    if (narrowType == null) {
+                        return super.visitMethod(access, name, desc, sig, exceptions)
+                    }
+                    MethodVisitor mv = super.visitMethod(access, name, wideDesc, null, exceptions)
+                    return new MethodVisitor(Opcodes.ASM9, mv) {
+                        @Override
+                        void visitCode() {
+                            super.visitCode()
+                            super.visitVarInsn(Opcodes.ALOAD, 1)
+                            super.visitTypeInsn(Opcodes.CHECKCAST, narrowType)
+                            super.visitVarInsn(Opcodes.ASTORE, 1)
+                        }
+                        @Override
+                        void visitMaxs(int maxStack, int maxLocals) {
+                            super.visitMaxs(Math.max(maxStack, 1), maxLocals)
+                        }
+                    }
+                }
+            }, ClassReader.EXPAND_FRAMES)
+            f.bytes = writer.toByteArray()
+            toWiden.each { String key, String narrowType ->
+                widenedOverrides << key
+                logger.lifecycle("widenFcHookDescriptors: widened ${owner}.${key} -> ${wideDesc} " +
+                    "(entry checkcast ${narrowType})")
+            }
+        }
+
         // (b) rewrite narrow call sites anywhere in the fc output
         fileTree(dir: "${buildDir}/classes/java/fc", include: '**/*.class').each { f ->
             boolean[] changed = [false]
@@ -941,7 +1098,7 @@ task widenFcHookDescriptors {
                     return new MethodVisitor(Opcodes.ASM9, super.visitMethod(access, name, desc, sig, exceptions)) {
                         @Override
                         void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
-                            if (hookNames.contains(mName) && mDesc ==~ narrowDesc) {
+                            if (hookNames.contains(mName) && (mDesc ==~ narrowDesc || widenedOverrides.contains(mName + mDesc))) {
                                 changed[0] = true
                                 super.visitMethodInsn(opcode, owner, mName, wideDesc, isInterface)
                             } else {
@@ -960,14 +1117,215 @@ task widenFcHookDescriptors {
 }
 openUpEntityAccess.dependsOn widenFcHookDescriptors
 
+// ------------------------------------------------------------------
+// ASM bytecode patch #3: let the frozen 1.5.2 pathfinder work below y=0.
+//
+// 1.5.2 worlds span y 0..255; a 1.20.1 level spans minBuildHeight..maxBuildHeight-1
+// (overworld -64..319). The frozen pathing/AI classes bake in "y >= 0":
+//  (a) PathFinder.getSafePoint drops each candidate point to the ground with
+//      `while (par3 > 0) { ...; --par3; if (par3 > 0) var7 = openPoint(...); }`
+//      (vanilla/client PathFinder.java:242-266). At y <= 0 the scan never runs, so A*
+//      treats air as walkable there (paths off ledges and across pits, no lava check
+//      below). Both `iload_3; ifle L` compares become
+//        iload_3; aload_1; getfield Entity.worldObj; invokevirtual World.getFcMinBuildHeight()I; if_icmple L
+//      i.e. `par3 > entity.worldObj.getFcMinBuildHeight()`. Modern-Common World returns 0
+//      (1.5.2 behaviour unchanged); WorldBridge returns the level's min build height.
+//  (b) PathNavigate.getPathableYPos returns `(int)(boundingBox.minY + 0.5D)`
+//      (vanilla/client PathNavigate.java:350), while PathFinder starts paths at
+//      floor_double(minY + 0.5D) (PathFinder.java:492). `(int)` truncates toward zero,
+//      so for a mob standing at y=-59 the navigator reports -58 while the path points are
+//      at -59. pathFollow's same-y scan (PathNavigate.java:236) then stops at the current
+//      index, the index never advances, and the mob stands still until the 100-tick stuck
+//      check clears the path: cave mobs below y=0 never chase or wander. Every d2i in
+//      PathNavigate (9, all y values: :129, :137, :236, :329, :346, :350, :375, :414, :466)
+//      and PathFinder (1, the swimming start y: :497) becomes
+//      invokestatic MathHelper.floor_double(D)I, which is identical for y >= 0.
+//      EntityAIFleeSun.shouldExecute gets the same rewrite (1, the sky-check y
+//      `(int)boundingBox.minY`, vanilla/client EntityAIFleeSun.java:49): below y=0 a mob
+//      on farmland/slabs/soul sand would otherwise test the air block above its feet and
+//      flee the sun where 1.5.2 would not.
+// Stack: (a) needs one more slot (visitMaxs keeps >= 2); (b) is stack-neutral (D -> I
+// both ways). No branch targets are added, so the existing StackMapTable frames stay
+// valid with ClassWriter(0). Idempotent: an already-patched class is detected and left
+// alone. Any other bytecode shape fails the build instead of silently shipping the 1.5.2
+// bounds.
+// ------------------------------------------------------------------
+task extendFcPathingBuildRange {
+    dependsOn extractFcClasses
+    mustRunAfter widenFcHookDescriptors
+    doLast {
+        def fcModern = file("${buildDir}/classes/java/fc/btw/modern")
+        String minHeightName = 'getFcMinBuildHeight'
+        String safePointDesc = '(Lbtw/modern/Entity;IIILbtw/modern/PathPoint;I)Lbtw/modern/PathPoint;'
+
+        // (a) PathFinder.getSafePoint: `par3 > 0` -> `par3 > entity.worldObj.getFcMinBuildHeight()`
+        def pathFinderFile = new File(fcModern, 'PathFinder.class')
+        if (!pathFinderFile.exists()) {
+            logger.warn("extendFcPathingBuildRange: ${pathFinderFile} not found — skipping")
+        } else {
+            int[] counts = [0, 0] // [compares rewritten now, getFcMinBuildHeight calls already present]
+            ClassReader reader = new ClassReader(pathFinderFile.bytes)
+            ClassWriter writer = new ClassWriter(0)
+            reader.accept(new ClassVisitor(Opcodes.ASM9, writer) {
+                @Override
+                MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] exceptions) {
+                    MethodVisitor mv = super.visitMethod(access, name, desc, sig, exceptions)
+                    if (name != 'getSafePoint' || desc != safePointDesc) {
+                        return mv
+                    }
+                    boolean[] afterIload3 = [false] // previous instruction was iload_3 (par3, the candidate y)
+                    return new MethodVisitor(Opcodes.ASM9, mv) {
+                        @Override
+                        void visitVarInsn(int opcode, int varIndex) {
+                            super.visitVarInsn(opcode, varIndex)
+                            afterIload3[0] = opcode == Opcodes.ILOAD && varIndex == 3
+                        }
+                        @Override
+                        void visitJumpInsn(int opcode, Label label) {
+                            if (opcode == Opcodes.IFLE && afterIload3[0]) {
+                                super.visitVarInsn(Opcodes.ALOAD, 1)
+                                super.visitFieldInsn(Opcodes.GETFIELD, 'btw/modern/Entity', 'worldObj', 'Lbtw/modern/World;')
+                                super.visitMethodInsn(Opcodes.INVOKEVIRTUAL, 'btw/modern/World', minHeightName, '()I', false)
+                                super.visitJumpInsn(Opcodes.IF_ICMPLE, label)
+                                counts[0]++
+                            } else {
+                                super.visitJumpInsn(opcode, label)
+                            }
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
+                            if (owner == 'btw/modern/World' && mName == minHeightName) {
+                                counts[1]++
+                            }
+                            super.visitMethodInsn(opcode, owner, mName, mDesc, isInterface)
+                            afterIload3[0] = false
+                        }
+                        // Any other instruction or a label between iload_3 and ifle breaks the pattern.
+                        @Override
+                        void visitInsn(int opcode) {
+                            super.visitInsn(opcode)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitIntInsn(int opcode, int operand) {
+                            super.visitIntInsn(opcode, operand)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitTypeInsn(int opcode, String type) {
+                            super.visitTypeInsn(opcode, type)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitFieldInsn(int opcode, String owner, String fName, String fDesc) {
+                            super.visitFieldInsn(opcode, owner, fName, fDesc)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitInvokeDynamicInsn(String iName, String iDesc, Handle bsm, Object... bsmArgs) {
+                            super.visitInvokeDynamicInsn(iName, iDesc, bsm, bsmArgs)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitLabel(Label label) {
+                            super.visitLabel(label)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitLdcInsn(Object value) {
+                            super.visitLdcInsn(value)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitIincInsn(int varIndex, int increment) {
+                            super.visitIincInsn(varIndex, increment)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitTableSwitchInsn(int min, int max, Label dflt, Label... labels) {
+                            super.visitTableSwitchInsn(min, max, dflt, labels)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitLookupSwitchInsn(Label dflt, int[] keys, Label[] labels) {
+                            super.visitLookupSwitchInsn(dflt, keys, labels)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitMultiANewArrayInsn(String aDesc, int numDimensions) {
+                            super.visitMultiANewArrayInsn(aDesc, numDimensions)
+                            afterIload3[0] = false
+                        }
+                        @Override
+                        void visitMaxs(int maxStack, int maxLocals) {
+                            super.visitMaxs(Math.max(maxStack, 2), maxLocals)
+                        }
+                    }
+                }
+            }, 0)
+            if (counts[0] == 2) {
+                pathFinderFile.bytes = writer.toByteArray()
+                logger.lifecycle("extendFcPathingBuildRange: PathFinder.getSafePoint drop scan now bounded by World.${minHeightName}()")
+            } else if (counts[0] == 0 && counts[1] == 2) {
+                logger.lifecycle("extendFcPathingBuildRange: PathFinder.getSafePoint already patched")
+            } else {
+                throw new GradleException("extendFcPathingBuildRange: unexpected PathFinder.getSafePoint bytecode " +
+                    "(${counts[0]} `iload_3; ifle` compares, ${counts[1]} ${minHeightName} calls; expected 2 and 0, " +
+                    "or 0 and 2 if already patched). Re-check vanilla/client PathFinder.java:242-266 against javap.")
+            }
+        }
+
+        // (b) truncating y casts -> MathHelper.floor_double, counts verified against javap of the frozen classes
+        [['PathNavigate.class', 9], ['PathFinder.class', 1], ['EntityAIFleeSun.class', 1]].each { entry ->
+            String fileName = entry[0]
+            int expected = entry[1]
+            def classFile = new File(fcModern, fileName)
+            if (!classFile.exists()) {
+                logger.warn("extendFcPathingBuildRange: ${classFile} not found — skipping")
+                return
+            }
+            int[] replaced = [0]
+            ClassReader reader = new ClassReader(classFile.bytes)
+            ClassWriter writer = new ClassWriter(0)
+            reader.accept(new ClassVisitor(Opcodes.ASM9, writer) {
+                @Override
+                MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] exceptions) {
+                    return new MethodVisitor(Opcodes.ASM9, super.visitMethod(access, name, desc, sig, exceptions)) {
+                        @Override
+                        void visitInsn(int opcode) {
+                            if (opcode == Opcodes.D2I) {
+                                replaced[0]++
+                                super.visitMethodInsn(Opcodes.INVOKESTATIC, 'btw/modern/MathHelper', 'floor_double', '(D)I', false)
+                            } else {
+                                super.visitInsn(opcode)
+                            }
+                        }
+                    }
+                }
+            }, 0)
+            if (replaced[0] == expected) {
+                classFile.bytes = writer.toByteArray()
+                logger.lifecycle("extendFcPathingBuildRange: ${fileName} ${expected} truncating y cast(s) -> MathHelper.floor_double")
+            } else if (replaced[0] == 0) {
+                logger.lifecycle("extendFcPathingBuildRange: ${fileName} already patched (no d2i left)")
+            } else {
+                throw new GradleException("extendFcPathingBuildRange: ${fileName} has ${replaced[0]} d2i, expected " +
+                    "${expected} (all y casts, see the comment above). Re-check the frozen class against javap.")
+            }
+        }
+    }
+}
+openUpEntityAccess.dependsOn extendFcPathingBuildRange
+
 tasks.matching { it.name.startsWith('prepareRun') || it.name.startsWith('run') || it.name == 'classes' || it.name == 'jar' }.configureEach {
     dependsOn openUpEntityAccess
 }
 // IMPORTANT: removeModernCommonShadowedClasses is DESTRUCTIVE — it deletes
 // .class files from Modern-Common's *shared* compile output. It must be
-// wired ONLY to the dev-run tasks (prepareRun*/run*), where the
-// ForgeGradle classloader resolves duplicate btw.modern.* classes
-// first-found-wins and the physical deletion is the only way to make the
+// wired ONLY to the dev-run tasks (prepareRun*/run*), where securejarhandler
+// resolves duplicate btw.modern.* classes Modern-Common-first (reverse
+// mods{} source order) and the physical deletion is the only way to make the
 // FC remapped versions win.
 //
 // It must NOT be wired to `classes` or `jar`: the `jar` task already
@@ -1012,19 +1370,20 @@ jar {
         ])
     }
 
-    // Modern-Common FIRST: provides bridge stubs for core types (Entity,
-    // EntityLiving, World, Block, etc.) that have bridge-specific methods.
-    // DuplicatesStrategy.EXCLUDE means first-in wins, so bridge stubs
-    // take precedence over the remapped vanilla classes for types where
-    // both exist.
-    //
-    // Modern-Common bridge stubs load first. For classes where both
-    // Modern-Common and remapped vanilla exist, Modern-Common wins
-    // (DuplicatesStrategy.EXCLUDE). This is intentional for classes
-    // with bridge-specific constructors (e.g. EntityAITasks no-arg).
-    //
-    // Exclude stubs whose vanilla versions have MATCHING constructor
-    // signatures and BETTER implementations (real A* pathfinding, etc.).
+    // ---- Class precedence (MUST match dev runs) --------------------------
+    // DuplicatesStrategy.EXCLUDE keeps the FIRST copy Gradle visits. Gradle 8.9
+    // walks a spec's OWN sources (`from x`) before its CHILD specs
+    // (`from(x) { ... }`), and children in declaration order
+    // (DefaultCopySpec$DefaultCopySpecResolver.walk; addChild appends). Walk order:
+    //   1. Forge main output (own source from the java plugin; btw/forge + resources)
+    //   2. Modern-Common child (minus the shadow list below)
+    //   3. fc child (frozen 1.5.2 + relocated FC classes)
+    //   4. Api child (btw/api/** excluded -> contributes nothing)
+    // So for every btw.modern collision Modern-Common wins UNLESS the class is on
+    // the shadow list below. Then only the frozen fc copy exists. Dev runs use the
+    // same rule: securejarhandler searches mods{} sources in reverse declaration
+    // order and removeModernCommonShadowedClasses deletes exactly this list. Keep the
+    // two lists identical (tools/LinkAudit.java reports drift).
     from(project(':Modern-Common').sourceSets.main.output) {
         exclude 'btw/api/**'
         // Let vanilla versions win for classes with MATCHING constructors
@@ -1102,15 +1461,17 @@ jar {
         exclude 'btw/modern/EntityThrowable.class'
         exclude 'btw/modern/EntityWeatherEffect.class'
         exclude 'btw/modern/EntityXPOrb.class'
+        // FCEntityLightningBolt: no frozen copy since the 2026-10-10 regeneration (the
+        // live class is net.minecraft.src.btw.entity.FCEntityLightningBolt). Modern-Common's
+        // copy is a dead stub nothing links to, kept out of the jar (and deleted in dev).
         exclude 'btw/modern/FCEntityLightningBolt.class'
         // Reconcile with removeModernCommonShadowedClasses (dev): these collide
         // and the FC version is authoritative, but were previously only deleted
         // in dev — so the Modern-Common stub shipped in the jar and shadowed FC
-        // in PROD ONLY. ChunkCache (PathFinder needs its methods), the projectile
-        // entities, RandomPositionGenerator (AI), and EntityLookHelper (whose
-        // Modern-Common version is an empty stub while FC's EntityLiving calls
-        // new EntityLookHelper(this)).
-        exclude 'btw/modern/ChunkCache.class'
+        // in PROD ONLY. The projectile entities, RandomPositionGenerator (AI), and
+        // EntityLookHelper (whose Modern-Common version is an empty stub while FC's
+        // EntityLiving calls new EntityLookHelper(this)). ChunkCache left this list:
+        // the frozen copy is no longer merged and Modern-Common's port ships.
         exclude 'btw/modern/EntityEgg.class'
         exclude 'btw/modern/EntityLargeFireball.class'
         exclude 'btw/modern/EntityWitherSkull.class'
@@ -1122,13 +1483,18 @@ jar {
         exclude 'btw/modern/PositionTextureVertex.class'
     }
 
-    // FC classes SECOND: includes FC entity code (net.minecraft.src.btw.*)
-    // AND remapped vanilla classes (net.minecraft.src.* → btw.modern.*).
-    // For classes where Modern-Common already provides a bridge stub,
-    // the FC version is excluded. For vanilla AI, pathfinding, etc.
-    // where Modern-Common has no real implementation, the FC version
-    // fills the gap with the REAL vanilla 1.5.2 code.
-    from sourceSets.fc.output
+    // FC classes: a CHILD spec declared AFTER Modern-Common, so it loses every
+    // collision the shadow list does not hand to it. NEVER collapse this to
+    // `from sourceSets.fc.output`. That form is an OWN source, visited before the
+    // Modern-Common child, and it made fc win all 16 non-listed collisions in the
+    // jar only (frozen ContainerChest/Repair/Enchantment/..., IEntitySelector,
+    // EntityAIBase, ...; STUB_CATALOGUE 2026-10-10). The guard below fails the
+    // build if this flips.
+    from(sourceSets.fc.output) {
+        // remapFcCode's manifest rides along in the extracted dir; Jar's
+        // ExcludeManifestAction already drops it. Explicit for clarity.
+        exclude 'META-INF/MANIFEST.MF'
+    }
 
     // Api module — just the FC-facing btw.api.* interfaces. These are
     // already shadow-relocated out of the FC bytecode, but some compiled
@@ -1152,6 +1518,39 @@ tasks.named('jar').configure {
             throw new GradleException('Forge/src/generated/resources is missing or empty — ' +
                 'the loot/recipe overrides (#004/#005) would not ship. Run: gradlew :Forge:runData')
         }
+    }
+}
+
+// Class-precedence guard: the dist jar must bind btw.modern collisions exactly as
+// dev runs do. Sentinels:
+//  - ContainerChest: collides and is NOT shadow-listed, so the jar copy must be
+//    Modern-Common's. ContainerBridge.SimpleChestContainer adds its own slots; the
+//    frozen 1.5.2 ctor adds them too (vanilla/server ContainerChest.java:21-50).
+//  - Entity: shadow-listed, so the jar copy must be the frozen fc one.
+// If you ever shadow-list ContainerChest, pick another non-listed collision.
+// Runs in jar.doLast, before ForgeGradle's reobfJar rewrites the archive; the fc
+// Entity.class compared against is already ASM-patched (jar dependsOn openUpEntityAccess).
+def precedenceMcClasses = project(':Modern-Common').sourceSets.main.output.classesDirs.files.first()
+def precedenceFcClasses = sourceSets.fc.output.classesDirs.files.first()
+tasks.named('jar').configure {
+    doLast { jarTask ->
+        def jarFile = jarTask.archiveFile.get().asFile
+        def expected = [
+            'btw/modern/ContainerChest.class': new File(precedenceMcClasses, 'btw/modern/ContainerChest.class'),
+            'btw/modern/Entity.class'        : new File(precedenceFcClasses, 'btw/modern/Entity.class'),
+        ]
+        new java.util.zip.ZipFile(jarFile).withCloseable { zip ->
+            expected.each { String path, File src ->
+                def entry = zip.getEntry(path)
+                byte[] inJar = entry == null ? null : zip.getInputStream(entry).withCloseable { it.bytes }
+                if (inJar == null || !src.isFile() || !Arrays.equals(inJar, src.bytes)) {
+                    throw new GradleException("Jar class precedence drifted: ${path} in ${jarFile.name} is not the " +
+                        "copy from ${src}. Modern-Common must win every btw.modern collision except the shadow " +
+                        "list (jar excludes == removeModernCommonShadowedClasses), exactly as in dev runs.")
+                }
+            }
+        }
+        logger.lifecycle("Jar class precedence OK (ContainerChest = Modern-Common, Entity = fc)")
     }
 }
 

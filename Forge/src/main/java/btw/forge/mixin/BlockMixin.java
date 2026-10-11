@@ -1,6 +1,7 @@
 package btw.forge.mixin;
 
 import btw.forge.EntityBridge;
+import btw.forge.ItemEntityBridge;
 import btw.forge.LivingEntityBridge;
 import btw.forge.PlayerBridge;
 import btw.forge.ProxyBlock;
@@ -10,6 +11,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -49,9 +51,10 @@ public abstract class BlockMixin {
     /**
      * Wraps a vanilla MC entity as a btw.modern.Entity for FC block callbacks:
      * a {@link PlayerBridge} for players, a {@link LivingEntityBridge} for other
-     * living entities, or an {@link EntityBridge} otherwise. Mirrors
-     * {@code ProxyBlock.wrapEntity} so vanilla blocks with FC behavior pass real
-     * entities to callbacks like onEntityWalking / onFallenUpon.
+     * living entities, an {@link ItemEntityBridge} for dropped items, or an
+     * {@link EntityBridge} otherwise. Mirrors {@code ProxyBlock.wrapEntity} so
+     * vanilla blocks with FC behavior pass real entities to callbacks like
+     * onEntityWalking / onFallenUpon.
      */
     private btw.modern.Entity btw$wrapEntity(Entity entity) {
         if (entity == null) return null;
@@ -64,6 +67,13 @@ public abstract class BlockMixin {
             LivingEntityBridge lb = LivingEntityBridge.getOrCreate(living);
             lb.syncFromReal();
             return lb;
+        }
+        // ItemEntity → its FC EntityItem view (design_items U3b): 1.5.2 EntityItem is passed to the block as
+        // itself (`instanceof EntityItem` callbacks, CanEntityTriggerTripwire() == false), and items no longer
+        // land in EntityBridge's cache. Null (never the generic EntityBridge) when the item has no view (removed,
+        // empty, failed to sync) -- the caller skips the FC callback.
+        if (entity instanceof ItemEntity item) {
+            return ItemEntityBridge.wrap(item);
         }
         EntityBridge eb = EntityBridge.getOrCreate(entity);
         eb.syncFromReal();
@@ -86,8 +96,19 @@ public abstract class BlockMixin {
         if (fcBlock == null) return;
 
         if (level instanceof ServerLevel sl) {
+            // MC calls stepOn for every grounded entity; 1.5.2 Entity.moveEntity gates onEntityWalking on
+            // canTriggerWalking() (vanilla/server Entity.java:841), false for EntityItem (EntityItem.java:59).
+            // Checked before wrapping so every item resting on grass/dirt/stone is not re-synced per move;
+            // the vanilla stepOn stays replaced by FC's, as for any other entity.
+            if (entity instanceof ItemEntity) {
+                ci.cancel();
+                return;
+            }
             btw.modern.World world = WorldBridge.getOrCreate(sl);
-            fcBlock.onEntityWalking(world, pos.getX(), pos.getY(), pos.getZ(), btw$wrapEntity(entity));
+            btw.modern.Entity fcEntity = btw$wrapEntity(entity);
+            if (fcEntity != null) {
+                fcBlock.onEntityWalking(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+            }
             ci.cancel();
         }
     }
@@ -104,7 +125,10 @@ public abstract class BlockMixin {
 
         if (level instanceof ServerLevel sl) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
-            fcBlock.onFallenUpon(world, pos.getX(), pos.getY(), pos.getZ(), btw$wrapEntity(entity), fallDistance);
+            btw.modern.Entity fcEntity = btw$wrapEntity(entity);
+            if (fcEntity != null) {
+                fcBlock.onFallenUpon(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity, fallDistance);
+            }
             // Do NOT cancel — vanilla fallOn must still call entity.causeFallDamage().
             // FC's onFallenUpon is a notification hook, not a damage replacement.
         }
@@ -131,8 +155,8 @@ public abstract class BlockMixin {
     // getSpeedFactor into carried deltaMovement every tick in Entity.move(), so a factor > 1.0
     // compounds into momentum and, while airborne (sprint-jumping), the retention product
     // 0.91 × 1.2 = 1.092 > 1 makes speed grow unbounded ("practically flying"). FC applied it
-    // to the INPUT speed (moveEntityWithHeading), so the bridge now does the same in the
-    // getSpeed hooks (LivingEntityMixin / ClientPlayerSpeedMixin via FCMovementBonus). Slowdown
+    // to the INPUT speed (moveEntityWithHeading), so the bridge now does the same in
+    // PlayerMixin.btw$applyBlockMovementModifier (Player.getSpeed, via FCMovementBonus). Slowdown
     // blocks (soul sand, honey) keep working via their own vanilla getSpeedFactor + getFriction.
 
     // ================================================================

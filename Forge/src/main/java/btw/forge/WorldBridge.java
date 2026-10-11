@@ -25,22 +25,27 @@ import java.util.Random;
 import java.util.WeakHashMap;
 
 /**
- * Full {@link btw.modern.World} implementation backed by a Forge 1.20.1
- * {@link ServerLevel}.  This replaces {@link ForgeWorldServerWrapper} as the
- * canonical bridge between FC legacy code (int IDs, block coords) and the
- * modern block-state system.
+ * Full {@link btw.modern.WorldServer} implementation backed by a Forge 1.20.1
+ * {@link ServerLevel}: the single bridge between FC legacy code (int IDs, block coords)
+ * and the modern block-state system, and the object BTWLifecycle.wireWorlds puts in
+ * MinecraftServer.worldServers[] (1.5.2 order: overworld, nether, end).
  *
- * Instances are cached per-ServerLevel via {@link #getOrCreate(ServerLevel)}.
+ * Instances are cached per-ServerLevel via {@link #getOrCreate(ServerLevel)} and
+ * released by {@link #clearCache()} when the server stops.
  */
-// Extends World, NOT WorldServer. Making it a WorldServer would satisfy
-// FCUtilsWorld's (WorldServer)worldObj cast for entity-tracker packets, BUT it also
-// makes `worldObj instanceof WorldServer` true in frozen Entity.onEntityUpdate, whose
-// portal block then calls ((WorldServer)worldObj).getMinecraftServer() every tick — a
-// method that returns the modern net.minecraft.server.MinecraftServer type Modern-Common
-// cannot declare (NoSuchMethodError, caught but per-tick). The entity-tracker packet sync
-// (cow-kick / squid-tentacle client visuals) stays a caught no-op instead — a far smaller
-// cost than aborting every FC entity's onUpdate at the portal check.
-public class WorldBridge extends btw.modern.World {
+// Extends WorldServer: in 1.5.2 every server-side worldObj IS a WorldServer and FC/frozen code
+// casts to it unguarded -- FCEntityCow.java:528 / FCEntitySquid.java:1069
+// (SendPacketToAllPlayersTrackingEntity), frozen EntityCreature.java:623
+// (TransmitAttackTargetToClients), EntityLiving.java:864 (equipment sync), :2981 (onItemPickup);
+// the ClassCastException aborted the rest of the entity's onUpdate. The frozen
+// Entity.onEntityUpdate portal block (vanilla/client Entity.java:456-459) that forced the
+// 2026-07-09 revert now links: remapFcCode relocates net.minecraft.server.MinecraftServer to
+// btw.modern.MinecraftServer and Modern-Common WorldServer declares getMinecraftServer(); its
+// travelToDimension branch stays inert because ForgeMinecraftServerWrapper.getAllowNether()
+// is false (1.20.1 owns dimension travel of puppets).
+// Every WorldServer stub body overrides an abstract World method that this class implements
+// against the live level, so inheriting WorldServer changes no dispatch (adds getEntityTracker).
+public class WorldBridge extends btw.modern.WorldServer {
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-WorldBridge");
 
@@ -49,9 +54,15 @@ public class WorldBridge extends btw.modern.World {
      * FC code sets metadata on vanilla blocks (e.g., cracked flag on stone),
      * but vanilla MC blocks have no META property. This map stores the FC
      * metadata keyed by block position so getBlockMetadata can return it.
-     * Entries are removed when the block at that position changes.
+     * Entries are removed when FC changes the block at that position, and ignored (then dropped) once the
+     * MC block there is no longer the one FC wrote to: MC replaces blocks without going through WorldBridge
+     * (explosions, player placement, pistons, fluids), and a stale value used to win over the derived one.
+     * Concurrent: the read path now also removes, and FC shape/bounds code can read neighbours off-thread.
      */
-    private final Map<BlockPos, Integer> vanillaMetaOverrides = new HashMap<>();
+    private final Map<BlockPos, MetaOverride> vanillaMetaOverrides = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** FC metadata written to a vanilla block, valid only while {@code block} is still the block at its position. */
+    private record MetaOverride(net.minecraft.world.level.block.Block block, int meta) {}
 
     private static final Map<ServerLevel, WorldBridge> cache = new WeakHashMap<>();
 
@@ -62,7 +73,33 @@ public class WorldBridge extends btw.modern.World {
         return cache.computeIfAbsent(level, WorldBridge::new);
     }
 
-    private final ServerLevel level;
+    /**
+     * Drops every cached bridge and detaches it from its level. Called once the server has
+     * fully stopped (BTWLifecycle.onServerStopped, ServerStoppedEvent). Each bridge holds its
+     * ServerLevel key strongly (directly, and through the proxies in fcToForgeEntity), so the
+     * WeakHashMap could never evict an entry: every closed world's server stayed reachable for
+     * the life of the JVM (triage RE2). A ServerLevel lives exactly as long as its server, so
+     * releasing at stop is leak-free; detach also drops the level and the proxy map so a bridge
+     * still referenced from elsewhere (a stale PlayerBridge, an FC object) cannot pin them
+     * (WorldInfoBridge only holds the level weakly).
+     */
+    static void clearCache() {
+        List<WorldBridge> bridges = new ArrayList<>(cache.values());
+        cache.clear();
+        for (WorldBridge bridge : bridges) {
+            bridge.detach();
+        }
+    }
+
+    private void detach() {
+        fcToForgeEntity.clear();
+        projectileTargets.clear();
+        vanillaMetaOverrides.clear();
+        level = null;
+    }
+
+    // Not final: nulled by detach() once the server has stopped (see clearCache).
+    private ServerLevel level;
 
     public WorldBridge(ServerLevel level) {
         this.level = level;
@@ -123,7 +160,10 @@ public class WorldBridge extends btw.modern.World {
 
             @Override
             public int getUniqueDataId(String key) {
-                return level.getFreeMapId();
+                // Read the bridge's field, not the constructor parameter: capturing the
+                // parameter would pin the ServerLevel past detach() (RE2).
+                ServerLevel live = WorldBridge.this.level;
+                return live != null ? live.getFreeMapId() : 0;
             }
         };
 
@@ -135,8 +175,9 @@ public class WorldBridge extends btw.modern.World {
         this.m_localLowPowerEnderChestInventory = new InventoryEnderChest();
         try {
             FcWorldSavedData.attach(this);
-        } catch (Exception e) {
-            LOGGER.warn("Could not attach FC world saved data: {}", e.getMessage());
+        } catch (Throwable t) {
+            // Runs inside getOrCreate during chunk/entity loads -- never let it escape (RE1).
+            LOGGER.warn("Could not attach FC world saved data: {}", t.toString());
         }
     }
 
@@ -162,31 +203,69 @@ public class WorldBridge extends btw.modern.World {
     // ================================================================
 
 
+    // Never an id with an empty blocksList slot (frozen PathFinder/Entity/EntityLiving dereference
+    // blocksList[id] unguarded, triage HAI-4); colliding modern-only states read as ModernBlockStandIn,
+    // not air (design_blockmap U4); double slabs read as 43/125; seagrass/kelp/bubble columns as water (D5).
     public int getBlockId(int x, int y, int z) {
-        BlockState state = level.getBlockState(new BlockPos(x, y, z));
-        return ProxyRegistry.getBlockId(state.getBlock());
+        BlockPos pos = new BlockPos(x, y, z);
+        return ProxyRegistry.getWorldBlockId(level.getBlockState(pos), level, pos);
     }
 
-    
+
     public int getBlockMetadata(int x, int y, int z) {
         BlockPos pos = new BlockPos(x, y, z);
         BlockState state = level.getBlockState(pos);
         if (state.hasProperty(ProxyBlock.META)) {
             return state.getValue(ProxyBlock.META);
         }
-        // Check side map for vanilla blocks with FC metadata overrides
-        Integer override = vanillaMetaOverrides.get(pos);
-        if (override != null) return override;
+        // Check side map for vanilla blocks with FC metadata overrides, valid only while the block FC wrote is
+        // still there (never stored where the MC state is the whole truth, see isMetaFullyDerived)
+        MetaOverride override = vanillaMetaOverrides.get(pos);
+        if (override != null) {
+            if (override.block() == state.getBlock()) return override.meta();
+            vanillaMetaOverrides.remove(pos); // MC replaced the block behind FC's back: derive instead
+        }
 
         // Derive metadata from MC 1.20.1 BlockState properties for vanilla blocks
-        return deriveVanillaMetadata(state, pos);
+        return deriveVanillaMetadata(level, state, pos);
+    }
+
+    /**
+     * Blocks whose 1.5.2 metadata is fully encoded by their MC state and which MC mutates without going
+     * through WorldBridge: FenceGateBlock.use toggles OPEN without calling super (BlockBehaviorMixin never
+     * sees it), and MC merges a placed slab into a DOUBLE one. A vanillaMetaOverrides entry FC wrote earlier
+     * would go stale, so these always derive (and never store an override). Trapdoors (MC toggles OPEN on use
+     * the same way) and stairs: every 1.5.2 meta bit round-trips through the derive/apply pair.
+     */
+    private static boolean isMetaFullyDerived(net.minecraft.world.level.block.Block block) {
+        return block instanceof net.minecraft.world.level.block.FenceGateBlock
+                || block instanceof net.minecraft.world.level.block.SlabBlock
+                || block instanceof net.minecraft.world.level.block.TrapDoorBlock
+                || block instanceof net.minecraft.world.level.block.StairBlock;
     }
 
     /**
      * Derives legacy MC 1.5.2 metadata from MC 1.20.1 BlockState properties.
      * For logs: axis → orientation bits, and bottom-of-tree → stump flag.
+     *
+     * <p>Side-agnostic and static: client code with no WorldBridge (ProxyEntity.createDummyClientWorld, the
+     * FCMiningSpeed dig prediction, FCBakedModel.LiveAccess) derives the same metadata as the server, so
+     * e.g. a stump log (FCBlockLog hardness x3 for meta 12) is not predicted to break 3x early on the client
+     * (w1 review P1). Never throws: any failure answers 0. Server-only vanillaMetaOverrides are applied by
+     * {@link #getBlockMetadata}, not here.</p>
      */
-    private int deriveVanillaMetadata(BlockState state, BlockPos pos) {
+    public static int deriveVanillaMetadata(net.minecraft.world.level.BlockGetter level, BlockState state,
+                                            BlockPos pos) {
+        try {
+            return deriveVanillaMetadataUnchecked(level, state, pos);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static int deriveVanillaMetadataUnchecked(net.minecraft.world.level.BlockGetter level,
+                                                      BlockState state, BlockPos pos) {
+        if (state == null) return 0;
         net.minecraft.world.level.block.Block block = state.getBlock();
 
         // Fluids: MC LEVEL (0 = source, 1-7 = flowing, 8+ = falling) has the same
@@ -196,6 +275,16 @@ public class WorldBridge extends btw.modern.World {
             if (state.hasProperty(net.minecraft.world.level.block.LiquidBlock.LEVEL)) {
                 return state.getValue(net.minecraft.world.level.block.LiquidBlock.LEVEL);
             }
+            return 0;
+        }
+
+        // Unmapped water-holders (seagrass, kelp, bubble columns, coral wall fans, dripleaf, waterlogged modern
+        // blocks) read as water id 8 (ProxyRegistry.getWorldBlockId, triage D5) or as a ModernBlockStandIn, which
+        // ignores metadata. They only ever hold a SOURCE: 1.5.2 fluid level 0. Answered before the FACING /
+        // POWERED branches below, whose 2-5 / 8 would read as flowing / falling water to BlockFluid and
+        // Entity.handleMaterialAcceleration (a spurious current at every coral wall fan).
+        if (ProxyRegistry.getBlockId(block) == 0
+                && state.getFluidState().is(net.minecraft.tags.FluidTags.WATER)) {
             return 0;
         }
 
@@ -231,6 +320,80 @@ public class WorldBridge extends btw.modern.World {
 
                 return meta;
             }
+        }
+
+        // Slabs: 1.5.2 BlockHalfSlab meta = species (meta & 7, BlockStep.java:23 / BlockWoodSlab.java:23)
+        // | 8 for the upper half (FCMOD GetIsUpsideDown, vanilla/client BlockHalfSlab.java:282-290). A DOUBLE
+        // slab reads as id 43/125 (ProxyRegistry.getWorldBlockId) with the species only. Modern-Common
+        // BlockHalfSlab re-applies the 1.5.2 half-slab bounds on this encoding.
+        if (block instanceof net.minecraft.world.level.block.SlabBlock
+                && state.hasProperty(net.minecraft.world.level.block.SlabBlock.TYPE)) {
+            int species = Math.max(ProxyRegistry.getLegacyVariantMeta(block), 0);
+            return state.getValue(net.minecraft.world.level.block.SlabBlock.TYPE)
+                    == net.minecraft.world.level.block.state.properties.SlabType.TOP ? species | 8 : species;
+        }
+
+        // Fence gates: 1.5.2 BlockFenceGate meta = direction (S=0, W=1, N=2, E=3: the placer's facing,
+        // vanilla/client BlockFenceGate.java:101-105, same as 1.20.1 Direction.get2DDataValue) | 4 when open.
+        // Must precede the generic HORIZONTAL_FACING branch (N=2, S=3, W=4, E=5, OPEN lost), which made closed
+        // east/west gates read as open. Modern-Common BlockFenceGate re-applies the 1.5.2 collision on this.
+        if (block instanceof net.minecraft.world.level.block.FenceGateBlock) {
+            int meta = state.getValue(net.minecraft.world.level.block.FenceGateBlock.FACING).get2DDataValue();
+            return state.getValue(net.minecraft.world.level.block.FenceGateBlock.OPEN) ? meta | 4 : meta;
+        }
+
+        // Stairs: 1.5.2 BlockStairs meta = direction of the high half (0=E, 1=W, 2=S, 3=N, from the placer's yaw,
+        // vanilla/client BlockStairs.java:533-556; bounds :82-223) | 4 when upside-down. Must precede the generic
+        // HORIZONTAL_FACING branch, which used to return first (2-5): east stairs (5) decoded as west + upside-down.
+        // Matches the reverse in applyFcMetadataToVanillaBlock. Keyed on StairBlock, not on HALF: trapdoors also
+        // carry HORIZONTAL_FACING + HALF with a different encoding (below).
+        if (block instanceof net.minecraft.world.level.block.StairBlock
+                && state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)
+                && state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)) {
+            net.minecraft.core.Direction dir = state.getValue(
+                    net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING);
+            int meta;
+            switch (dir) {
+                case EAST: meta = 0; break;
+                case WEST: meta = 1; break;
+                case SOUTH: meta = 2; break;
+                case NORTH: meta = 3; break;
+                default: meta = 0;
+            }
+            if (state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)
+                    == net.minecraft.world.level.block.state.properties.Half.TOP) {
+                meta |= 4;
+            }
+            return meta;
+        }
+
+        // Trapdoors: 1.5.2 BlockTrapDoor meta = hinge direction (0-3) | 4 when open | 8 for the upper half
+        // (vanilla/client BlockTrapDoor.java:94-129 bounds, :226-256 placement, :297-300 isTrapdoorOpen).
+        // Placement on side 2/3/4/5 gives 0/1/2/3, the same face 1.20.1 TrapDoorBlock.getStateForPlacement
+        // stores as FACING NORTH/SOUTH/WEST/EAST, and the open bounds agree (meta 0 -> z 0.8125..1 =
+        // NORTH_OPEN_AABB). Block.trapdoor is FCBlockTrapDoor (vanilla/client Block.java:314): its pathing,
+        // zombie barricade-breaking and collision read this meta (Server FCBlockTrapDoor.java:81-115, :149-196).
+        // The generic HORIZONTAL_FACING branch lost OPEN/HALF and made closed west/east trapdoors (4/5) read open.
+        if (block instanceof net.minecraft.world.level.block.TrapDoorBlock
+                && state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)) {
+            int meta;
+            switch (state.getValue(
+                    net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)) {
+                case SOUTH: meta = 1; break;
+                case WEST: meta = 2; break;
+                case EAST: meta = 3; break;
+                default: meta = 0; // NORTH
+            }
+            if (state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.OPEN)
+                    && state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.OPEN)) {
+                meta |= 4;
+            }
+            if (state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)
+                    && state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)
+                            == net.minecraft.world.level.block.state.properties.Half.TOP) {
+                meta |= 8;
+            }
+            return meta;
         }
 
         // Farmland: MC MOISTURE (0-7) → FC legacy metadata (0-7, >0 = hydrated)
@@ -297,26 +460,6 @@ public class WorldBridge extends btw.modern.World {
             return meta;
         }
 
-        // Stairs: bits 0-1 = facing, bit 2 = upside-down
-        if (state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)
-                && state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)) {
-            net.minecraft.core.Direction dir = state.getValue(
-                    net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING);
-            int meta;
-            switch (dir) {
-                case EAST: meta = 0; break;
-                case WEST: meta = 1; break;
-                case SOUTH: meta = 2; break;
-                case NORTH: meta = 3; break;
-                default: meta = 0;
-            }
-            if (state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)
-                    == net.minecraft.world.level.block.state.properties.Half.TOP) {
-                meta |= 4;
-            }
-            return meta;
-        }
-
         // Lever/button: powered state
         if (state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.POWERED)) {
             int meta = 0;
@@ -326,6 +469,12 @@ public class WorldBridge extends btw.modern.World {
             return meta;
         }
 
+        // Flattened subtypes: wool colour, plank/sapling/leaf species, sandstone / stone-brick / infested /
+        // wall type, tall grass vs fern (ProxyRegistry variant table, the 1.5.2 subtype orders).
+        int variant = ProxyRegistry.getLegacyVariantMeta(block);
+        if (variant >= 0) return variant;
+
+        // Everything else (unmapped water-holders already answered 0 above, triage D5).
         return 0;
     }
 
@@ -375,6 +524,72 @@ public class WorldBridge extends btw.modern.World {
             return current.setValue(net.minecraft.world.level.block.RotatedPillarBlock.AXIS, axis);
         }
 
+        // Fence gates: reverse of deriveVanillaMetadata's 1.5.2 gate encoding (direction 0-3 | 4 = open)
+        if (block instanceof net.minecraft.world.level.block.FenceGateBlock) {
+            return current
+                    .setValue(net.minecraft.world.level.block.FenceGateBlock.FACING,
+                            net.minecraft.core.Direction.from2DDataValue(metadata & 3))
+                    .setValue(net.minecraft.world.level.block.FenceGateBlock.OPEN, (metadata & 4) != 0);
+        }
+
+        // Slabs: bit 8 = upper half (a double slab stays double; resolveVanillaBlockState makes 43/125 double)
+        if (block instanceof net.minecraft.world.level.block.SlabBlock
+                && current.hasProperty(net.minecraft.world.level.block.SlabBlock.TYPE)) {
+            if (current.getValue(net.minecraft.world.level.block.SlabBlock.TYPE)
+                    == net.minecraft.world.level.block.state.properties.SlabType.DOUBLE) {
+                return current;
+            }
+            return current.setValue(net.minecraft.world.level.block.SlabBlock.TYPE, (metadata & 8) != 0
+                    ? net.minecraft.world.level.block.state.properties.SlabType.TOP
+                    : net.minecraft.world.level.block.state.properties.SlabType.BOTTOM);
+        }
+
+        // Stairs: reverse of deriveVanillaMetadata's 1.5.2 stairs encoding (0=E, 1=W, 2=S, 3=N | 4 = upside-down).
+        // Ahead of the generic HORIZONTAL_FACING branch, which skipped meta 0/1 (DOWN/UP: not horizontal), so FC
+        // writes of east/west bottom stairs were dropped.
+        if (block instanceof net.minecraft.world.level.block.StairBlock
+                && current.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)
+                && current.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)) {
+            net.minecraft.core.Direction stairDir;
+            switch (metadata & 3) {
+                case 0: stairDir = net.minecraft.core.Direction.EAST; break;
+                case 1: stairDir = net.minecraft.core.Direction.WEST; break;
+                case 2: stairDir = net.minecraft.core.Direction.SOUTH; break;
+                default: stairDir = net.minecraft.core.Direction.NORTH; break;
+            }
+            return current
+                    .setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING,
+                            stairDir)
+                    .setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF,
+                            (metadata & 4) != 0
+                                    ? net.minecraft.world.level.block.state.properties.Half.TOP
+                                    : net.minecraft.world.level.block.state.properties.Half.BOTTOM);
+        }
+
+        // Trapdoors: reverse of deriveVanillaMetadata's 1.5.2 trapdoor encoding (0=N, 1=S, 2=W, 3=E | 4 = open
+        // | 8 = upper half). Used to fall into the stairs mapping above (shared HORIZONTAL_FACING + HALF).
+        if (block instanceof net.minecraft.world.level.block.TrapDoorBlock
+                && current.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)
+                && current.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.OPEN)
+                && current.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)) {
+            net.minecraft.core.Direction trapDir;
+            switch (metadata & 3) {
+                case 1: trapDir = net.minecraft.core.Direction.SOUTH; break;
+                case 2: trapDir = net.minecraft.core.Direction.WEST; break;
+                case 3: trapDir = net.minecraft.core.Direction.EAST; break;
+                default: trapDir = net.minecraft.core.Direction.NORTH; break;
+            }
+            return current
+                    .setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING,
+                            trapDir)
+                    .setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.OPEN,
+                            (metadata & 4) != 0)
+                    .setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF,
+                            (metadata & 8) != 0
+                                    ? net.minecraft.world.level.block.state.properties.Half.TOP
+                                    : net.minecraft.world.level.block.state.properties.Half.BOTTOM);
+        }
+
         // Blocks with HORIZONTAL_FACING (furnace, chest, ladder, etc.)
         // FC metadata: 2=north, 3=south, 4=west, 5=east
         if (current.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)) {
@@ -382,28 +597,8 @@ public class WorldBridge extends btw.modern.World {
             net.minecraft.core.Direction dir = legacyFacingToDirection(facingBits);
             // HORIZONTAL_FACING only accepts horizontal directions
             if (dir.getAxis().isHorizontal()) {
-                BlockState result = current.setValue(
+                return current.setValue(
                         net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING, dir);
-                // Stairs: bit 2 = upside-down
-                if (current.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF)) {
-                    // Stairs use different facing encoding: 0=east,1=west,2=south,3=north
-                    net.minecraft.core.Direction stairDir;
-                    switch (metadata & 3) {
-                        case 0: stairDir = net.minecraft.core.Direction.EAST; break;
-                        case 1: stairDir = net.minecraft.core.Direction.WEST; break;
-                        case 2: stairDir = net.minecraft.core.Direction.SOUTH; break;
-                        case 3: stairDir = net.minecraft.core.Direction.NORTH; break;
-                        default: stairDir = net.minecraft.core.Direction.EAST;
-                    }
-                    result = current.setValue(
-                            net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING, stairDir);
-                    result = result.setValue(
-                            net.minecraft.world.level.block.state.properties.BlockStateProperties.HALF,
-                            (metadata & 4) != 0
-                                    ? net.minecraft.world.level.block.state.properties.Half.TOP
-                                    : net.minecraft.world.level.block.state.properties.Half.BOTTOM);
-                }
-                return result;
             }
         }
 
@@ -479,11 +674,21 @@ public class WorldBridge extends btw.modern.World {
             return Blocks.REDSTONE_TORCH.defaultBlockState();
         }
 
-        // For other vanilla blocks, get the modern block and apply metadata
-        net.minecraft.world.level.block.Block mcBlock = ProxyRegistry.getModernBlock(blockID);
+        // For other vanilla blocks, get the modern block and apply metadata. The subtype bits pick the
+        // flattened variant first (spruce log 17:1, orange wool 35:1, cut sandstone 24:2, cobble slab 44:3),
+        // else the id's canonical block; 43/125 are the double forms of the 44/126 slabs.
+        net.minecraft.world.level.block.Block mcBlock = ProxyRegistry.getModernBlockVariant(blockID, metadata);
+        if (mcBlock == null) {
+            mcBlock = ProxyRegistry.getModernBlock(blockID);
+        }
         if (mcBlock != null) {
-            BlockState state = mcBlock.defaultBlockState();
-            return applyFcMetadataToVanillaBlock(state, metadata);
+            BlockState state = applyFcMetadataToVanillaBlock(mcBlock.defaultBlockState(), metadata);
+            if ((blockID == 43 || blockID == 125)
+                    && state.hasProperty(net.minecraft.world.level.block.SlabBlock.TYPE)) {
+                state = state.setValue(net.minecraft.world.level.block.SlabBlock.TYPE,
+                        net.minecraft.world.level.block.state.properties.SlabType.DOUBLE);
+            }
+            return state;
         }
         return null;
     }
@@ -582,10 +787,6 @@ public class WorldBridge extends btw.modern.World {
         if (proxy != null) {
             BlockState state = proxy.defaultBlockState()
                     .setValue(ProxyBlock.META, Math.min(Math.max(metadata, 0), 15));
-            if (blockID == 241) {
-                LOGGER.info("[PLACE-HEMP] at {} proxy={} randomTick={} state={}",
-                        pos, proxy, state.isRandomlyTicking(), state);
-            }
             boolean result = level.setBlock(pos, state, flags);
 
             // Restore saved tile entity data
@@ -608,7 +809,9 @@ public class WorldBridge extends btw.modern.World {
         // and apply FC metadata → MC block state translation
         BlockState vanillaState = resolveVanillaBlockState(blockID, metadata);
         if (vanillaState != null) {
-            vanillaMetaOverrides.put(pos.immutable(), metadata);
+            if (!isMetaFullyDerived(vanillaState.getBlock())) {
+                vanillaMetaOverrides.put(pos.immutable(), new MetaOverride(vanillaState.getBlock(), metadata));
+            }
             // Use flags WITHOUT block-update bit for blocks that attach to faces
             // (torches, levers, etc.) — FC manages its own update chain and MC's
             // neighborChanged would break them via canSurvive checks during turntable
@@ -636,16 +839,14 @@ public class WorldBridge extends btw.modern.World {
         BlockPos pos = new BlockPos(x, y, z);
         BlockState current = level.getBlockState(pos);
         if (current.hasProperty(ProxyBlock.META)) {
-            int oldMeta = current.getValue(ProxyBlock.META);
             BlockState newState = current.setValue(ProxyBlock.META, Math.min(Math.max(metadata, 0), 15));
             vanillaMetaOverrides.remove(pos); // clear any override
-            boolean result = level.setBlock(pos, newState, flags);
-            LOGGER.info("[SETMETA] at {} oldMeta={} newMeta={} flags={} result={} block={}",
-                    pos, oldMeta, metadata, flags, result, current.getBlock());
-            return result;
+            return level.setBlock(pos, newState, flags);
         }
         // Vanilla block without META — translate FC metadata to MC block state
-        vanillaMetaOverrides.put(pos.immutable(), metadata);
+        if (!isMetaFullyDerived(current.getBlock())) {
+            vanillaMetaOverrides.put(pos.immutable(), new MetaOverride(current.getBlock(), metadata));
+        }
         BlockState newState = applyFcMetadataToVanillaBlock(current, metadata);
         if (newState != current) {
             return level.setBlock(pos, newState, flags);
@@ -666,12 +867,13 @@ public class WorldBridge extends btw.modern.World {
     
     public void setBlockTileEntity(int x, int y, int z, TileEntity tileEntity) {
         BlockPos pos = new BlockPos(x, y, z);
-        LOGGER.info("[SET-TE] pos={} fcTe={} burnTime={}",
-                pos, tileEntity != null ? tileEntity.getClass().getSimpleName() : "null",
-                tileEntity instanceof btw.modern.TileEntityFurnace f ? f.furnaceBurnTime : "N/A");
         if (tileEntity instanceof TileEntityBridge bridge) {
-            // Re-use the real BlockEntity wrapped by the bridge
-            level.setBlockEntity(bridge.getBlockEntity());
+            // Re-use the real BlockEntity wrapped by the bridge (null once that BlockEntity
+            // has been collected -- the bridge only holds it weakly)
+            BlockEntity wrapped = bridge.getBlockEntity();
+            if (wrapped != null) {
+                level.setBlockEntity(wrapped);
+            }
         } else if (tileEntity != null) {
             // FC code created a pure FC TileEntity. Check if a
             // ProxyBlockEntity already exists at this position and
@@ -754,10 +956,24 @@ public class WorldBridge extends btw.modern.World {
     
     public void scheduleBlockUpdate(int x, int y, int z, int blockID, int delay) {
         BlockPos pos = new BlockPos(x, y, z);
-        net.minecraft.world.level.block.Block modernBlock = ProxyRegistry.getModernBlock(blockID);
+        net.minecraft.world.level.block.Block modernBlock = modernBlockAt(pos, blockID);
         if (modernBlock != null) {
             level.scheduleTick(pos, modernBlock, delay);
         }
+    }
+
+    /**
+     * The MC block FC means by a legacy id at a position: the block actually there when it reads as that id
+     * (spruce leaves / orange wool for 18 / 35), else the id's canonical block. MC drops a scheduled tick or
+     * block event whose block is not the one at the position (ServerLevel.tickBlock / doBlockEvent check
+     * state.is(block)), so ticks FC scheduled on any non-canonical variant were lost.
+     */
+    private net.minecraft.world.level.block.Block modernBlockAt(BlockPos pos, int blockID) {
+        net.minecraft.world.level.block.Block here = level.getBlockState(pos).getBlock();
+        if (blockID > 0 && ProxyRegistry.getBlockId(here) == blockID) {
+            return here;
+        }
+        return ProxyRegistry.getModernBlock(blockID);
     }
 
     
@@ -769,7 +985,7 @@ public class WorldBridge extends btw.modern.World {
     @Override
     public boolean isBlockTickScheduled(int x, int y, int z, int blockID) {
         BlockPos pos = new BlockPos(x, y, z);
-        net.minecraft.world.level.block.Block modernBlock = ProxyRegistry.getModernBlock(blockID);
+        net.minecraft.world.level.block.Block modernBlock = modernBlockAt(pos, blockID);
         if (modernBlock != null) {
             return level.getBlockTicks().hasScheduledTick(pos, modernBlock);
         }
@@ -1021,20 +1237,56 @@ public class WorldBridge extends btw.modern.World {
     /**
      * Maps FC entity instances to their Forge proxy counterpart so we
      * can look up the proxy for removal, position sync, etc.
+     * Values are held weakly too: the proxy owns its FC entity, so a strong value pinned
+     * the weak key and every FC-spawned proxy stayed reachable for the world's lifetime (RE2).
      */
-    private final Map<btw.modern.Entity, net.minecraft.world.entity.Entity> fcToForgeEntity =
+    private final WeakValueMap<btw.modern.Entity, net.minecraft.world.entity.Entity> fcToForgeEntity =
+            new WeakValueMap<>();
+
+    /**
+     * FC views of non-living vanilla entities for FC projectile hit tests ({@link VanillaProjectileTarget}).
+     * Weak keys; a view holds its entity weakly and otherwise reaches only this bridge, so an entry dies with
+     * its entity and the whole map with the bridge. Server thread only.
+     */
+    private final Map<net.minecraft.world.entity.Entity, VanillaProjectileTarget> projectileTargets =
             new WeakHashMap<>();
+
+    /**
+     * WeakHashMap whose values are WeakReferences, exposing the get/put/remove/clear subset
+     * fcToForgeEntity uses. A value is resolvable while something else (the level's entity
+     * storage) keeps it alive; once collected, get() answers null like a missing mapping.
+     */
+    private static final class WeakValueMap<K, V> {
+        private final Map<K, java.lang.ref.WeakReference<V>> map = new WeakHashMap<>();
+
+        V get(Object key) {
+            java.lang.ref.WeakReference<V> ref = map.get(key);
+            return ref != null ? ref.get() : null;
+        }
+
+        V put(K key, V value) {
+            java.lang.ref.WeakReference<V> old = map.put(key, new java.lang.ref.WeakReference<>(value));
+            return old != null ? old.get() : null;
+        }
+
+        V remove(Object key) {
+            java.lang.ref.WeakReference<V> old = map.remove(key);
+            return old != null ? old.get() : null;
+        }
+
+        void clear() {
+            map.clear();
+        }
+    }
 
     
     public boolean spawnEntityInWorld(btw.modern.Entity entity) {
         if (entity == null) return false;
         try {
-            LOGGER.info("spawnEntityInWorld: {} at ({}, {}, {}) dim={}",
-                    entity.getClass().getSimpleName(), entity.posX, entity.posY, entity.posZ,
-                    level.dimension().location());
-            // DIAGNOSTIC: overworld ghasts come only from possessed-squid conversion.
-            // A [GHAST-SPAWN] in dim=minecraft:overworld confirms the possession chain
-            // fired -- correlate with the BTW-Possession log to find where it seeded.
+            // DIAGNOSTIC (design_build_logging U10 F): overworld ghasts come only from possessed-squid
+            // conversion. A [GHAST-SPAWN] in dim=minecraft:overworld confirms the possession chain fired --
+            // correlate with the BTW-Possession log (PossessionDiagnostics). Kept while STUB_CATALOGUE (f) is
+            // open; remove together with PossessionDiagnostics.
             if ("FCEntityGhast".equals(entity.getClass().getSimpleName())) {
                 LOGGER.warn("[GHAST-SPAWN] FCEntityGhast (squid->ghast conversion) dim={} pos=({}, {}, {})",
                         level.dimension().location(), entity.posX, entity.posY, entity.posZ);
@@ -1047,12 +1299,10 @@ public class WorldBridge extends btw.modern.World {
                 return false;
             }
             fcToForgeEntity.put(entity, proxy);
-            boolean result = level.addFreshEntity(proxy);
-            LOGGER.info("spawnEntityInWorld result: {} for {}", result, entity.getClass().getSimpleName());
-            return result;
+            return level.addFreshEntity(proxy);
         } catch (Exception e) {
-            LOGGER.debug("Failed to spawn proxy for {}: {}",
-                    entity.getClass().getSimpleName(), e.getMessage());
+            // Was DEBUG with the message only: a failing FC spawn (drops, projectiles, offspring) was invisible.
+            warnOncePerThrowSite("SPAWN", "spawnEntityInWorld(" + entity.getClass().getSimpleName() + ")", e);
             return false;
         }
     }
@@ -1070,14 +1320,23 @@ public class WorldBridge extends btw.modern.World {
     @SuppressWarnings("unchecked")
     public List getEntitiesWithinAABB(Class entityClass, AxisAlignedBB aabb) {
         net.minecraft.world.phys.AABB forgeAABB = toForgeAABB(aabb);
+        // 1.5.2 World.getEntitiesWithinAABB returned EntityItems like any entity. MC ItemEntities are not
+        // proxies (EntityProxyFactory.createItemEntity), so they are exposed through their ItemEntityBridge
+        // view whenever the requested class admits an EntityItem: EntityAnimal.CheckForLooseFood
+        // (vanilla/server EntityAnimal.java:1322-1368), FCEntityAIMoveToLooseFood:59, FCBlockCookingVessel:60,
+        // FCBlockBellows:432, the mob CheckForLooseFood variants, and frozen EntityLiving loot pickup
+        // (EntityLiving.java:1933-2012; its onItemPickup cast to WorldServer, :2850, holds since WorldBridge
+        // became one, so the picked-up item is setDead() instead of duplicated).
+        final boolean wantItems = entityClass.isAssignableFrom(ItemEntityBridge.class);
         List<net.minecraft.world.entity.Entity> forgeEntities =
                 level.getEntities((net.minecraft.world.entity.Entity) null, forgeAABB,
-                        e -> matchesFcClass(e, entityClass));
+                        e -> e instanceof net.minecraft.world.entity.item.ItemEntity
+                                ? wantItems : matchesFcClass(e, entityClass));
         // Return the FC entity instances rather than the proxies so FC
         // code can cast them to the expected FC types.
         List result = new ArrayList();
         for (net.minecraft.world.entity.Entity forgeEntity : forgeEntities) {
-            btw.modern.Entity fc = extractFcEntity(forgeEntity);
+            btw.modern.Entity fc = extractFcEntityOrItem(forgeEntity);
             if (fc != null && entityClass.isInstance(fc)) {
                 result.add(fc);
             }
@@ -1088,13 +1347,26 @@ public class WorldBridge extends btw.modern.World {
     
     public List getEntitiesWithinAABBExcludingEntity(btw.modern.Entity entity, AxisAlignedBB aabb) {
         net.minecraft.world.phys.AABB forgeAABB = toForgeAABB(aabb);
-        net.minecraft.world.entity.Entity excludeProxy = fcToForgeEntity.get(entity);
+        net.minecraft.world.entity.Entity excludeProxy = entity instanceof ItemEntityBridge ib
+                ? ib.getRealEntity() : fcToForgeEntity.get(entity);
+        // 1.5.2 returned every entity in the box. FC projectiles test them all (EntityArrow.java:234-259,
+        // EntityThrowable.java:164, EntityFireball.java:133: canBeCollidedWith + boundingBox intercept), so for
+        // them vanilla MC entities are wrapped too -- FC arrows / thrown items / fireballs used to fly through
+        // every vanilla mob, boat, end crystal and dragon part (wrapVanillaForFc). Other queries keep FC
+        // entities and items only: frozen EntityLiving.func_85033_bc pushes what it finds, and MC already
+        // pushes vanilla entities apart.
+        final boolean wrapVanilla = isFcProjectile(entity);
         List<net.minecraft.world.entity.Entity> forgeEntities =
                 level.getEntities(excludeProxy, forgeAABB, e -> true);
         List result = new ArrayList();
         for (net.minecraft.world.entity.Entity forgeEntity : forgeEntities) {
-            btw.modern.Entity fc = extractFcEntity(forgeEntity);
-            if (fc != null) {
+            btw.modern.Entity fc = extractFcEntityOrItem(forgeEntity);
+            if (fc == null && wrapVanilla) {
+                fc = wrapVanillaForFc(forgeEntity);
+            }
+            // `fc != entity`: puppets VanillaMobReplacer/chunk loading created are not in fcToForgeEntity, so
+            // excludeProxy is null for them and 1.5.2's "excluding entity" must be applied here
+            if (fc != null && fc != entity) {
                 result.add(fc);
             }
         }
@@ -1152,6 +1424,280 @@ public class WorldBridge extends btw.modern.World {
     }
 
     /**
+     * {@link #extractFcEntity} plus MC ItemEntities exposed as their FC EntityItem view (design_items U3).
+     * Spawn-cap counting, the squid-possession cap and GetClosestEntityMatchingCriteriaWithinRange stay on
+     * extractFcEntity: items never count there, and it avoids wrapping every item in the level.
+     */
+    private static btw.modern.Entity extractFcEntityOrItem(net.minecraft.world.entity.Entity forgeEntity) {
+        if (forgeEntity instanceof net.minecraft.world.entity.item.ItemEntity ie) {
+            return ItemEntityBridge.wrap(ie);
+        }
+        return extractFcEntity(forgeEntity);
+    }
+
+    /** FC projectiles whose 1.5.2 onUpdate hit-tests every entity getEntitiesWithinAABBExcludingEntity returns. */
+    private static boolean isFcProjectile(btw.modern.Entity entity) {
+        return entity instanceof btw.modern.EntityArrow
+                || entity instanceof btw.modern.EntityThrowable
+                || entity instanceof btw.modern.EntityFireball;
+    }
+
+    /**
+     * A vanilla MC entity with no FC counterpart, wrapped for an FC projectile's hit test, or null. Only
+     * entities a vanilla projectile could hit are returned (Projectile.canHitEntity -> canBeHitByProjectile =
+     * isAlive && isPickable): the ender dragon body is not pickable but its parts are, as in 1.5.2
+     * (EntityDragonPart). Living ones get the cached LivingEntityBridge (attackEntityFrom -> MC hurt,
+     * addVelocity -> MC knockback, setFire -> MC fire), everything else its cached
+     * {@link VanillaProjectileTarget} (boats, minecarts, paintings, item frames, End crystals, dragon parts,
+     * fireballs), which forwards the hit to MC's own hurt() -- the shared EntityBridge answers
+     * attackEntityFrom with false, which the frozen projectiles treat as a ricochet. Re-synced, with its box
+     * set from MC: the bridges' syncFromReal leaves boundingBox at the constructor's empty box, and the
+     * projectile intersects exactly that box (EntityArrow.java:245-247).
+     */
+    private btw.modern.Entity wrapVanillaForFc(net.minecraft.world.entity.Entity forgeEntity) {
+        // Items, proxies and players have their own FC object (extractFcEntityOrItem); one that is not available
+        // (removed item, puppet without its FC entity yet) must not be wrapped as a generic vanilla entity.
+        if (forgeEntity instanceof net.minecraft.world.entity.item.ItemEntity
+                || forgeEntity instanceof ProxyMob || forgeEntity instanceof ProxyAnimal
+                || forgeEntity instanceof ProxyPathfinderMob || forgeEntity instanceof ProxyEntity
+                || forgeEntity instanceof net.minecraft.world.entity.player.Player) {
+            return null;
+        }
+        try {
+            if (!forgeEntity.canBeHitByProjectile()) return null;
+            btw.modern.Entity fc;
+            if (forgeEntity instanceof net.minecraft.world.entity.LivingEntity living) {
+                btw.modern.EntityLiving wrapped = LivingEntityBridge.wrapLiving(living);
+                if (wrapped instanceof LivingEntityBridge lb) {
+                    lb.syncFromReal();
+                }
+                fc = wrapped;
+            } else {
+                VanillaProjectileTarget target = projectileTargets.get(forgeEntity);
+                if (target == null) {
+                    target = new VanillaProjectileTarget(forgeEntity, this);
+                    projectileTargets.put(forgeEntity, target);
+                }
+                target.syncFromReal(forgeEntity);
+                fc = target;
+            }
+            if (fc == null) return null;
+            net.minecraft.world.phys.AABB bb = forgeEntity.getBoundingBox();
+            fc.boundingBox.setBounds(bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ);
+            return fc;
+        } catch (Throwable t) {
+            warnOncePerThrowSite("WRAP", "wrapping " + forgeEntity.getClass().getSimpleName() + " for FC", t);
+            return null;
+        }
+    }
+
+    /**
+     * The MC entity an FC entity stands for: the real entity behind a player / living / item / vanilla-target
+     * view, or an FC entity's proxy ({@link #proxyFor}). Null if none.
+     */
+    private net.minecraft.world.entity.Entity toMcEntity(btw.modern.Entity fc) {
+        if (fc == null) return null;
+        if (fc instanceof PlayerBridge pb) return pb.getRealPlayer();
+        if (fc instanceof LivingEntityBridge lb) return lb.getRealEntity();
+        if (fc instanceof EntityBridge eb) return eb.getRealEntity();
+        if (fc instanceof ItemEntityBridge ib) return ib.getRealEntity();
+        if (fc instanceof VanillaProjectileTarget target) return target.real();
+        return proxyFor(fc);
+    }
+
+    /**
+     * MC damage source for an FC one that hits an MC entity. The 1.5.2 projectile sources -- DamageSource
+     * causeArrowDamage / causeThrownDamage / causeFireballDamage / causeIndirectMagicDamage, all
+     * EntityDamageSourceIndirect(type, projectile, shooter) -- become the matching 1.20.1 type with the
+     * projectile's MC entity as the direct and the shooter's as the causing entity, so the victim credits and
+     * retaliates against the shooter, shields and projectile protection apply, and the death message reads
+     * "shot by". DamageSources.arrow / fireball take an AbstractArrow / Fireball, which an FC projectile's
+     * ProxyEntity is not, so the source is built from the registry holder exactly as DamageSources.source(key,
+     * direct, causing) does. Everything else goes through {@link DamageSourceMapping#getModern}. Never throws.
+     */
+    public static net.minecraft.world.damagesource.DamageSource toMcDamageSource(
+            btw.modern.DamageSource fcSource, ServerLevel level) {
+        if (fcSource instanceof btw.modern.EntityDamageSourceIndirect && fcSource.damageType != null) {
+            ResourceKey<net.minecraft.world.damagesource.DamageType> type = switch (fcSource.damageType) {
+                case "arrow" -> net.minecraft.world.damagesource.DamageTypes.ARROW;
+                case "thrown" -> net.minecraft.world.damagesource.DamageTypes.THROWN;
+                case "fireball" -> net.minecraft.world.damagesource.DamageTypes.FIREBALL;
+                // causeFireballDamage without a shooter: EntityDamageSourceIndirect("onFire", fireball, fireball)
+                case "onFire" -> net.minecraft.world.damagesource.DamageTypes.UNATTRIBUTED_FIREBALL;
+                case "indirectMagic" -> net.minecraft.world.damagesource.DamageTypes.INDIRECT_MAGIC;
+                default -> null;
+            };
+            if (type != null) {
+                try {
+                    WorldBridge bridge = getOrCreate(level);
+                    net.minecraft.world.entity.Entity direct = bridge.toMcEntity(fcSource.getSourceOfDamage());
+                    net.minecraft.world.entity.Entity causing = bridge.toMcEntity(fcSource.getEntity());
+                    if (causing == null && type == net.minecraft.world.damagesource.DamageTypes.FIREBALL) {
+                        type = net.minecraft.world.damagesource.DamageTypes.UNATTRIBUTED_FIREBALL; // as DamageSources.fireball
+                    }
+                    net.minecraft.core.Registry<net.minecraft.world.damagesource.DamageType> types =
+                            level.registryAccess().registryOrThrow(net.minecraft.core.registries.Registries.DAMAGE_TYPE);
+                    return new net.minecraft.world.damagesource.DamageSource(
+                            types.getHolderOrThrow(type), direct, causing);
+                } catch (Throwable t) {
+                    warnOncePerThrowSite("DAMAGE-SOURCE", "mapping FC damage source '" + fcSource.damageType + "'", t);
+                }
+            }
+        }
+        return DamageSourceMapping.getModern(fcSource, level);
+    }
+
+    /**
+     * FC view of a NON-living vanilla entity for an FC projectile's hit test (boat, minecart, painting, item
+     * frame, End crystal, ender dragon part, ghast fireball, shulker bullet, ...). In 1.5.2 the projectile
+     * damaged these through their own attackEntityFrom (EntityBoat, EntityHanging, EntityEnderCrystal,
+     * EntityDragonPart -> EntityDragon.attackEntityFromPart); here the hit is MC's own hurt() with the
+     * projectile's MC damage source ({@link #toMcDamageSource}), and hurt()'s result is returned: boats and
+     * minecarts take damage, hanging entities break, the crystal explodes, EnderDragonPart.hurt forwards to the
+     * dragon with the head multiplier, and a rejected hit (falling block, invulnerable entity) ricochets
+     * (vanilla/server EntityArrow.java:308-347), exactly as a vanilla arrow does (AbstractArrow.onHitEntity).
+     * Cached per entity ({@link #projectileTargets}); holds the entity weakly, like EntityBridge.
+     */
+    private static final class VanillaProjectileTarget extends btw.modern.Entity {
+        private final java.lang.ref.WeakReference<net.minecraft.world.entity.Entity> realRef;
+
+        VanillaProjectileTarget(net.minecraft.world.entity.Entity real, WorldBridge world) {
+            super(null); // btw.modern.Entity(World), as EntityBridge
+            this.realRef = new java.lang.ref.WeakReference<>(real);
+            this.worldObj = world;
+        }
+
+        /** The wrapped entity; null while super(null) runs or once it has been collected. */
+        net.minecraft.world.entity.Entity real() {
+            return realRef != null ? realRef.get() : null;
+        }
+
+        /** Position, motion and liveness from MC before each hit test (the box is set by wrapVanillaForFc). */
+        void syncFromReal(net.minecraft.world.entity.Entity real) {
+            this.entityId = real.getId();
+            this.posX = real.getX();
+            this.posY = real.getY();
+            this.posZ = real.getZ();
+            this.prevPosX = real.xOld;
+            this.prevPosY = real.yOld;
+            this.prevPosZ = real.zOld;
+            net.minecraft.world.phys.Vec3 v = real.getDeltaMovement();
+            this.motionX = v.x;
+            this.motionY = v.y;
+            this.motionZ = v.z;
+            this.rotationYaw = real.getYRot();
+            this.rotationPitch = real.getXRot();
+            this.onGround = real.onGround();
+            this.isDead = real.isRemoved();
+            this.width = real.getBbWidth();
+            this.height = real.getBbHeight();
+        }
+
+        // Abstract in the frozen 1.5.2 Entity (its constructor calls entityInit); never saved.
+        @Override
+        public void entityInit() {
+        }
+
+        @Override
+        public void readEntityFromNBT(btw.modern.NBTTagCompound tag) {
+        }
+
+        @Override
+        public void writeEntityToNBT(btw.modern.NBTTagCompound tag) {
+        }
+
+        @Override
+        public boolean canBeCollidedWith() {
+            net.minecraft.world.entity.Entity r = real();
+            return r != null && r.canBeHitByProjectile();
+        }
+
+        @Override
+        public boolean attackEntityFrom(btw.modern.DamageSource damageSource, int amount) {
+            net.minecraft.world.entity.Entity r = real();
+            if (r == null || !(r.level() instanceof ServerLevel sl)) return false;
+            try {
+                return r.hurt(WorldBridge.toMcDamageSource(damageSource, sl), (float) amount);
+            } catch (Throwable t) {
+                WorldBridge.warnOncePerThrowSite("PROJECTILE-HIT",
+                        "FC projectile hit on " + r.getClass().getSimpleName(), t);
+                return false;
+            }
+        }
+
+        @Override
+        public void setFire(int seconds) {
+            net.minecraft.world.entity.Entity r = real();
+            if (r != null) {
+                r.setSecondsOnFire(seconds); // AbstractArrow.onHitEntity: a burning arrow ignites what it hits
+            }
+        }
+
+        @Override
+        public boolean isBurning() {
+            net.minecraft.world.entity.Entity r = real();
+            return r != null && r.isOnFire();
+        }
+
+        @Override
+        public boolean isEntityAlive() {
+            net.minecraft.world.entity.Entity r = real();
+            return r != null && r.isAlive();
+        }
+
+        @Override
+        public boolean canBePushed() {
+            net.minecraft.world.entity.Entity r = real();
+            return r != null && r.isPushable();
+        }
+
+        @Override
+        public void addVelocity(double x, double y, double z) {
+            this.motionX += x;
+            this.motionY += y;
+            this.motionZ += z;
+            net.minecraft.world.entity.Entity r = real();
+            if (r != null) {
+                r.push(x, y, z);
+            }
+        }
+
+        @Override
+        public void setDead() {
+            super.setDead();
+            net.minecraft.world.entity.Entity r = real();
+            if (r != null) {
+                r.discard();
+            }
+        }
+
+        @Override
+        public String getEntityName() {
+            net.minecraft.world.entity.Entity r = real();
+            return r != null ? r.getName().getString() : super.getEntityName();
+        }
+    }
+
+    /** Failure sites already reported by {@link #warnOncePerThrowSite}. */
+    private static final java.util.Set<String> LOGGED_FAILURE_SITES =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * One WARN with its stack trace per distinct throw site (stage + exception class + top frame), triage
+     * HAI-10: these failures were dropped at DEBUG with the message only (or logged without a trace), which hid
+     * how often an FC path fails and where. Reflection wrappers are unwrapped to the FC exception first.
+     */
+    private static void warnOncePerThrowSite(String stage, String what, Throwable t) {
+        Throwable cause = t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null
+                ? t.getCause() : t;
+        StackTraceElement[] frames = cause.getStackTrace();
+        String site = stage + '|' + cause.getClass().getName() + '@' + (frames.length > 0 ? frames[0] : "?");
+        if (LOGGED_FAILURE_SITES.add(site)) {
+            LOGGER.warn("[{}] {} threw {} (logged once per throw site)", stage, what, cause.toString(), cause);
+        }
+    }
+
+    /**
      * Checks whether a Forge entity wraps an FC entity that is an
      * instance of the given FC class.
      */
@@ -1182,6 +1728,9 @@ public class WorldBridge extends btw.modern.World {
 
     public void playSoundAtEntity(btw.modern.Entity entity, String sound,
                                   float volume, float pitch) {
+        // A puppet's own hurt sound raised inside its onUpdate() is held back until FCEnvHurtGuard knows
+        // whether the hit was FC's spurious inWall self-hit (dropped) or a real one (replayed) -- w1 P4.
+        if (FCEnvHurtGuard.deferSelfSound(entity, sound, volume, pitch)) return;
         try {
             SoundEvent event = resolveSoundEvent(sound);
             if (event != null && entity != null) {
@@ -1308,7 +1857,53 @@ public class WorldBridge extends btw.modern.World {
             playFcAuxSFX(effectID, x, y, z, data);
             return;
         }
-        level.levelEvent(effectID, new BlockPos(x, y, z), data);
+        playLegacyAuxSFX(effectID, x, y, z, data);
+    }
+
+    /** 1.5.2 ids already reported as having no 1.20.1 equivalent (logged once each). */
+    private static final java.util.Set<Integer> DROPPED_AUX_SFX = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * A 1.5.2 vanilla aux-SFX (id &lt; 2222; vanilla/client RenderGlobal.playAuxSFX :2169-2399), translated to
+     * its 1.20.1 level event by {@link AuxSfxMapping}. The ids are numbered differently in 1.20.1 and used to
+     * be forwarded raw: every fc_bat takeoff (1015, a 0.05-volume flutter) played GHAST_WARN at volume 10 to
+     * everyone within 64 blocks (triage GH1), a zombie infecting / curing a villager (1016 / 1017) a ghast /
+     * dragon fireball (GH3), a torch fizz (1004) a firework launch. 1.5.2 effects with no 1.20.1 event are
+     * played here (1003 door) or dropped -- never passed raw.
+     */
+    private void playLegacyAuxSFX(int effectID, int x, int y, int z, int data) {
+        try {
+            int modern = AuxSfxMapping.toModernEvent(effectID, data);
+            int modernData = modern != AuxSfxMapping.NONE ? AuxSfxMapping.toModernData(effectID, data) : 0;
+            if (modern != AuxSfxMapping.NONE && modernData != AuxSfxMapping.INVALID_DATA) {
+                level.levelEvent(null, modern, new BlockPos(x, y, z), modernData);
+            }
+            double px = x + 0.5D, py = y + 0.5D, pz = z + 0.5D;
+            switch (effectID) {
+                case 1003: // door open/close, picked at random (RenderGlobal.java:2198-2208); no 1.20.1 event
+                    playSoundEffect(px, py, pz, rand.nextBoolean() ? "random.door_open" : "random.door_close",
+                            1.0F, rand.nextFloat() * 0.1F + 0.9F);
+                    break;
+                case 1016: // FCMOD: extra slow zombie moan on villager infection (RenderGlobal.java:2260-2263)
+                    playSoundEffect(px, py, pz, "mob.zombie.say", 1.0F + rand.nextFloat(),
+                            rand.nextFloat() * 0.2F + 0.5F);
+                    break;
+                case 2001: // block 1.20.1 cannot express: no particles, but still its FC break sound
+                    if (modernData == AuxSfxMapping.INVALID_DATA) {
+                        playFcBlockSound(px, py, pz, data & 4095, true);
+                    }
+                    break;
+                default:
+                    if (modern == AuxSfxMapping.NONE && DROPPED_AUX_SFX.add(effectID)) {
+                        LOGGER.debug("1.5.2 aux-SFX {} has no 1.20.1 level event; dropped", effectID);
+                    }
+                    break;
+            }
+        } catch (Throwable t) {
+            if (DROPPED_AUX_SFX.add(-effectID - 1)) {   // negative key: "failed", logged once per id
+                LOGGER.warn("aux-SFX {} at {},{},{} failed: {}", effectID, x, y, z, t.toString());
+            }
+        }
     }
 
     /** Handles FC-custom AuxSFX IDs by playing the corresponding sounds. */
@@ -1505,10 +2100,11 @@ public class WorldBridge extends btw.modern.World {
                 playSoundEffect(px, py, pz, "mob.ghast.fireball", 0.1F, 0.5F + rand.nextFloat() * 0.1F);
                 break;
             default:
-                // Unknown FC effect — try vanilla levelEvent as fallback
-                try {
-                    level.levelEvent(effectID, new BlockPos(x, y, z), data);
-                } catch (Exception ignored) {}
+                // FC effect with no sound side here (particle-only 2241/2249/2250/2282, ...). Not forwarded
+                // raw: 1.20.1 level-event ids mean something else (GH1).
+                if (DROPPED_AUX_SFX.add(effectID)) {
+                    LOGGER.debug("FC aux-SFX {} has no sound mapping; dropped", effectID);
+                }
                 break;
         }
     }
@@ -1531,9 +2127,12 @@ public class WorldBridge extends btw.modern.World {
         } catch (Throwable ignored) {}
     }
 
+    // 1.5.2 World.playAuxSFXAtEntity reaches the same RenderGlobal.playAuxSFX (FC ids >= 2222 via its
+    // FCAddOnHandler default branch), so it shares playAuxSFX's translation. Everyone hears it, as before:
+    // the 1.5.2 exclusion of `player` assumed that player's client had already played it locally.
     public void playAuxSFXAtEntity(EntityPlayer player, int effectID,
                                    int x, int y, int z, int data) {
-        level.levelEvent(null, effectID, new BlockPos(x, y, z), data);
+        playAuxSFX(effectID, x, y, z, data);
     }
 
     // 1.5.2 World.func_82739_e (vanilla/server World.java:3900) — sends an auxSFX to all
@@ -1574,9 +2173,14 @@ public class WorldBridge extends btw.modern.World {
                     // playAuxSFX sound mapping.
                     playFcAuxSFX(effectID, x, y, z, data);
                 } else {
-                    // Vanilla broadcast IDs (1013 wither spawn, 1018 dragon death)
-                    // — global level event reaches every player like broadcastSound.
-                    level.globalLevelEvent(effectID, new BlockPos(x, y, z), data);
+                    // Vanilla broadcast IDs: 1.5.2 RenderGlobal.broadcastSound plays only 1013 (wither spawn)
+                    // and 1018 (dragon death), which 1.20.1 numbers 1023 / 1028; a global level event reaches
+                    // every player like broadcastSound. Any other id played nothing in 1.5.2 (and was
+                    // forwarded raw here before).
+                    int global = AuxSfxMapping.toModernGlobalEvent(effectID);
+                    if (global != AuxSfxMapping.NONE) {
+                        level.globalLevelEvent(global, new BlockPos(x, y, z), data);
+                    }
                 }
                 break;
         }
@@ -1728,8 +2332,9 @@ public class WorldBridge extends btw.modern.World {
     public btw.modern.Entity getEntityByID(int id) {
         net.minecraft.world.entity.Entity mcEntity = level.getEntity(id);
         if (mcEntity == null) return null;
-        // Reuse the existing extractFcEntity helper which handles all proxy types
-        return extractFcEntity(mcEntity);
+        // Every proxy type, players, and dropped items (their FC EntityItem view: 1.5.2 World.getEntityByID
+        // resolved EntityItems like any entity)
+        return extractFcEntityOrItem(mcEntity);
     }
 
     // 1.5.2 World.CountEntitiesThatApplyToSpawnCap (BTW-patched vanilla/server
@@ -1831,7 +2436,7 @@ public class WorldBridge extends btw.modern.World {
 
             return (btw.modern.Entity) closestEntityField.get(closestEntityInfo);
         } catch (Exception e) {
-            LOGGER.debug("GetClosestEntityMatchingCriteriaWithinRange failed: {}", e.getMessage());
+            warnOncePerThrowSite("CLOSEST-ENTITY", "GetClosestEntityMatchingCriteriaWithinRange", e);
             return null;
         }
     }
@@ -1843,15 +2448,35 @@ public class WorldBridge extends btw.modern.World {
     @Override
     public void setEntityState(btw.modern.Entity entity, byte state) {
         if (entity == null) return;
-        net.minecraft.world.entity.Entity proxy = fcToForgeEntity.get(entity);
         // Drop the hurt flash (event 2) FC raises on a puppet inside its OWN onUpdate() -- that's
         // its spurious self-suffocation (isEntityInsideOpaqueBlock false-fires on FC-driven
         // puppets). Hits it lands on other entities pass the victim (!= updater) and still flash,
         // and real combat runs outside onUpdate, so only self-inflicted flashes are swallowed.
         if (state == 2 && FCEnvHurtGuard.isSelfHurt(entity)) return;
+        net.minecraft.world.entity.Entity proxy = proxyFor(entity);
         if (proxy != null) {
             level.broadcastEntityEvent(proxy, state);
         }
+    }
+
+    /**
+     * The MC entity standing for an FC entity: the proxy spawnEntityInWorld registered, or -- for the
+     * puppets VanillaMobReplacer / MC spawning / chunk loading created, which never pass through
+     * spawnEntityInWorld -- the level entity with the FC entity's id whose FC entity is this very object
+     * (the proxies keep fcEntity.entityId == getId() every tick; the identity check rejects id collisions
+     * with FC's own counter). Players are left out: their events come from MC itself. Null if none.
+     */
+    private net.minecraft.world.entity.Entity proxyFor(btw.modern.Entity entity) {
+        if (entity == null || level == null) return null;
+        net.minecraft.world.entity.Entity proxy = fcToForgeEntity.get(entity);
+        if (proxy == null && entity.entityId != 0) {
+            net.minecraft.world.entity.Entity byId = level.getEntity(entity.entityId);
+            if (byId != null && !(byId instanceof net.minecraft.world.entity.player.Player)
+                    && extractFcEntity(byId) == entity) {
+                proxy = byId;
+            }
+        }
+        return proxy;
     }
 
     // ================================================================
@@ -1859,24 +2484,46 @@ public class WorldBridge extends btw.modern.World {
     // ================================================================
 
     
+    // 1.5.2 World.createExplosion(entity, x, y, z, size, flag) == newExplosion(entity, x, y, z, size, false, flag)
+    // (vanilla/server World.java:2287-2290): the flag is isSmoking -- block damage, never fire. Creepers pass
+    // the mobGriefing gamerule as that flag (EntityCreeper.java:153-160). It used to be stored as isFlaming.
     public Explosion createExplosion(btw.modern.Entity entity, double x, double y, double z,
-                                     float strength, boolean isFlaming) {
-        level.explode(null, x, y, z, strength,
-                net.minecraft.world.level.Level.ExplosionInteraction.BLOCK);
-        Explosion fcExplosion = new Explosion(this, entity, x, y, z, strength);
-        fcExplosion.isFlaming = isFlaming;
-        return fcExplosion;
+                                     float strength, boolean isSmoking) {
+        return newExplosion(entity, x, y, z, strength, false, isSmoking);
     }
 
 
+    // 1.5.2 World.newExplosion: isFlaming sets fires, isSmoking destroys blocks (Explosion.doExplosionB).
+    // The FC entity's proxy is the MC source, so deaths read "blown up by Creeper" and the exploder is not
+    // hurt by its own blast (1.5.2 Explosion.doExplosionA excludes the exploder too) -- triage HAI-7.
     public Explosion newExplosion(btw.modern.Entity entity, double x, double y, double z,
                                   float strength, boolean isFlaming, boolean isSmoking) {
-        level.explode(null, x, y, z, strength,
-                net.minecraft.world.level.Level.ExplosionInteraction.BLOCK);
+        try {
+            net.minecraft.world.entity.Entity source = proxyFor(entity);
+            level.explode(source, x, y, z, strength, isFlaming, explosionInteraction(source, isSmoking));
+        } catch (Throwable t) {
+            warnOncePerThrowSite("EXPLOSION", "explosion at " + x + "," + y + "," + z + " (size " + strength + ")", t);
+        }
         Explosion fcExplosion = new Explosion(this, entity, x, y, z, strength);
         fcExplosion.isFlaming = isFlaming;
         fcExplosion.isSmoking = isSmoking;
         return fcExplosion;
+    }
+
+    /**
+     * 1.20.1 interaction for a 1.5.2 isSmoking flag. false -> NONE (no block damage, e.g. a creeper or a
+     * wither skull with mobGriefing off). true from a mob (creeper, wither) -> MOB: the 1.5.2 caller already
+     * read mobGriefing, and MOB re-checks it through Forge's EntityMobGriefingEvent like a 1.20.1 creeper.
+     * true from anything else -> BLOCK, as before: FC dynamite, blasting oil, vase, cooking vessel and TNT
+     * always destroy blocks in 1.5.2, independent of mobGriefing (ghast fireballs and wither skulls pass the
+     * gamerule themselves).
+     */
+    private static net.minecraft.world.level.Level.ExplosionInteraction explosionInteraction(
+            net.minecraft.world.entity.Entity source, boolean isSmoking) {
+        if (!isSmoking) return net.minecraft.world.level.Level.ExplosionInteraction.NONE;
+        return source instanceof net.minecraft.world.entity.Mob
+                ? net.minecraft.world.level.Level.ExplosionInteraction.MOB
+                : net.minecraft.world.level.Level.ExplosionInteraction.BLOCK;
     }
 
     // 1.5.2 World.NewExplosionNoFX (BTW-patched vanilla/server World.java:4902) —
@@ -1888,8 +2535,7 @@ public class WorldBridge extends btw.modern.World {
     @Override
     public Explosion NewExplosionNoFX(btw.modern.Entity entity, double x, double y, double z,
                                       float strength, boolean isFlaming, boolean isSmoking) {
-        net.minecraft.world.entity.Entity source =
-                entity != null ? fcToForgeEntity.get(entity) : null;
+        net.minecraft.world.entity.Entity source = proxyFor(entity);
         net.minecraft.world.level.Explosion explosion = new net.minecraft.world.level.Explosion(
                 level, source, x, y, z, strength, isFlaming,
                 isSmoking ? net.minecraft.world.level.Explosion.BlockInteraction.DESTROY_WITH_DECAY
@@ -1956,14 +2602,33 @@ public class WorldBridge extends btw.modern.World {
     // World height
     // ================================================================
 
-    
+    // 1.5.2 World.getHeight / getActualHeight are the TOP of the build range (256, and 128 under a no-sky
+    // provider's roof; vanilla/server World.java:3944-3955, the bottom was always 0). Level.getHeight is the
+    // range's SIZE (384 in the overworld, -64..320), which put the top 64 layers above the world
+    // (FCTileEntityBeacon enderman targets, FCEntityGhast destinations).
     public int getHeight() {
-        return level.getHeight();
+        return level.getMaxBuildHeight();
     }
 
     
     public int getActualHeight() {
-        return level.getHeight();
+        int top = level.getMaxBuildHeight();
+        return provider != null && provider.hasNoSky ? Math.min(128, top) : top;
+    }
+
+    // Build-range contract with Modern-Common World.getFcMinBuildHeight / getFcMaxBuildHeight (1.5.2: 0 / 256),
+    // which the bridge's frozen-code consumers (pathing below y=0, deepslate caves, superflat at -60) read
+    // instead of the hard-coded 1.5.2 range. Block reads here already go straight to the level
+    // (Level.getBlockState answers VOID_AIR outside its build range), so no 0..256 clamp applies to them.
+    // Null-safe: detach() clears the level when the server stops.
+    public int getFcMinBuildHeight() {
+        ServerLevel live = level;
+        return live != null ? live.getMinBuildHeight() : 0;
+    }
+
+    public int getFcMaxBuildHeight() {
+        ServerLevel live = level;
+        return live != null ? live.getMaxBuildHeight() : 256;
     }
 
     // ================================================================
@@ -1973,7 +2638,7 @@ public class WorldBridge extends btw.modern.World {
     
     public void addBlockEvent(int x, int y, int z, int blockID, int eventID, int eventParam) {
         BlockPos pos = new BlockPos(x, y, z);
-        net.minecraft.world.level.block.Block modernBlock = ProxyRegistry.getModernBlock(blockID);
+        net.minecraft.world.level.block.Block modernBlock = modernBlockAt(pos, blockID);
         if (modernBlock != null) {
             level.blockEvent(pos, modernBlock, eventID, eventParam);
         }
@@ -2239,7 +2904,9 @@ public class WorldBridge extends btw.modern.World {
         java.util.List list = new java.util.ArrayList();
         int minX = btw.modern.MathHelper.floor_double(aabb.minX);
         int maxX = btw.modern.MathHelper.floor_double(aabb.maxX + 1.0D);
-        int minY = btw.modern.MathHelper.floor_double(aabb.minY);
+        // 1.5.2 World.getCollidingBoundingBoxes scans from minY - 1 (vanilla/client World.java:1617) so a
+        // fence/wall's 1.5-high box in the block below still collides (stops puppets hopping fences).
+        int minY = btw.modern.MathHelper.floor_double(aabb.minY) - 1;
         int maxY = btw.modern.MathHelper.floor_double(aabb.maxY + 1.0D);
         int minZ = btw.modern.MathHelper.floor_double(aabb.minZ);
         int maxZ = btw.modern.MathHelper.floor_double(aabb.maxZ + 1.0D);
@@ -2280,6 +2947,50 @@ public class WorldBridge extends btw.modern.World {
                 for (int y = minY; y < maxY; y++) {
                     btw.modern.Material mat = getBlockMaterial(x, y, z);
                     if (mat != null && mat.isLiquid()) return true;
+                    if (fluidMaterialAt(x, y, z) != null) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 1.5.2 material of the fluid in a cell (water / lava), or null. 1.20.1 keeps water in the FluidState of
+     * non-fluid blocks (waterlogged stairs/slabs/fences/...): those keep their own legacy id -- their collision
+     * matters to FC -- so the id-based material checks miss the water they hold (triage D5). The liquid
+     * queries below also ask this.
+     */
+    private btw.modern.Material fluidMaterialAt(int x, int y, int z) {
+        net.minecraft.world.level.material.FluidState fluid = level.getFluidState(new BlockPos(x, y, z));
+        if (fluid.isEmpty()) return null;
+        if (fluid.is(net.minecraft.tags.FluidTags.WATER)) return btw.modern.Material.water;
+        if (fluid.is(net.minecraft.tags.FluidTags.LAVA)) return btw.modern.Material.lava;
+        return null;
+    }
+
+    // 1.5.2 World.handleMaterialAcceleration (vanilla/server World.java:2158), the inWater source of frozen
+    // Entity.handleWaterMovement. The id-based scan (Modern-Common World) sees mapped water and the cells
+    // getWorldBlockId reports as water (seagrass, kelp, bubble columns); a waterlogged block keeps its own
+    // id, so its water is added here as a source cell (1.5.2 level 0: no flow push). Without it an FC squid
+    // in a waterlogged cell read inWater=false and drowned FC-side (EntityWaterMob.java:63-86, triage D5).
+    @Override
+    public boolean handleMaterialAcceleration(btw.modern.AxisAlignedBB aabb, btw.modern.Material material,
+                                              btw.modern.Entity entity) {
+        boolean found = super.handleMaterialAcceleration(aabb, material, entity);
+        if (found || material != btw.modern.Material.water || level == null) return found;
+        int minX = btw.modern.MathHelper.floor_double(aabb.minX);
+        int maxX = btw.modern.MathHelper.floor_double(aabb.maxX + 1.0D);
+        int minY = btw.modern.MathHelper.floor_double(aabb.minY);
+        int maxY = btw.modern.MathHelper.floor_double(aabb.maxY + 1.0D);
+        int minZ = btw.modern.MathHelper.floor_double(aabb.minZ);
+        int maxZ = btw.modern.MathHelper.floor_double(aabb.maxZ + 1.0D);
+        for (int x = minX; x < maxX; ++x) {
+            for (int y = minY; y < maxY; ++y) {
+                for (int z = minZ; z < maxZ; ++z) {
+                    if (fluidMaterialAt(x, y, z) == btw.modern.Material.water) {
+                        double fluidTop = (double) ((float) (y + 1) - btw.modern.BlockFluid.getFluidHeightPercent(0));
+                        if ((double) maxY >= fluidTop) return true;
+                    }
                 }
             }
         }
@@ -2294,11 +3005,14 @@ public class WorldBridge extends btw.modern.World {
         int maxY = btw.modern.MathHelper.floor_double(aabb.maxY + 1.0D);
         int minZ = btw.modern.MathHelper.floor_double(aabb.minZ);
         int maxZ = btw.modern.MathHelper.floor_double(aabb.maxZ + 1.0D);
+        boolean liquid = material != null && material.isLiquid();
         for (int x = minX; x < maxX; x++) {
             for (int z = minZ; z < maxZ; z++) {
                 for (int y = minY; y < maxY; y++) {
                     btw.modern.Material mat = getBlockMaterial(x, y, z);
                     if (mat == material) return true;
+                    // water held by a waterlogged block (D5); non-liquid queries keep the block's material
+                    if (liquid && fluidMaterialAt(x, y, z) == material) return true;
                 }
             }
         }

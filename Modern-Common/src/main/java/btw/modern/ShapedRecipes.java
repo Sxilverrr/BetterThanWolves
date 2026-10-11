@@ -34,6 +34,9 @@ public class ShapedRecipes implements IRecipe {
     }
 
     private boolean checkMatch(InventoryCrafting inv, int xOffset, int yOffset, boolean mirror, int gridWidth) {
+        // fcItemMould's itemID, resolved reflectively and cached by ShapelessRecipes; <= 0 skips nothing
+        int iMouldItemID = ShapelessRecipes.GetMouldItemID();
+
         for (int x = 0; x < gridWidth; x++) {
             for (int y = 0; y < gridWidth; y++) {
                 int recipeX = x - xOffset;
@@ -50,12 +53,21 @@ public class ShapedRecipes implements IRecipe {
 
                 ItemStack actual = inv.getStackInRowAndColumn(x, y);
 
+                // FCMOD (vanilla/server ShapedRecipes.java:115-120): moulds left in the grid are ignored, so a
+                // legacy mould FCContainerSoulforge moved into the grid does not block a shaped match
+                if (actual != null && iMouldItemID > 0 && actual.itemID == iMouldItemID) {
+                    actual = null;
+                }
+
                 if (expected == null && actual != null) return false;
                 if (expected != null && actual == null) return false;
                 if (expected == null) continue;
 
                 if (actual.itemID != expected.itemID) return false;
-                if (expected.getItemDamage() != -1 && expected.getItemDamage() != actual.getItemDamage()) return false;
+                // 1.5.2 ShapedRecipes.checkMatch (vanilla/server ShapedRecipes.java:134): damage 32767
+                // (FCUtilsInventory.m_iIgnoreMetadata) matches any metadata. The old -1 test could never fire:
+                // ItemStack clamps negative damage to 0, so FC's wildcard ingredients never matched at the table.
+                if (expected.getItemDamage() != 32767 && expected.getItemDamage() != actual.getItemDamage()) return false;
             }
         }
         return true;

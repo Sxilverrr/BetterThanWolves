@@ -149,7 +149,7 @@ public class BridgeAudit {
             // overrides them per-quad with the icon's own texture name, so skip them here.
             if (p.equals("/gui/items.png") || p.equals("/terrain.png")) continue;
             String res = resolveTexture(p);
-            if (res != null && !Files.exists(Paths.get(TEX_BASE, res))) {
+            if (res != null && !Files.exists(Paths.get(TEX_BASE, res)) && !hasVanillaFallback(res)) {
                 missingRenderer.add(p + " -> textures/" + res + "   (" + loadWhere.get(p) + ")");
             }
         }
@@ -194,7 +194,8 @@ public class BridgeAudit {
 
     /** Mirrors FCEntityRenderer.resolveEntityTexture. Returns the path under textures/ (no leading slash). */
     static String resolveTexture(String fcPath) {
-        String clean = fcPath.startsWith("/") ? fcPath.substring(1) : fcPath;
+        String clean = fcPath.replace("%blur%", "").replace("%clamp%", "");
+        if (clean.startsWith("/")) clean = clean.substring(1);
         String lower = clean.toLowerCase(Locale.ROOT);
         if (lower.startsWith("btwmodtex/")) return "entity/" + lower.substring("btwmodtex/".length());
         if (!lower.contains("/") && !lower.endsWith(".png")) {
@@ -202,6 +203,17 @@ public class BridgeAudit {
             return subdir + lower + ".png";
         }
         return lower;
+    }
+
+    /** Mirrors FCEntityRenderer.vanillaFallback: paths MC itself supplies when no 1.5.2 original is bundled. */
+    static boolean hasVanillaFallback(String lowerPath) {
+        if (lowerPath.matches("armor/[a-z]+_[12](_b)?\\.png")) return true;
+        switch (lowerPath) {
+            case "armor/power.png": case "armor/witherarmor.png": case "misc/glint.png":
+            case "mob/sheep_fur.png": case "mob/spider_eyes.png": case "mob/enderman_eyes.png":
+                return true;
+            default: return false;
+        }
     }
 
     static String shortPath(String f) {

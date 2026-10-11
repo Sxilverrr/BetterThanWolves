@@ -61,12 +61,19 @@ public abstract class WorldProvider {
         return (int)(time / 24000L % 8L + 8L) % 8;
     }
 
+    // 1.5.2: WorldProvider.isSurfaceWorld returns true (vanilla/server WorldProvider.java:136-139); the Nether
+    // (WorldProviderHell.java:54-57) and the End (WorldProviderEnd.java:55-58) override it to false. The port has
+    // one provider class, so the End is told apart by WorldBridge's dimensionId 1 (isHellWorld is Nether-only).
+    // Consumer: FCBlockPortal.updateTick:46 (possession checks run only in the surface world).
     public boolean isSurfaceWorld() {
-        return !isHellWorld;
+        return !isHellWorld && dimensionId != 1;
     }
 
+    // 1.5.2: true in WorldProvider (vanilla/server WorldProvider.java:144-147), false in the Nether
+    // (WorldProviderHell.java:78-81) and the End (WorldProviderEnd.java:47-50); the End is dimensionId 1 as above.
+    // Consumer: FCChunkTracker:85 (ChunkProviderServer.unloadAllChunks, a no-op in the port).
     public boolean canRespawnHere() {
-        return !isHellWorld;
+        return !isHellWorld && dimensionId != 1;
     }
 
     public boolean isDaytime() {

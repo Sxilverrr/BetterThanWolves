@@ -4,6 +4,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 
+import java.lang.ref.WeakReference;
 import java.util.WeakHashMap;
 
 /**
@@ -23,14 +24,18 @@ import java.util.WeakHashMap;
  * PlayerBridge when the entity is a Player, or a LivingEntityBridge otherwise.
  */
 public class LivingEntityBridge extends btw.modern.EntityLiving {
-    private final LivingEntity realEntity;
+    // Weak: this bridge is the value of a WeakHashMap keyed by the same entity, so a strong
+    // reference pinned the key and the cache never evicted -- every wrapped entity (and through
+    // it its level and server) stayed reachable for the life of the JVM (triage RE2). While the
+    // entity is loaded its level keeps it alive; a bridge that outlives it reads as dead.
+    private final WeakReference<LivingEntity> realEntityRef;
     private static final WeakHashMap<LivingEntity, LivingEntityBridge> cache = new WeakHashMap<>();
 
     /**
      * Holds the entity being wrapped while super(null) runs, so virtual calls
      * dispatched from EntityLiving's field initializers (notably
      * `health = this.getMaxHealth()`) can reach the real entity before our
-     * subclass body has a chance to assign {@link #realEntity}.
+     * subclass body has a chance to assign {@link #realEntityRef}.
      */
     private static final ThreadLocal<LivingEntity> CONSTRUCTING = new ThreadLocal<>();
 
@@ -50,6 +55,11 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
         });
     }
 
+    /** Drops every cached bridge; called once the server has stopped (BTWLifecycle.onServerStopped). */
+    static void clearCache() {
+        cache.clear();
+    }
+
     /**
      * Wraps any LivingEntity as a btw.modern.EntityLiving.
      * Returns a {@link PlayerBridge} if the entity is a Player,
@@ -64,7 +74,7 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
 
     private LivingEntityBridge(LivingEntity entity) {
         super(null); // btw.modern.EntityLiving(World) constructor
-        this.realEntity = entity;
+        this.realEntityRef = new WeakReference<>(entity);
         // World bridge — use ServerLevel if available
         if (entity.level() instanceof ServerLevel sl) {
             this.worldObj = WorldBridge.getOrCreate(sl);
@@ -76,6 +86,11 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
      * Sync state FROM real MC entity TO FC entity (call before FC callbacks).
      */
     public void syncFromReal() {
+        LivingEntity realEntity = real();
+        if (realEntity == null) {
+            this.isDead = true;
+            return;
+        }
         this.posX = realEntity.getX();
         this.posY = realEntity.getY();
         this.posZ = realEntity.getZ();
@@ -110,6 +125,8 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
      * Sync state FROM FC entity TO real MC entity (call after FC callbacks).
      */
     public void syncToReal() {
+        LivingEntity realEntity = real();
+        if (realEntity == null) return;
         // Sync velocity if FC modified it (knockback, fling)
         if (this.motionX != realEntity.getDeltaMovement().x ||
             this.motionY != realEntity.getDeltaMovement().y ||
@@ -131,10 +148,15 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
     }
 
     /**
-     * Returns the underlying Forge LivingEntity.
+     * Returns the underlying Forge LivingEntity, or null once it has been unloaded and collected.
      */
     public LivingEntity getRealEntity() {
-        return realEntity;
+        return real();
+    }
+
+    // Null while super(null) runs (field not yet assigned) or after the entity was collected.
+    private LivingEntity real() {
+        return realEntityRef != null ? realEntityRef.get() : null;
     }
 
     // ================================================================
@@ -143,56 +165,72 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
 
     @Override
     public int getMaxHealth() {
-        LivingEntity target = realEntity != null ? realEntity : CONSTRUCTING.get();
-        return (int) target.getMaxHealth();
+        LivingEntity target = realEntityRef != null ? realEntityRef.get() : CONSTRUCTING.get();
+        // Orphaned bridge (entity collected): keep the last synced health as the cap.
+        return target != null ? (int) target.getMaxHealth() : Math.max(this.health, 1);
     }
 
     @Override
     public boolean isSneaking() {
-        return realEntity.isShiftKeyDown();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.isShiftKeyDown();
     }
 
     @Override
     public boolean isSprinting() {
-        return realEntity.isSprinting();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.isSprinting();
     }
 
     @Override
     public boolean isInWater() {
-        return realEntity.isInWater();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.isInWater();
     }
 
     @Override
     public boolean isBurning() {
-        return realEntity.isOnFire();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.isOnFire();
     }
 
     @Override
     public boolean handleLavaMovement() {
-        return realEntity.isInLava();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.isInLava();
     }
 
     @Override
     public boolean isEntityAlive() {
-        return realEntity.isAlive();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.isAlive();
     }
 
     @Override
     public void setFire(int seconds) {
-        realEntity.setRemainingFireTicks(seconds * 20);
+        LivingEntity realEntity = real();
+        if (realEntity != null) {
+            realEntity.setRemainingFireTicks(seconds * 20);
+        }
         this.fire = seconds * 20;
     }
 
     @Override
     public void extinguish() {
-        realEntity.clearFire();
+        LivingEntity realEntity = real();
+        if (realEntity != null) {
+            realEntity.clearFire();
+        }
         this.fire = 0;
     }
 
     @Override
     public void setDead() {
         super.setDead();
-        realEntity.discard();
+        LivingEntity realEntity = real();
+        if (realEntity != null) {
+            realEntity.discard();
+        }
     }
 
     @Override
@@ -200,8 +238,11 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
         this.motionX += x;
         this.motionY += y;
         this.motionZ += z;
-        realEntity.setDeltaMovement(
-            realEntity.getDeltaMovement().add(x, y, z));
+        LivingEntity realEntity = real();
+        if (realEntity != null) {
+            realEntity.setDeltaMovement(
+                realEntity.getDeltaMovement().add(x, y, z));
+        }
     }
 
     @Override
@@ -209,27 +250,34 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
         this.motionX = x;
         this.motionY = y;
         this.motionZ = z;
-        realEntity.setDeltaMovement(x, y, z);
+        LivingEntity realEntity = real();
+        if (realEntity != null) {
+            realEntity.setDeltaMovement(x, y, z);
+        }
     }
 
     @Override
     public double getDistanceSq(double x, double y, double z) {
-        return realEntity.distanceToSqr(x, y, z);
+        LivingEntity realEntity = real();
+        return realEntity != null ? realEntity.distanceToSqr(x, y, z) : super.getDistanceSq(x, y, z);
     }
 
     @Override
     public boolean canBeCollidedWith() {
-        return realEntity.isPickable();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.isPickable();
     }
 
     @Override
     public boolean canBePushed() {
-        return realEntity.isPushable();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.isPushable();
     }
 
     @Override
     public String getEntityName() {
-        return realEntity.getName().getString();
+        LivingEntity realEntity = real();
+        return realEntity != null ? realEntity.getName().getString() : super.getEntityName();
     }
 
     @Override
@@ -237,25 +285,44 @@ public class LivingEntityBridge extends btw.modern.EntityLiving {
         return false;
     }
 
+    /**
+     * FC damage on a vanilla living entity -- an FC arrow / broadhead / thrown item / fireball hit
+     * (WorldBridge.wrapVanillaForFc), an FC block or item. MC's hurt() with the mapped source
+     * (WorldBridge.toMcDamageSource): a projectile credits its shooter, so the mob retaliates, the kill counts
+     * for the player and the death message reads "shot by"; and hurt()'s own result is returned, so a hit
+     * rejected during the invulnerability window, or an enderman dodging a projectile, ricochets the frozen
+     * EntityArrow as in 1.5.2 (vanilla/server EntityArrow.java:308-347, EntityLiving.attackEntityFrom) instead
+     * of being consumed. Server only; never throws (DamageSourceMapping.hurtFromFc).
+     */
     @Override
     public boolean attackEntityFrom(btw.modern.DamageSource damageSource, int amount) {
-        // Basic damage forwarding — full damage source mapping would need DamageSourceMapping
-        realEntity.hurt(realEntity.damageSources().generic(), (float) amount);
-        return true;
+        LivingEntity realEntity = real();
+        if (realEntity == null) return false;
+        boolean hurt = DamageSourceMapping.hurtFromFc(realEntity, damageSource, amount);
+        // Keep the FC view current, so a later syncToReal() does not write the pre-hit health back.
+        this.health = (int) realEntity.getHealth();
+        return hurt;
     }
 
     @Override
     public void heal(int amount) {
-        realEntity.heal((float) amount);
+        LivingEntity realEntity = real();
+        if (realEntity != null) {
+            realEntity.heal((float) amount);
+        }
     }
 
     @Override
     public boolean isOnLadder() {
-        return realEntity.onClimbable();
+        LivingEntity realEntity = real();
+        return realEntity != null && realEntity.onClimbable();
     }
 
     @Override
     public void playSound(String sound, float volume, float pitch) {
-        SoundMapping.playAtEntity(realEntity, sound, volume, pitch);
+        LivingEntity realEntity = real();
+        if (realEntity != null) {
+            SoundMapping.playAtEntity(realEntity, sound, volume, pitch);
+        }
     }
 }

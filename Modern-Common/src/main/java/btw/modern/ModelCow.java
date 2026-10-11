@@ -20,6 +20,8 @@ public class ModelCow extends ModelQuadruped {
         ++this.leg4.rotationPointX;
         --this.leg3.rotationPointZ;
         --this.leg4.rotationPointZ;
+        // 1.5.2 ModelCow.java:39: calf head z offset used by ModelQuadruped.render when isChild.
+        this.field_78151_h += 2.0F;
     }
 
     public void setLivingAnimations(EntityLiving entity, float par2, float par3, float fPartialTick) {
@@ -34,6 +36,27 @@ public class ModelCow extends ModelQuadruped {
 
     public void setRotationAngles(float f, float f1, float f2, float f3, float f4, float f5, Entity entity) {
         super.setRotationAngles(f, f1, f2, f3, f4, f5, entity);
+        AdjustRotationAnglesForKickAttack(f, f1, f2, f3, f4, f5, entity);
         head.rotateAngleX = m_fHeadRotation;
     }
+
+    // FCMOD: Added (client only), 1.5.2 ModelCow.java:62 and :67-90. FCEntityCow's kick fields are
+    // FC client code Modern-Common cannot import, so they are read reflectively.
+    private void AdjustRotationAnglesForKickAttack(float par1, float par2, float par3,
+            float par4, float par5, float par6, Entity entity) {
+        if (entity != null) {
+            int iAttackProgressCounter = RenderEntityAccess.getInt(entity, "m_iKickAttackInProgressCounter", -1);
+
+            if (iAttackProgressCounter > 0) {
+                float fRotationFactor = 2F;
+
+                if (RenderEntityAccess.getInt(entity, "m_iKickAttackLegUsed", 0) == 0) {
+                    leg1.rotateAngleX = MathHelper.cos((float) Math.PI * fRotationFactor) * 1.4F;
+                } else {
+                    leg2.rotateAngleX = MathHelper.cos((float) Math.PI * fRotationFactor) * 1.4F;
+                }
+            }
+        }
+    }
+    // END FCMOD
 }

@@ -145,7 +145,15 @@ public class RenderBlocks {
             // 1.5.2 render type 9 — btw.modern.BlockRailBase.getRenderType(); live blocks are
             // FCBlockDetectorRail (fcDetectorRailWood 235 / fcBlockDetectorRailSoulforgedSteel 236)
             case 9: return renderBlockMinecartTrack((BlockRailBase) block, x, y, z);
+            // 1.5.2 render types 13 / 23 (RenderBlocks.java:426) — btw.modern.BlockCactus / BlockLilyPad
+            // .getRenderType(); FCBlockCactus and FCBlockLilyPad override RenderBlock and call these themselves,
+            // so this only serves a subclass without that override
+            case 13: return renderBlockCactus(block, x, y, z);
+            // 1.5.2 render type 19 — btw.modern.BlockStem.getRenderType(); FCBlockStem overrides RenderBlock and
+            // calls renderBlockStem itself, so this only serves a stem without that override
+            case 19: return renderBlockStem(block, x, y, z);
             case 20: return renderBlockVine(block, x, y, z);
+            case 23: return renderBlockLilyPad(block, x, y, z);
             default:
                 // For any unhandled render type, use standard block rendering
                 // with the block's own bounds (slabs, buttons, pressure plates, etc.
@@ -2448,10 +2456,137 @@ public class RenderBlocks {
         t.addVertexWithUV(xNeg + angleX, y + 0.0D, z - halfWidth + angleZ, maxU, maxV);
         t.addVertexWithUV(xNeg, y + 1.0D, z - halfWidth, maxU, minV);
     }
-    public void drawCrossedSquares(Block block, int metadata, double x, double y, double z, float brightness) {}
-    public void renderBlockStemSmall(Block block, int metadata, double x, double y, double z, double height) {}
+
+    /**
+     * 1.5.2 RenderBlocks.drawCrossedSquares (RenderBlocks.java:3712-3747): the two crossed planes of a
+     * plant, each drawn in both windings, 0.45 * scale out from the cell centre and scale high. The
+     * last parameter is that scale (1.0F for items). Called by renderBlockAsItemVanilla's
+     * render-type-1 branch; world plants go through renderCrossedSquares.
+     */
+    public void drawCrossedSquares(Block block, int metadata, double x, double y, double z, float scale) {
+        Tessellator t = Tessellator.instance;
+        Icon icon = this.getBlockIconFromSideAndMetadata(block, 0, metadata);
+        t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
+        double minU = icon != null ? icon.getMinU() : 0;
+        double minV = icon != null ? icon.getMinV() : 0;
+        double maxU = icon != null ? icon.getMaxU() : 1;
+        double maxV = icon != null ? icon.getMaxV() : 1;
+        double halfWidth = 0.45D * (double) scale;
+        double minX = x + 0.5D - halfWidth;
+        double maxX = x + 0.5D + halfWidth;
+        double minZ = z + 0.5D - halfWidth;
+        double maxZ = z + 0.5D + halfWidth;
+        t.addVertexWithUV(minX, y + (double) scale, minZ, minU, minV);
+        t.addVertexWithUV(minX, y + 0.0D, minZ, minU, maxV);
+        t.addVertexWithUV(maxX, y + 0.0D, maxZ, maxU, maxV);
+        t.addVertexWithUV(maxX, y + (double) scale, maxZ, maxU, minV);
+        t.addVertexWithUV(maxX, y + (double) scale, maxZ, minU, minV);
+        t.addVertexWithUV(maxX, y + 0.0D, maxZ, minU, maxV);
+        t.addVertexWithUV(minX, y + 0.0D, minZ, maxU, maxV);
+        t.addVertexWithUV(minX, y + (double) scale, minZ, maxU, minV);
+        t.addVertexWithUV(minX, y + (double) scale, maxZ, minU, minV);
+        t.addVertexWithUV(minX, y + 0.0D, maxZ, minU, maxV);
+        t.addVertexWithUV(maxX, y + 0.0D, minZ, maxU, maxV);
+        t.addVertexWithUV(maxX, y + (double) scale, minZ, maxU, minV);
+        t.addVertexWithUV(maxX, y + (double) scale, minZ, minU, minV);
+        t.addVertexWithUV(maxX, y + 0.0D, minZ, minU, maxV);
+        t.addVertexWithUV(minX, y + 0.0D, maxZ, maxU, maxV);
+        t.addVertexWithUV(minX, y + (double) scale, maxZ, maxU, minV);
+    }
+
+    /**
+     * 1.5.2 RenderBlocks.renderBlockStemSmall (RenderBlocks.java:3752-3784): a stem's crossed planes,
+     * 0.45 out from the cell centre and {@code height} high, the icon cut off at that height. The
+     * height comes FIRST, as in 1.5.2 (the old stub and the btw.api placeholder name the parameters
+     * x, y, z, height, but only the positions matter in the descriptor). Called by
+     * renderBlockAsItemVanilla's render-type-19 branch.
+     */
+    public void renderBlockStemSmall(Block block, int metadata, double height, double x, double y, double z) {
+        Tessellator t = Tessellator.instance;
+        Icon icon = this.getBlockIconFromSideAndMetadata(block, 0, metadata);
+        t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
+        double minU = icon != null ? icon.getMinU() : 0;
+        double minV = icon != null ? icon.getMinV() : 0;
+        double maxU = icon != null ? icon.getMaxU() : 1;
+        double cutV = icon != null ? icon.getInterpolatedV(height * 16.0D) : height;
+        double minX = x + 0.5D - 0.44999998807907104D;
+        double maxX = x + 0.5D + 0.44999998807907104D;
+        double minZ = z + 0.5D - 0.44999998807907104D;
+        double maxZ = z + 0.5D + 0.44999998807907104D;
+        t.addVertexWithUV(minX, y + height, minZ, minU, minV);
+        t.addVertexWithUV(minX, y + 0.0D, minZ, minU, cutV);
+        t.addVertexWithUV(maxX, y + 0.0D, maxZ, maxU, cutV);
+        t.addVertexWithUV(maxX, y + height, maxZ, maxU, minV);
+        t.addVertexWithUV(maxX, y + height, maxZ, minU, minV);
+        t.addVertexWithUV(maxX, y + 0.0D, maxZ, minU, cutV);
+        t.addVertexWithUV(minX, y + 0.0D, minZ, maxU, cutV);
+        t.addVertexWithUV(minX, y + height, minZ, maxU, minV);
+        t.addVertexWithUV(minX, y + height, maxZ, minU, minV);
+        t.addVertexWithUV(minX, y + 0.0D, maxZ, minU, cutV);
+        t.addVertexWithUV(maxX, y + 0.0D, minZ, maxU, cutV);
+        t.addVertexWithUV(maxX, y + height, minZ, maxU, minV);
+        t.addVertexWithUV(maxX, y + height, minZ, minU, minV);
+        t.addVertexWithUV(maxX, y + 0.0D, minZ, minU, cutV);
+        t.addVertexWithUV(minX, y + 0.0D, maxZ, maxU, cutV);
+        t.addVertexWithUV(minX, y + height, maxZ, maxU, minV);
+    }
+
     public void renderBlockStemBig(BlockStem block, int metadata, int connectedBlockId, double x, double y, double z, double height) {}
-    public void renderBlockCropsImpl(Block block, int metadata, double x, double y, double z) {}
+
+    /**
+     * 1.5.2 RenderBlocks.renderBlockCropsImpl (RenderBlocks.java:3885-3936): the crop "#", two
+     * full-height planes along Z at x+0.25/x+0.75 and two along X at z+0.25/z+0.75, each drawn in
+     * both windings. Called by renderBlockAsItemVanilla's render-type-6 branch.
+     */
+    public void renderBlockCropsImpl(Block block, int metadata, double x, double y, double z) {
+        Tessellator t = Tessellator.instance;
+        Icon icon = this.getBlockIconFromSideAndMetadata(block, 0, metadata);
+        t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
+        double minU = icon != null ? icon.getMinU() : 0;
+        double minV = icon != null ? icon.getMinV() : 0;
+        double maxU = icon != null ? icon.getMaxU() : 1;
+        double maxV = icon != null ? icon.getMaxV() : 1;
+        double minX = x + 0.5D - 0.25D;
+        double maxX = x + 0.5D + 0.25D;
+        double minZ = z + 0.5D - 0.5D;
+        double maxZ = z + 0.5D + 0.5D;
+        t.addVertexWithUV(minX, y + 1.0D, minZ, minU, minV);
+        t.addVertexWithUV(minX, y + 0.0D, minZ, minU, maxV);
+        t.addVertexWithUV(minX, y + 0.0D, maxZ, maxU, maxV);
+        t.addVertexWithUV(minX, y + 1.0D, maxZ, maxU, minV);
+        t.addVertexWithUV(minX, y + 1.0D, maxZ, minU, minV);
+        t.addVertexWithUV(minX, y + 0.0D, maxZ, minU, maxV);
+        t.addVertexWithUV(minX, y + 0.0D, minZ, maxU, maxV);
+        t.addVertexWithUV(minX, y + 1.0D, minZ, maxU, minV);
+        t.addVertexWithUV(maxX, y + 1.0D, maxZ, minU, minV);
+        t.addVertexWithUV(maxX, y + 0.0D, maxZ, minU, maxV);
+        t.addVertexWithUV(maxX, y + 0.0D, minZ, maxU, maxV);
+        t.addVertexWithUV(maxX, y + 1.0D, minZ, maxU, minV);
+        t.addVertexWithUV(maxX, y + 1.0D, minZ, minU, minV);
+        t.addVertexWithUV(maxX, y + 0.0D, minZ, minU, maxV);
+        t.addVertexWithUV(maxX, y + 0.0D, maxZ, maxU, maxV);
+        t.addVertexWithUV(maxX, y + 1.0D, maxZ, maxU, minV);
+        minX = x + 0.5D - 0.5D;
+        maxX = x + 0.5D + 0.5D;
+        minZ = z + 0.5D - 0.25D;
+        maxZ = z + 0.5D + 0.25D;
+        t.addVertexWithUV(minX, y + 1.0D, minZ, minU, minV);
+        t.addVertexWithUV(minX, y + 0.0D, minZ, minU, maxV);
+        t.addVertexWithUV(maxX, y + 0.0D, minZ, maxU, maxV);
+        t.addVertexWithUV(maxX, y + 1.0D, minZ, maxU, minV);
+        t.addVertexWithUV(maxX, y + 1.0D, minZ, minU, minV);
+        t.addVertexWithUV(maxX, y + 0.0D, minZ, minU, maxV);
+        t.addVertexWithUV(minX, y + 0.0D, minZ, maxU, maxV);
+        t.addVertexWithUV(minX, y + 1.0D, minZ, maxU, minV);
+        t.addVertexWithUV(maxX, y + 1.0D, maxZ, minU, minV);
+        t.addVertexWithUV(maxX, y + 0.0D, maxZ, minU, maxV);
+        t.addVertexWithUV(minX, y + 0.0D, maxZ, maxU, maxV);
+        t.addVertexWithUV(minX, y + 1.0D, maxZ, maxU, minV);
+        t.addVertexWithUV(minX, y + 1.0D, maxZ, minU, minV);
+        t.addVertexWithUV(minX, y + 0.0D, maxZ, minU, maxV);
+        t.addVertexWithUV(maxX, y + 0.0D, maxZ, maxU, maxV);
+        t.addVertexWithUV(maxX, y + 1.0D, maxZ, maxU, minV);
+    }
 
     // --- Face rendering ---
 
@@ -2633,70 +2768,212 @@ public class RenderBlocks {
 
     // --- Block as item rendering ---
 
+    private static final org.apache.logging.log4j.Logger LOGGER =
+            org.apache.logging.log4j.LogManager.getLogger("BTW-RenderBlocks");
+
+    /** FC RenderBlockAsItem overrides that threw once; drawn through renderBlockAsItemVanilla after. */
+    private static final java.util.Set<Class<?>> FAILED_ITEM_RENDER_OVERRIDES =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** The block whose RenderBlockAsItem this instance is inside; see renderBlockAsItem. */
+    private Block blockAsItemDispatch;
+
+    /**
+     * 1.5.2 RenderBlocks.renderBlockAsItem (FCMOD, RenderBlocks.java:9453-9456): hands the draw to
+     * block.RenderBlockAsItem, so FC's overrides (mouldings, sidings, loose snow, cauldron, ...) draw
+     * their own item shape. Its 1.5.2 default calls renderBlockAsItemVanilla (Block.java:3701-3704),
+     * but the Modern-Common Block.RenderBlockAsItem default calls back into this method; that
+     * re-entry for the block being dispatched is answered with renderBlockAsItemVanilla, which is
+     * what the 1.5.2 default draws. An override that throws is logged once and its class is drawn
+     * through renderBlockAsItemVanilla from then on. Callers: ItemRenderer.renderItem (held/worn
+     * blocks, the snowman pumpkin), RenderEnderman.renderCarrying, RenderIronGolem, RenderItem
+     * (embedded dropped blocks) and RenderTNTPrimed. Forge RecordingRenderBlocks overrides this.
+     */
     public void renderBlockAsItem(Block block, int metadata, float brightness) {
-        block.setBlockBoundsForItemRender();
-        setRenderBoundsFromBlock(block);
-
-        Tessellator t = Tessellator.instance;
-        Icon icon;
-
-        t.startDrawingQuads();
-        t.setNormal(0, -1, 0);
-        icon = getBlockIconFromSideAndMetadata(block, 0, metadata);
-        renderFaceYNeg(block, 0, 0, 0, icon);
-
-        t.setNormal(0, 1, 0);
-        icon = getBlockIconFromSideAndMetadata(block, 1, metadata);
-        renderFaceYPos(block, 0, 0, 0, icon);
-
-        t.setNormal(0, 0, -1);
-        icon = getBlockIconFromSideAndMetadata(block, 2, metadata);
-        renderFaceZNeg(block, 0, 0, 0, icon);
-
-        t.setNormal(0, 0, 1);
-        icon = getBlockIconFromSideAndMetadata(block, 3, metadata);
-        renderFaceZPos(block, 0, 0, 0, icon);
-
-        t.setNormal(-1, 0, 0);
-        icon = getBlockIconFromSideAndMetadata(block, 4, metadata);
-        renderFaceXNeg(block, 0, 0, 0, icon);
-
-        t.setNormal(1, 0, 0);
-        icon = getBlockIconFromSideAndMetadata(block, 5, metadata);
-        renderFaceXPos(block, 0, 0, 0, icon);
+        if (block == null) {
+            return;
+        }
+        if (this.blockAsItemDispatch == block || FAILED_ITEM_RENDER_OVERRIDES.contains(block.getClass())) {
+            this.renderBlockAsItemVanilla(block, metadata, brightness);
+            return;
+        }
+        Block outer = this.blockAsItemDispatch;
+        this.blockAsItemDispatch = block;
+        try {
+            block.RenderBlockAsItem(this, metadata, brightness);
+        } catch (Throwable t) {
+            if (FAILED_ITEM_RENDER_OVERRIDES.add(block.getClass())) {
+                LOGGER.warn("{}.RenderBlockAsItem failed; drawing it as a plain block from now on: {}",
+                        block.getClass().getSimpleName(), t.toString());
+            }
+        } finally {
+            this.blockAsItemDispatch = outer;
+        }
     }
 
+    /**
+     * 1.5.2 renderBlockAsItemVanilla (RenderBlocks.java:7815-8362): the useInventoryTint colour
+     * (:7830-7843), the render-type-1 (crossed squares, :7851-7857), 19 (stem, :7858-7867), 23 (lily
+     * pad: nothing, :7868-7876), 13 (inset cactus, :7877-7917) and 6 (crops, :7925-7931) branches,
+     * and the standard-cube branch (:8306-8361): a 90-degree turn
+     * about Y and the cube centred on the origin, translated by -0.5 before the faces (:8319) and
+     * back by +0.5 after them (:8360), in FCMOD's item bounds (GetBlockBoundsFromPoolForItemRender,
+     * :8313-8317), with grass tinting only its top face (:8325-8344). The turn and the GL colour stay
+     * applied on return, as in 1.5.2, so callers push/pop around the call. Nothing here writes the
+     * shared Block's bounds. Adaptations: every other special render type takes the cube branch
+     * (the torch/anvil/chest/... branches are not ported); and the tint is the block's render colour
+     * alone, without 1.5.2's {@code * brightness} factor, because the capture lights quads with MC's
+     * packed light already and the client FC world's getBrightness can read 0 (RenderTNTPrimed
+     * passes it), which would draw the block black.
+     */
     public void renderBlockAsItemVanilla(Block block, int metadata, float brightness) {
-        block.setBlockBoundsForItemRender();
-        setRenderBoundsFromBlock(block);
-
         Tessellator t = Tessellator.instance;
-        Icon icon;
+        boolean isGrass = Block.grass != null && block.blockID == Block.grass.blockID;
+
+        // :7820-7823 the dispenser, dropper and furnace show their front face.
+        if (block == Block.dispenser || block == Block.dropper || block == Block.furnaceIdle) {
+            metadata = 3;
+        }
+
+        // :7830-7843 the item takes the block's render colour (a stem's growth colour, blood wood
+        // leaves' red); grass draws white here and tints only its top face in the cube branch.
+        if (this.useInventoryTint) {
+            this.setInventoryTint(isGrass ? 16777215 : block.getRenderColor(metadata));
+        }
+
+        int renderType = block.getRenderType();
+        this.setRenderBoundsFromBlock(block);
+
+        if (renderType == 1) {
+            t.startDrawingQuads();
+            t.setNormal(0.0F, -1.0F, 0.0F);
+            this.drawCrossedSquares(block, metadata, -0.5D, -0.5D, -0.5D, 1.0F);
+            t.draw();
+            return;
+        }
+
+        if (renderType == 19) {
+            // :7858-7867 (FCMOD dropped the setBlockBoundsForItemRender call): the stem's own height.
+            t.startDrawingQuads();
+            t.setNormal(0.0F, -1.0F, 0.0F);
+            this.renderBlockStemSmall(block, metadata, this.renderMaxY, -0.5D, -0.5D, -0.5D);
+            t.draw();
+            return;
+        }
+
+        if (renderType == 23) {
+            // :7868-7876 the lily pad draws nothing here (FCMOD dropped the setBlockBoundsForItemRender call).
+            t.startDrawingQuads();
+            t.setNormal(0.0F, -1.0F, 0.0F);
+            t.draw();
+            return;
+        }
+
+        if (renderType == 13) {
+            // :7877-7917 the cactus: the block-bounds cube with its four sides inset 1/16, centred on the origin,
+            // with no 90-degree turn and side icons at metadata 0 (FCMOD dropped setBlockBoundsForItemRender).
+            GL11.glTranslatef(-0.5F, -0.5F, -0.5F);
+            float inset = 0.0625F;
+            t.startDrawingQuads();
+            t.setNormal(0.0F, -1.0F, 0.0F);
+            this.renderFaceYNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSide(block, 0));
+            t.draw();
+            t.startDrawingQuads();
+            t.setNormal(0.0F, 1.0F, 0.0F);
+            this.renderFaceYPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSide(block, 1));
+            t.draw();
+            t.startDrawingQuads();
+            t.setNormal(0.0F, 0.0F, -1.0F);
+            t.addTranslation(0.0F, 0.0F, inset);
+            this.renderFaceZNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSide(block, 2));
+            t.addTranslation(0.0F, 0.0F, -inset);
+            t.draw();
+            t.startDrawingQuads();
+            t.setNormal(0.0F, 0.0F, 1.0F);
+            t.addTranslation(0.0F, 0.0F, -inset);
+            this.renderFaceZPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSide(block, 3));
+            t.addTranslation(0.0F, 0.0F, inset);
+            t.draw();
+            t.startDrawingQuads();
+            t.setNormal(-1.0F, 0.0F, 0.0F);
+            t.addTranslation(inset, 0.0F, 0.0F);
+            this.renderFaceXNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSide(block, 4));
+            t.addTranslation(-inset, 0.0F, 0.0F);
+            t.draw();
+            t.startDrawingQuads();
+            t.setNormal(1.0F, 0.0F, 0.0F);
+            t.addTranslation(-inset, 0.0F, 0.0F);
+            this.renderFaceXPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSide(block, 5));
+            t.addTranslation(inset, 0.0F, 0.0F);
+            t.draw();
+            GL11.glTranslatef(0.5F, 0.5F, 0.5F);
+            return;
+        }
+
+        if (renderType == 6) {
+            t.startDrawingQuads();
+            t.setNormal(0.0F, -1.0F, 0.0F);
+            this.renderBlockCropsImpl(block, metadata, -0.5D, -0.5D, -0.5D);
+            t.draw();
+            return;
+        }
+
+        if (renderType == 16) {
+            metadata = 1;
+        }
+
+        // FCMOD (:8313-8317) in place of setBlockBoundsForItemRender + setRenderBoundsFromBlock; a
+        // null result keeps the block bounds set above.
+        this.setRenderBounds(block.GetBlockBoundsFromPoolForItemRender(metadata));
+        GL11.glRotatef(90.0F, 0.0F, 1.0F, 0.0F);
+        GL11.glTranslatef(-0.5F, -0.5F, -0.5F);
+        t.startDrawingQuads();
+        t.setNormal(0.0F, -1.0F, 0.0F);
+        this.renderFaceYNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 0, metadata));
+        t.draw();
+
+        if (isGrass && this.useInventoryTint) {
+            this.setInventoryTint(block.getRenderColor(metadata));
+        }
 
         t.startDrawingQuads();
-        t.setNormal(0, -1, 0);
-        icon = getBlockIconFromSideAndMetadata(block, 0, metadata);
-        renderFaceYNeg(block, 0, 0, 0, icon);
+        t.setNormal(0.0F, 1.0F, 0.0F);
+        this.renderFaceYPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 1, metadata));
+        t.draw();
 
-        t.setNormal(0, 1, 0);
-        icon = getBlockIconFromSideAndMetadata(block, 1, metadata);
-        renderFaceYPos(block, 0, 0, 0, icon);
+        if (isGrass && this.useInventoryTint) {
+            this.setInventoryTint(16777215);
+        }
 
-        t.setNormal(0, 0, -1);
-        icon = getBlockIconFromSideAndMetadata(block, 2, metadata);
-        renderFaceZNeg(block, 0, 0, 0, icon);
+        t.startDrawingQuads();
+        t.setNormal(0.0F, 0.0F, -1.0F);
+        this.renderFaceZNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 2, metadata));
+        t.draw();
+        t.startDrawingQuads();
+        t.setNormal(0.0F, 0.0F, 1.0F);
+        this.renderFaceZPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 3, metadata));
+        t.draw();
+        t.startDrawingQuads();
+        t.setNormal(-1.0F, 0.0F, 0.0F);
+        this.renderFaceXNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 4, metadata));
+        t.draw();
+        t.startDrawingQuads();
+        t.setNormal(1.0F, 0.0F, 0.0F);
+        this.renderFaceXPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 5, metadata));
+        t.draw();
+        GL11.glTranslatef(0.5F, 0.5F, 0.5F);
+    }
 
-        t.setNormal(0, 0, 1);
-        icon = getBlockIconFromSideAndMetadata(block, 3, metadata);
-        renderFaceZPos(block, 0, 0, 0, icon);
-
-        t.setNormal(-1, 0, 0);
-        icon = getBlockIconFromSideAndMetadata(block, 4, metadata);
-        renderFaceXNeg(block, 0, 0, 0, icon);
-
-        t.setNormal(1, 0, 0);
-        icon = getBlockIconFromSideAndMetadata(block, 5, metadata);
-        renderFaceXPos(block, 0, 0, 0, icon);
+    /**
+     * renderBlockAsItemVanilla's GL colour (1.5.2 :7842, :8331, :8341): an 0xRRGGBB render colour
+     * as glColor4f with full alpha. 1.5.2 multiplied each channel by the brightness argument; see
+     * the adaptation note on renderBlockAsItemVanilla.
+     */
+    private void setInventoryTint(int color) {
+        float r = (float)(color >> 16 & 255) / 255.0F;
+        float g = (float)(color >> 8 & 255) / 255.0F;
+        float b = (float)(color & 255) / 255.0F;
+        GL11.glColor4f(r, g, b, 1.0F);
     }
 
     // --- Falling block rendering ---
@@ -2758,11 +3035,20 @@ public class RenderBlocks {
 
     // --- Static helpers ---
 
+    /** Vanilla 1.5.2's name for DoesRenderIDRenderItemIn3d (FCMOD renamed it, RenderBlocks.java:8367-8371). */
     public static boolean renderItemIn3d(int renderType) {
-        return false;
+        return DoesRenderIDRenderItemIn3d(renderType);
     }
 
+    /**
+     * 1.5.2 RenderBlocks.DoesRenderIDRenderItemIn3d (RenderBlocks.java:8371-8375): the render types
+     * whose item is drawn as a 3D block rather than a flat icon. 1.5.2 Block.DoesItemRenderAsBlock
+     * returns this for the block's render type (Block.java:3706-3709).
+     */
     public static boolean DoesRenderIDRenderItemIn3d(int renderType) {
-        return false;
+        return renderType == 0 ? true : (renderType == 31 ? true : (renderType == 39 ? true : (renderType == 13 ? true
+                : (renderType == 10 ? true : (renderType == 11 ? true : (renderType == 27 ? true : (renderType == 22 ? true
+                : (renderType == 21 ? true : (renderType == 16 ? true : (renderType == 26 ? true : (renderType == 32 ? true
+                : (renderType == 34 ? true : renderType == 35))))))))))));
     }
 }

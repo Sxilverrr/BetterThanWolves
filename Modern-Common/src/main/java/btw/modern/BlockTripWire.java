@@ -5,4 +5,24 @@ public class BlockTripWire extends Block {
     protected BlockTripWire(int id) {
         super(id, Material.circuits);
     }
+
+    // 1.5.2 BlockTripWire.getCollisionBoundingBoxFromPool (vanilla/client BlockTripWire.java:42-45): tripwire has
+    // no collision box (FCBlockTripWire overrides only the bounds methods)
+    @Override
+    public AxisAlignedBB getCollisionBoundingBoxFromPool(World world, int x, int y, int z) {
+        return null;
+    }
+
+    // 1.5.2 BlockTripWire.isOpaqueCube / renderAsNormalBlock (vanilla/client BlockTripWire.java:51-62).
+    // With the inherited true, World.isBlockNormalCube reported this passable block as solid, so an FC mob's
+    // eye inside the cell counted as being inside an opaque block (Entity.isEntityInsideOpaqueBlock -> inWall).
+    @Override
+    public boolean isOpaqueCube() {
+        return false;
+    }
+
+    @Override
+    public boolean renderAsNormalBlock() {
+        return false;
+    }
 }

@@ -10,6 +10,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
@@ -19,6 +20,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * Intercepts {@link Player} methods to apply FC overrides:
  * <ul>
+ *   <li>Per-object {@link PlayerBridge} storage ({@link PlayerBridge.Holder}); bridge marked dead on removal</li>
  *   <li>Dig speed / tool effectiveness (mining)</li>
  *   <li>Bed sleeping disabled</li>
  *   <li>Mid-air block placement restriction</li>
@@ -26,10 +28,54 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *   <li>Armor exhaustion modifier</li>
  *   <li>Blasting oil detonation on damage (combat #18)</li>
  *   <li>Melee damage modifier from penalties (combat #20)</li>
+ *   <li>FC block movement modifier on ground (getSpeed) and FC penalty while airborne (getFlyingSpeed)</li>
  * </ul>
  */
 @Mixin(Player.class)
-public abstract class PlayerMixin {
+public abstract class PlayerMixin implements PlayerBridge.Holder {
+
+    // ================================================================
+    // PlayerBridge storage — bound to THIS player object (see PlayerBridge.Holder)
+    // ================================================================
+
+    /**
+     * This player's FC bridge. Identity-bound (a respawned ServerPlayer, which 1.20.1 gives the
+     * dead player's entity id, and the singleplayer LocalPlayer, which shares its ServerPlayer's
+     * id, each get their own), collected together with the player, and volatile so the
+     * double-checked creation in PlayerBridge.getOrCreate publishes it safely across threads.
+     */
+    @Unique
+    private volatile PlayerBridge btw$playerBridge;
+
+    @Override
+    public PlayerBridge btw$getPlayerBridge() {
+        return this.btw$playerBridge;
+    }
+
+    @Override
+    public void btw$setPlayerBridge(PlayerBridge bridge) {
+        this.btw$playerBridge = bridge;
+    }
+
+    /**
+     * Marks this player's bridge dead when the player leaves the world for good, as 1.5.2 does:
+     * logout (ServerConfigurationManager.java:280 removeEntity -> World.java:1410 setDead) and the
+     * death timer (EntityLiving.java:733 setDead) -- 1.20.1 PlayerList.remove (UNLOADED_WITH_PLAYER),
+     * LivingEntity.tickDeath (KILLED) and PlayerList.respawn (DISCARDED) all end here (Player.java:1274).
+     * FC AI holding the bridge as entityToAttack/attackTarget then drops it via isEntityAlive instead of
+     * chasing a removed player frozen at its last position (PlayerBridge.syncFromReal never derives
+     * isDead). CHANGED_DIMENSION is skipped: portal/teleport travel revive()s the same player right
+     * after (ServerPlayer.changeDimension); the End-exit variant is replaced by PlayerList.respawn,
+     * whose DISCARDED removal (and ServerPlayerMixin.btw$restoreFrom) marks it. Field only, never
+     * creates a bridge, client players included (harmless: client bridges drive no AI).
+     */
+    @Inject(method = "remove", at = @At("TAIL"))
+    private void btw$markBridgeDead(Entity.RemovalReason reason, CallbackInfo ci) {
+        PlayerBridge bridge = this.btw$playerBridge;
+        if (bridge != null && reason != Entity.RemovalReason.CHANGED_DIMENSION) {
+            bridge.isDead = true;
+        }
+    }
 
     // NOTE: getDestroySpeed is NOT intercepted here.
     // FC's complete mining speed calculation runs through
@@ -108,20 +154,6 @@ public abstract class PlayerMixin {
     }
 
     // ================================================================
-    // DEBUG: catch fall damage at Player level
-    // ================================================================
-
-    @Inject(method = "causeFallDamage", at = @At("HEAD"))
-    private void btw$debugPlayerFall(float fallDistance, float multiplier,
-            net.minecraft.world.damagesource.DamageSource source,
-            CallbackInfoReturnable<Boolean> cir) {
-        Player self = (Player) (Object) this;
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Fall").info(
-                "Player.causeFallDamage: dist={} mayfly={} creative={}",
-                fallDistance, self.getAbilities().mayfly, self.getAbilities().instabuild);
-    }
-
-    // ================================================================
     // FC combat: blasting oil detonation on damage (#18)
     // ================================================================
 
@@ -184,8 +216,14 @@ public abstract class PlayerMixin {
      * Modifier comes from btw$storeMeleeDamageModifier (@HEAD, already synced). This is the
      * consumer the stored value never had — FC weight/health/exhaustion now actually weakens
      * hits. Server-only (client attack() also runs but the server value is authoritative).
+     * <p>@At ordinal 0 = ONLY the first store of f (bytecode offset 32,
+     * `f = getAttributeValue(ATTACK_DAMAGE)`). Without it Mixin matches every store of f (base,
+     * cooldown scale, crit, +enchant) and compounded the penalty to m^3..m^4. Crit (x1.5) then
+     * scales the reduced f and the enchant bonus f1 stays unreduced, exactly as 1.5.2
+     * EntityPlayer.java:1225-1242. Float multiply, no (int) truncation: 1.20.1 damage is float
+     * and truncating would only add zero-damage hits at high penalty.
      */
-    @ModifyVariable(method = "attack", at = @At("STORE"), ordinal = 0)
+    @ModifyVariable(method = "attack", at = @At(value = "STORE", ordinal = 0), ordinal = 0)
     private float btw$applyMeleeDamageModifier(float baseDamage) {
         Player self = (Player) (Object) this;
         if (self instanceof ServerPlayer sp) {
@@ -195,5 +233,60 @@ public abstract class PlayerMixin {
             }
         }
         return baseDamage;
+    }
+
+    // ================================================================
+    // FC block movement modifier (Block.GetMovementModifier, e.g. +20% on hard surfaces)
+    // ================================================================
+
+    /**
+     * 1.5.2 EntityLiving.getSpeedModifier (vanilla/server EntityLiving.java:3185-3235) multiplies the
+     * ON-GROUND move speed (landMovementFactor, used only in moveEntityWithHeading's onGround branch,
+     * :1505-1517) by the GetMovementModifier of the block underfoot. The 1.20.1 equivalent input term
+     * is getSpeed(): LivingEntity.getFrictionInfluencedSpeed uses it only when onGround, and airborne
+     * accel uses Player.getFlyingSpeed (never getSpeed). So this is a bounded additive-accel change
+     * that cannot re-create the sprint-jump 'flying' bug (that came from getSpeedFactor scaling
+     * carried momentum, STUB 2026-07-09 (j)).
+     * MUST target Player.getSpeed: Player overrides LivingEntity.getSpeed without calling super
+     * (Player.java:1442-1444), so the old LivingEntity.getSpeed hooks never ran for any player.
+     * Pure function of world state, so LocalPlayer (client-authoritative movement) and ServerPlayer
+     * compute the same value. The FC health/hunger/gloom penalty is NOT applied here -- it is already
+     * in the MOVEMENT_SPEED attribute this method returns (FCGameplayBridge.onPlayerTick, synced to
+     * the client by vanilla); applying it here too would square it.
+     */
+    @Inject(method = "getSpeed", at = @At("RETURN"), cancellable = true)
+    private void btw$applyBlockMovementModifier(CallbackInfoReturnable<Float> cir) {
+        float modifier = btw.forge.FCMovementBonus.getBlockBelowSpeedBonus((Player) (Object) this);
+        if (modifier != 1.0F) {
+            cir.setReturnValue(cir.getReturnValue() * modifier);
+        }
+    }
+
+    // ================================================================
+    // FC penalty on airborne movement (jumpMovementFactor)
+    // ================================================================
+
+    /**
+     * 1.5.2 EntityPlayer.onLivingUpdate (vanilla/server EntityPlayer.java:513-523):
+     * {@code jumpMovementFactor = speedInAir * GetJumpingHorizontalMovementModifier()}, plus an
+     * UNpenalised {@code speedInAir * 0.3} while sprinting. 1.20.1's equivalent is
+     * Player.getFlyingSpeed (Player.java:2073-2079: 0.02, or 0.026 sprinting, for non-flight), which
+     * the MOVEMENT_SPEED attribute never touches -- so the FC slowdown "vanished" mid-jump.
+     * m (GetJumpingHorizontalMovementModifier == GetLandMovementModifier, Modern-Common
+     * EntityPlayer.java:538-548) is read from the synced FC attribute modifier, so LocalPlayer
+     * (client-authoritative movement) and ServerPlayer agree without a packet. Creative/spectator
+     * flight keeps vanilla's value (1.5.2 uses capabilities.getFlySpeed() there, no penalty).
+     * Bounded: it only ever LOWERS airborne acceleration.
+     */
+    @Inject(method = "getFlyingSpeed", at = @At("RETURN"), cancellable = true)
+    private void btw$applyAirbornePenalty(CallbackInfoReturnable<Float> cir) {
+        Player self = (Player) (Object) this;
+        if (self.getAbilities().flying && !self.isPassenger()) {
+            return;
+        }
+        float modifier = btw.forge.FCMovementBonus.getSyncedPenaltyModifier(self);
+        if (modifier < 0.99F) {
+            cir.setReturnValue(0.02F * modifier + (self.isSprinting() ? 0.006F : 0.0F));
+        }
     }
 }

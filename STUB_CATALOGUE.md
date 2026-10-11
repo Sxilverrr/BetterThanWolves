@@ -4,6 +4,22 @@ Originally audited 2026-03-28. Re-audited 2026-06-05 (see below). Link-audited
 2026-07-08 (see below). Every remaining stub, no-op, empty body, hardcoded
 return, and TODO across the btw.modern and btw.forge layers.
 
+2026-10-10: CurseForge-feedback fix pass, entries (w)-(am) at the end of this file. They describe
+UNCOMMITTED working-tree changes on top of 1.3.0-alpha.3 (git 9569443), i.e. Unreleased. Finding ids
+(R1, D1, GH1, HAI-1, SW1, RE1, CTX-5, ...) come from docs/curseforge-feedback-triage.md; design ids
+(B1, U1, E1, ...) come from the earlier bug-design pass the triage cross-references; review ids
+(AP-1, RP-2, FD-R1, ...) come from the per-wave code reviews. Verification for every one of these
+entries is limited to: `:Forge:jar` green after each of the five implementation waves; LinkAudit 0
+missing classes, missing members 8 -> 6 (the 6 are pre-existing and on inert paths), 0 foreign
+net.minecraft refs, jar precedence drift 0; BridgeAudit 0 high-severity; and a dedicated-server smoke
+test (dev runServer, fresh throwaway world, run twice) that boots to Done with 0 ERROR lines, completes
+FC init (148 blocks / 98 items replaced, 666 crafting + 23 smelting FC recipes injected), converts
+worldgen pigs/sheep/cows/chickens (and, in the second run only, structure villagers), and activates
+the modern-block stand-ins.
+NOT run: any client (every rendering, animation, GUI and HUD fix is checked by code review only),
+multiplayer, and a clean server shutdown / session.lock release (the harness could not send 'stop').
+The "in game" steps listed in each entry are the intended checks, not results.
+
 ## 2026-07-09 (e) Movement penalty vanishes while running/jumping
 
 Symptom: the FC land-movement debuff (hunger/fat/low-health/gloom) intermittently
@@ -26,6 +42,12 @@ same modifier to the local player's `getSpeed()` using the penalty levels alread
 synced each tick by `BTWNetwork.PenaltySync` (`clientHealthPenalty`/`clientHungerPenalty`/
 `clientFatPenalty`/`clientGloomLevel`). Client prediction and server correction now
 agree, so the debuff is felt consistently.
+
+2026-10-10 correction (design B4): ClientPlayerSpeedMixin and the LivingEntityMixin hook both
+targeted `LivingEntity.getSpeed`, which `Player.getSpeed` overrides without calling super, so
+neither ever ran for a player. The penalty players felt came only from the server's
+MOVEMENT_SPEED attribute modifier, and sprint-jumping shed it because `getFlyingSpeed` never saw
+the penalty. Both hooks are deleted; see 2026-10-10 (y).
 
 ## 2026-07-09 (k) Automated audit tooling (catch bugs before gameplay)
 
@@ -121,6 +143,11 @@ Fix: apply the bonus the FC way — to `getSpeed()`, not `getSpeedFactor()`.
 Bounded (+20% top speed), airborne-safe, player-only (FC's AI mobs ignore the boost). Soul
 sand/honey keep slowing via their own getSpeedFactor/getFriction (untouched); this also
 removes the prior 0.4→0.48 soul-sand inflation.
+
+2026-10-10 correction (design B4): the getSpeed half of this fix never ran for players. Both hooks
+targeted `LivingEntity.getSpeed`, which `Player.getSpeed` overrides without calling super, so the
+block bonus never reached players. It is now applied by `PlayerMixin.btw$applyBlockMovementModifier`
+on `Player.getSpeed`, on both sides; see 2026-10-10 (y). The getSpeedFactor removal above stands.
 
 ## 2026-07-09 (i) Soul urns render with placeholder texture
 
@@ -224,6 +251,17 @@ A `0->1` possession or `[GHAST-SPAWN]` in `dim=minecraft:overworld` in a never-N
 the noises were the Infernal Enchanter's `GHAST_SHOOT` "whoosh" applies only to worlds that
 have one placed — a different sound from the fresh-world `GHAST_HURT`.)
 
+2026-10-10 correction (triage GH4, GH1): the possessed-squid -> ghast theory (7341cb5) cannot
+explain a fresh world. Spontaneous possession requires `dimensionId == -1`, WorldBridge sets that
+only for `Level.NETHER`, and no instrumented log ever showed a `[BTW-Possession]` or `[GHAST-SPAWN]`
+line. If the sound was identified by ear, it was almost certainly GH1: the 1.5.2 bat take-off
+(aux-SFX 1015) was passed raw to 1.20.1 `levelEvent`, where 1015 is GHAST_WARN (volume 10, subtitle
+"Ghast shoots"), and every naturally spawned bat fired it on its first AI tick. Fixed by
+AuxSfxMapping in 2026-10-10 (ag); the witch idle moan (GH2) is in (ah). Because (ag) also wires FC's
+nether-portal hook (GH5), overworld possession near player-built portals is now reachable, so
+`[BTW-Possession]`/`[GHAST-SPAWN]` lines there are expected. Both diagnostics stay until GH1 is
+confirmed in game.
+
 ## 2026-07-09 Double-application sweep (movement "super fast" bug)
 
 Symptom: player moves too fast. Root cause: DOUBLE application of FC's block
@@ -291,6 +329,10 @@ suspect is the GL11 software matrix not being isolated during FCBakedModel bake
   EntityPlayer.attack:1226 (`if (fModifier < 0.99F) var2 = (int)(var2 * fModifier)`,
   base damage pre-enchant). Refmap-verified attack -> m_5706_. FC weight/health/
   exhaustion now actually weakens hits.
+  2026-10-10 correction (design B1): the `ordinal = 0` was the local-variable ordinal; the
+  `@At("STORE")` had none, so the hook scaled all four stores of the damage float in
+  `Player.attack` (m^3, m^4 on a crit), and `FCGameplayBridge.onLivingHurt` applied the modifier
+  once more. Fixed in 2026-10-10 (y).
 - **Soul urns render**: FCClientRenderUrn.doRender read Item.itemsList[id].itemIcon.
   getMinU() and NPE'd (0 quads) because itemIcon was null — FC registerIcons was only
   run for subtype items. BTWClientEvents now calls registerIcons(NamedIcon capturer) on
@@ -393,6 +435,10 @@ fcGloom → magic (armor bypass); FCContainerMenu openContainer reset; and more.
   packet sync (cow-kick / squid-tentacle client visuals) stays a caught no-op — a KNOWN
   minor gap, the right trade. Lesson: a review recommendation can have second-order effects
   the reviewer missed; adversarially verify fixes, not just findings.
+  *(2026-10-10: superseded by 2026-10-10 (x). WorldBridge extends btw.modern.WorldServer again,
+  made safe by relocating net.minecraft.server.MinecraftServer to btw.modern.MinecraftServer (so
+  getMinecraftServer() is declarable) and by returning false from getAllowNether(), which keeps the
+  frozen portal block inert. The entity-tracker packet sync now reaches clients.)*
 
 **Functionality pass (2026-07-09) — real bodies, not stubs, for every reachable member.**
 Re-verified all 21 against ACTUAL class existence (the earlier inventory falsely claimed
@@ -416,6 +462,8 @@ WorldServer revert):
   FCEntityCreeper already do this (shim has the OnFallingUpdate(EntityFallingSand) live overload).
 - WorldServer.getMinecraftServer — returns the MODERN net.minecraft.server.MinecraftServer
   type, which Modern-Common structurally cannot declare; also portal-only (dead).
+  *(2026-10-10: now declared and resolved via the MinecraftServer relocate, see (w)/(x).
+  LinkAudit reports 6 missing members after the 2026-10-10 pass, down from 8.)*
 - ServerConfigurationManager.transferEntityToWorld, WorldServer.resetUpdateEntityTick — FC
   dimension travel; the modern engine handles proxy dimension travel (portal path dead).
 - TileEntityHopper.suckItemsIntoHopper/func_96114_a — hopper minecart; modern handles it and
@@ -424,7 +472,8 @@ WorldServer revert):
 - ILogAgent.logSevere — frozen EntityItem.onUpdate log; FC items are converted to modern
   ItemEntity (never ticks); adding to the interface only churns implementors.
 - FCClientRenderSpider.setSpiderEyeBrightness — FC multi-pass render; the modern engine
-  renders the proxy spider (render passes not wired).
+  renders the proxy spider (render passes not wired). *(2026-10-10: resolved by the RenderSpider
+  port, see (ad).)*
 - 68 intentional bridge no-ops (GUI display, GL state, client-only) — correct as designed.
 - VillageSiege — a gameplay feature with no caller, not a gap. RenderItem enchant-glint —
   cosmetic, omitted with a comment.
@@ -512,7 +561,8 @@ the remapFcCode include list, or the shadow/exclude lists.
 - `Village.*` members + `VillageDoorInfo` + `ChunkCoordinates` homing — gated behind
   Modern-Common `VillageCollection.findNearestVillage` returning null.
 - `WorldServer`/`ServerConfigurationManager`/`Direction` portal trio — dead (WorldBridge
-  extends World, not WorldServer; FC `setInPortal` never fires).
+  extends World, not WorldServer; FC `setInPortal` never fires). *(2026-10-10: WorldBridge now
+  extends WorldServer; the portal path stays inert because getAllowNether() returns false, see (x).)*
 - `TileEntityHopper.suckItemsIntoHopper`/`func_96114_a`, `NBTTagCompound.getTags` —
   gated behind hopper/spawner minecarts (no EntityType registered; dispensed carts are
   inert-but-safe).
@@ -522,7 +572,9 @@ the remapFcCode include list, or the shadow/exclude lists.
   FCEntityPig, FCEntityZombie, FCBlockLogSmouldering, FCBlockNetherrackFalling) — Client
   kept stale narrow FC-type params, Server is widened; Client output wins the merge, so
   those overrides silently never dispatch. Fix by widening the Client sources to match
-  Server twins.
+  Server twins. *(2026-10-10: the four FCEntityCreeper/FCEntityPig/FCEntityZombie hook overloads
+  are widened at build time by widenFcHookDescriptors pass (c), see (w); the two block-class
+  methods (FCBlockLogSmouldering, FCBlockNetherrackFalling) are not.)*
 - `fc_zombie`/`fc_spider`/`fc_ocelot`/`fc_ghast`/`fc_cave_spider` never register —
   those FC classes were never restructured into `net.minecraft.src.btw.entity`.
 
@@ -617,7 +669,23 @@ in these FC subclasses. So mechanical power / mill / saw are present and load �
 (tick scheduling) is the open question, not shadowing. (The historically-shadowed
 `BlockCrops/Flower/Cloth` are no longer in the collision set — already resolved.)
 
-**Where shadowing IS real — 21 collisions resolve to Modern-Common in both dev and jar:**
+**Where shadowing IS real — 21 collisions resolve to Modern-Common in dev:**
+
+> **2026-10-10 correction:** this heading originally said "in both dev and jar", which was wrong
+> for the jar. Until 2026-10-10 the Forge `jar{}` block declared `from sourceSets.fc.output` as an
+> own source of the main spec, which Gradle copies before the Modern-Common child spec, and
+> `DuplicatesStrategy.EXCLUDE` keeps the first copy. So in the jar the frozen fc copy won every
+> collision that is not shadow-listed, while dev (securejarhandler searches mod sources in reverse
+> order) let Modern-Common win. The released 1.3.0-alpha.3 jar therefore shipped the frozen copies
+> of 16 classes that dev never ran: ContainerBeacon/BrewingStand/Chest/Dispenser/Enchantment/
+> Furnace/Hopper/Merchant/Repair, EntityAIBase, EntityAIControlledByPlayer, IEntitySelector,
+> IMerchant, InventoryMerchant, SlotCrafting and SlotMerchantResult. Jars built since the fc spec
+> was added (71d3df0, 2026-04-12) packed fc the same way, but only the alpha.3 jar was audited;
+> earlier uploads were built from other trees, so their divergent set is unknown. The E1 fix in
+> 2026-10-10 (w) makes the jar match dev (Modern-Common wins unless the class is on the shadow
+> list), and a `jar.doLast` guard plus LinkAudit's JAR PRECEDENCE CHECK now enforce it. The bullets
+> below describe dev, and the jar only from (w) on.
+
 - Mostly **deliberate type-only deferral stubs**: `FCEntitySquid` (7-line stub vs **1429-line**
   real FC squid), `FCEntityCow/Creeper/Ghast` (6–14 lines; comment: "type-only stub … referenced
   by vanilla Entity/EntityLiving"). The real FC behavior is shadowed by design until those mobs
@@ -651,9 +719,11 @@ artifact. Verified the deletion task removes them and the FC versions are presen
 
 **Result: dev and jar resolution are now fully reconciled** — every one of the 85 `btw.modern`
 collisions resolves to the same version in both environments (verified: the dev-only and jar-only
-divergence sets over collisions are both empty). Residual: the FC vs stub UV difference for the
-model cluster is a visual change best eyeballed once in a running dev client, but prod already used
-the FC versions, so dev now matches prod. See [[project_devjar_reflection_gotcha]].
+divergence sets over collisions are both empty). *(2026-10-10 correction: what this verified is
+that the jar exclude list equals the dev delete list. The jar's actual winner for collisions on
+neither list was still the fc copy until 2026-10-10 (w); see the correction above.)*
+Residual: the FC vs stub UV difference for the model cluster is a visual change best eyeballed
+once in a running dev client, but prod already used the FC versions, so dev now matches prod. See [[project_devjar_reflection_gotcha]].
 
 ---
 
@@ -673,7 +743,7 @@ Rendering stubs, client-side effects, or methods that truly should be no-ops on 
 
 ---
 
-## 1. btw.modern.Block (~82 remaining stubs)
+## 1. btw.modern.Block (~81 remaining stubs)
 
 File: `Modern-Common/src/main/java/btw/modern/Block.java`
 
@@ -708,6 +778,7 @@ The following former stubs are now **done** and no longer need work:
 - **Vegetation (P2, partial):** `GetCanGrassGrowUnderBlock`, `GetPlantGrowthOnMultiplier`
 - **Grazing (P2):** `GetHerbivoreItemFoodValue`, `GetChickenItemFoodValue`, `GetPigItemFoodValue`
 - **Fire (P2, partial):** `GetCanBeSetOnFireDirectlyByItem` (delegates)
+- **Ground cover (P2, 2026-10-10 (ag)):** `CanGroundCoverRestOnBlock` (1.5.2 solid-top-surface rule)
 
 ### P0 — CRITICAL (14 remaining)
 
@@ -756,7 +827,7 @@ Block.java in 1.5.2 had logic in the base class (e.g., breakBlock cleans up tile
 FC subclasses override them. The defaults only need changing if vanilla 1.5.2 Block.java
 had real logic in the base class for that method.
 
-### P2 — MEDIUM (~53 remaining)
+### P2 — MEDIUM (~52 remaining)
 
 | Subsystem | Remaining Stubs | Methods |
 |-----------|----------------|---------|
@@ -771,7 +842,7 @@ had real logic in the base class for that method.
 | Vegetation spread | 7 | `AttempToSpreadGrassToBlock`, `GetCanGrassSpreadToBlock`, `SpreadGrassToBlock`, `AttempToSpreadMyceliumToBlock`, `GetCanMyceliumSpreadToBlock`, `SpreadMyceliumToBlock`, `GetCanBlightSpreadToBlock` |
 | Piston | 5 | `CanBlockBePulledByPiston`, `CanBePistonShoveled`, `GetPistonShovelEjectDirection`, `GetAsPistonMovingBoundingBox`, `CanContainPistonPackingToFacing` |
 | Growth/hydration | 11 | `CanDomesticatedCropsGrowOnBlock`, `CanReedsGrowOnBlock`, `CanSaplingsGrowOnBlock`, `CanWildVegetationGrowOnBlock`, `CanNetherWartGrowOnBlock`, `CanCactusGrowOnBlock`, `IsBlockHydratedForPlantGrowthOn`, `IsConsideredNeighbouringWaterForReedGrowthOn`, `GetIsFertilizedForPlantGrowth`, `NotifyOfFullStagePlantGrowthOn`, `NotifyOfPlantAboveRemoved` |
-| Block property | 7 | `CanWeedsGrowInBlock`, `GetWeedsGrowthLevel`, `RemoveWeeds`, `AttemptToApplyFertilizerTo`, `GetConvertsLegacySoil`, `CanGroundCoverRestOnBlock`, `CanSpitWebReplaceBlock` |
+| Block property | 6 | `CanWeedsGrowInBlock`, `GetWeedsGrowthLevel`, `RemoveWeeds`, `AttemptToApplyFertilizerTo`, `GetConvertsLegacySoil`, `CanSpitWebReplaceBlock` |
 
 ### P3 — LOW (Rendering/Client/Intentional No-ops — unchanged)
 
@@ -785,7 +856,7 @@ had real logic in the base class for that method.
 
 ---
 
-## 2. btw.modern.RenderBlocks (~53 remaining stubs)
+## 2. btw.modern.RenderBlocks (~49 remaining stubs)
 
 File: `Modern-Common/src/main/java/btw/modern/RenderBlocks.java`
 
@@ -798,6 +869,9 @@ File: `Modern-Common/src/main/java/btw/modern/RenderBlocks.java`
 - `renderBlockCrops` — full # pattern implementation
 - `renderBlockAsItem` — full face rendering implementation
 - 6 face methods (renderFaceYNeg/YPos/ZNeg/ZPos/XNeg/XPos) — all fully implemented
+- 2026-10-10 ((ad)): `drawCrossedSquares`, `renderBlockStemSmall`, `renderBlockCropsImpl` (verbatim
+  1.5.2 ports), `renderItemIn3d` / `DoesRenderIDRenderItemIn3d` (1.5.2 table), and `renderBlockAsItem`
+  dispatching to `Block.RenderBlockAsItem` with the 1.5.2 `renderBlockAsItemVanilla` branches
 
 ### P3 — LOW (all remaining — vertex capture pipeline replaces most of these)
 
@@ -806,9 +880,9 @@ File: `Modern-Common/src/main/java/btw/modern/RenderBlocks.java`
 | Block rendering | 2 | `renderBlockUsingTexture`, `renderBlockAllFaces` |
 | AO/color/grass | 6 | `renderStandardBlockWithAmbientOcclusion`, `func_102027_b`, `renderStandardBlockWithColorMultiplier`, `renderGrassBlockWithAmbientOcclusion`, `renderGrassBlockWithColorMultiplier`, `RenderStandardFullBlockWithAmbientOcclusion`, `RenderStandardFullBlockWithColorMultiplier` |
 | Specific block renders | 28 | `renderBlockLog`, `renderBlockQuartz`, `renderBlockCactus`/Impl, `renderBlockFence`, `renderBlockWall`, `renderBlockFenceGate`, `renderBlockStairs`, `renderBlockDoor`, `renderBlockFluids`, `renderBlockRepeater`, `renderBlockRedstoneWire`, `renderBlockMinecartTrack`, `renderBlockVine`, `renderBlockPane`, `renderBlockStem`, `renderBlockLilyPad`, `renderBlockFire`, `renderBlockLever`, `renderBlockTripWireSource`/Wire, `renderBlockDragonEgg`, `renderBlockCauldron`, `renderBlockAnvilMetadata`, `renderPistonBase`/Extension, `RenderBlockRedstoneLogic`, `RenderBlockBeacon`, `RenderBlockBed`, `RenderBlockBrewingStand`, `RenderBlockCocoa`, `RenderBlockAnvil`, `RenderBlockEndPortalFrame` |
-| Helpers | 5 | `renderTorchAtAngle`, `drawCrossedSquares`, `renderBlockStemSmall`, `renderBlockStemBig`, `renderBlockCropsImpl` |
+| Helpers | 2 | `renderTorchAtAngle`, `renderBlockStemBig` |
 | Falling/piston | 5 | `renderBlockSandFalling`, `RenderStandardFallingBlock`, `RenderStandardFullBlockMovedByPiston`, `renderPistonBaseAllFaces`, `renderPistonExtensionAllFaces` |
-| Other | 3 | `RenderBlockFlowerpot`, `RenderBlockHopper`, `renderItemIn3d` |
+| Other | 2 | `RenderBlockFlowerpot`, `RenderBlockHopper` |
 
 **NOTE:** Only needed if FC blocks override `RenderBlockAsItem()` to call specific render methods.
 Most FC blocks use the base 6-face cube which already works via the face rendering methods.
@@ -917,10 +991,13 @@ The 28 formerly-stubbed methods in the Forge bridge layer are implemented:
 - **ProxyBlock.attack/entityInside/stepOn** — all wrap entities via PlayerBridge/wrapEntity
 - **ProxyItem.hitEntity/mineBlock/interactLivingEntity** — all wrap via LivingEntityBridge
 - **ItemStackHelper.toMcStack/toFcStack** — full NBT + enchantment copy
-- **DamageSourceMapping.fcGloom** — mapped to sources.generic()
+- **DamageSourceMapping** — fcGloom mapped to magic (armour bypass). Since 2026-10-10 (ak), FC arrow/
+  thrown/fireball/indirectMagic/explosion sources map to their 1.20.1 types, and `hurtFromFc` applies
+  FC damage to vanilla entities through MC `hurt()`
 - **EntityBridge.playSound** — delegates to SoundMapping.playAtEntity
 - **ProxyAnimal/Mob/PathfinderMob NBT** — read/addAdditionalSaveData fully implemented
-- **BTWNetwork** — PenaltySync packet registered and handled
+- **BTWNetwork** — PenaltySync packet registered and handled (2026-10-10: plus FCAnimSync and the
+  FC|VC/FC|OP FCPayload; protocol "3", see (ab)/(al))
 
 ---
 
@@ -1080,6 +1157,12 @@ on ProxyMob/ProxyAnimal/ProxyPathfinderMob — FC already applies its own suffoc
 fcEntity.onUpdate(), so MC's check is redundant as well as wrong. A temporary [MOB-DMG] WARN in
 ProxyMob.hurt() (logs src/amount) is kept for one confirming run and will be removed after.
 
+2026-10-10 note (triage R4, R1): the dying diagnosis stands (MC inWall damage drained the
+MC-owned puppet HP; FC's own suffocation is the second source, see (t)). The red tint could not come
+from it: FCEntityRenderer drew FC mobs with OverlayTexture.NO_OVERLAY, so an MC hurt never tinted
+them. The red was the Tessellator colour leak (R1); see the correction under (u) and 2026-10-10
+(ac).
+
 ## 2026-07-09 (t) Fix FC mobs turning red / dying: FC-side spurious suffocation
 
 After (s) suppressed MC's suffocation (isInWall->false), mobs still flashed red and slowly
@@ -1103,6 +1186,13 @@ fall damage and, on a lethal fall, duped loot + revived the corpse (onDeath fire
 The surgical suffocation-only version above was re-reviewed clean. Note: FC suffocation never goes
 through MC hurt(), so the [MOB-DMG] log won't show it -- verify by eye (no red) after relaunch.
 
+2026-10-10 note (triage R5): the MC-side geometry probe used here to decide "suffocation" disagrees
+with FC's isBlockNormalCube. FCEnvHurtGuard now identifies the spurious hits from FC's own combat
+log, reverts only inWall damage (also when onUpdate throws) and keeps the probe only as a fallback;
+see 2026-10-10 (aa). Many of the spurious hits came from passable Modern-Common blocks that still
+reported isOpaqueCube()==true (tall grass, flowers, repeaters, chests), fixed in (af). "Verify by eye
+(no red)" could not work: the red was the Tessellator colour leak (triage R1), see (u) and (ac).
+
 ## 2026-07-09 (u) Fix stuck-on red overlay (FC self-suffocation hurt event)
 
 After (t), FC mobs stopped dying (health restored) but the red hurt overlay stayed stuck on.
@@ -1117,6 +1207,17 @@ combat runs outside onUpdate. Health is still reverted only for genuine suffocat
 in runOnUpdate), so fall/lava damage is untouched. Verified: run 16:47 shows 0 KILLED removals
 (only DISCARDED despawns) and [MOB-DMG]=0.
 
+2026-10-10 correction (triage R4, R1): the diagnosis above is wrong, and so is the one in (v).
+FCEntityRenderer drew FC mobs with NO_OVERLAY and the Modern-Common RenderLiving had no hurtTime
+pass, so a hurt event could not tint anything. The persistent dark red was the software
+Tessellator's sticky per-thread colour: a "dragon" XP orb (RenderXPOrb, ported in (g)) set
+(0.25-0.5, 0, 0, alpha 0.5), and every FC model captured afterwards inherited it (R1; the logged
+tint's alpha 0.50 matches RenderXPOrb, not the 0.40 of a damage pass). Player kills kept spawning
+dragon orbs because the lethal hit never reached FC (R2). The "0 KILLED removals" check also cannot
+see FC-side deaths, which end as DISCARDED like despawns (R5). Real fixes: 2026-10-10 (ac)
+(Tessellator colour semantics) and (aa) (kill credit, combat-log inWall revert). The isSelfHurt
+event-2 suppression added here is still in WorldBridge.setEntityState.
+
 ## 2026-07-09 (v) Fix stuck dark-red tint on FC mobs (synced hurtTime -> FC RenderLiving)
 
 The red survived (u) because it was never the MC hurt overlay -- FCEntityRenderer renders FC mobs
@@ -1130,3 +1231,1468 @@ FCEnvHurtGuard.runOnUpdate, clear fcEntity.hurtTime=0 whenever the mob is (false
 runs before broadcastFCEntityState in all three proxy ticks, so the client gets HurtTime=0.
 deathTime left alone (real death animations must still show). The setEntityState(2) suppression
 stays for the spurious MC hurt SOUND (renderer ignores MC overlay).
+
+2026-10-10 correction (triage R4, R1): the port had no FC RenderLiving damage pass. The
+RenderLiving.java:184-186 cited above is vanilla 1.5.2; the Modern-Common stand-in had no
+hurtTime/deathTime pass, and GL11.glColor4f was never read by the capture. Clearing hurtTime
+therefore had no visual effect, and the 17:04 confirmation run happened to draw no XP orb. The cause
+was the Tessellator colour leak (R1), fixed in 2026-10-10 (ac); see the correction under (u). Now
+that (ad) ports the real 1.5.2 RenderLiving and (ac) maps hurtTime/deathTime to OverlayTexture,
+hurtTime does drive the red flash. FCEnvHurtGuard now restores hurtTime only for reverted inWall
+hits, identified from FC's combat log; see (aa).
+
+## 2026-10-10 (w) Jar class precedence (E1): shipped jar ran 16 frozen classes; dead Client hook overloads
+
+Symptom (design E1; triage RE-M3, HAI-2 addendum): the breakage was prod-only, so no dev run
+reproduced it. The released 1.3.0-alpha.3 jar carried the frozen 1.5.2 copies of 16 classes that
+dev never runs (only that jar was audited; earlier uploads also packed fc as an own source, but
+their divergent set is unknown):
+ContainerBeacon/BrewingStand/Chest/Dispenser/Enchantment/Furnace/Hopper/Merchant/Repair,
+EntityAIBase, EntityAIControlledByPlayer, IEntitySelector, IMerchant, InventoryMerchant,
+SlotCrafting and SlotMerchantResult. What the jar really bound was missing 8 classes
+(InventoryRepair, SlotRepair, SlotEnchantment, SlotEnchantmentTable, SlotBeacon,
+TileEntityBrewingStand, EntitySelectorAlive, EntitySelectorInventory) and 6 members. In prod:
+
+- the anvil and enchanting table could throw NoClassDefFoundError from ProxyBlock.use, which has no
+  catch (RE-M3, which the triage rates "possible; needs a runtime check" and calls a strong but
+  unconfirmed candidate for "nothing works" on the shipped jar);
+- `IEntitySelector.<clinit>` failed (hopper minecart);
+- ContainerBridge.SimpleChestContainer doubled every slot, because the frozen ContainerChest
+  constructor adds them too;
+- the frozen SlotCrafting NPE'd on an empty take.
+
+Separately, in BOTH dev and the jar, a creeper kicked by a cow never became determined to explode,
+a zombie head-crabbed by a squid stayed silent, and FC's lightning hooks could not dispatch (a
+struck creeper would have been hurt instead of charged, and a pig never became a pigman; see the
+caveat below on why no lightning reaches FC mobs anyway).
+
+Root cause:
+
+- In Forge/build.gradle jar{}, `from sourceSets.fc.output` had no closure, so fc was an OWN source
+  of the main spec while Modern-Common was a CHILD spec. Gradle visits own sources first and
+  DuplicatesStrategy.EXCLUDE keeps the first copy, so fc won every collision in the jar. Dev was
+  right only because securejarhandler's UnionFileSystem searches the mods{} sources in reverse
+  order. The 'Modern-Common FIRST' build comment and the 2026-06-05 shadowing note above were wrong
+  about the jar (corrected there).
+- remapFcCode merges Client, Common and Server under EXCLUDE with Client first, so the Client
+  variant always ships. Client FCEntityCreeper/Pig/Zombie still declare the 4.B narrow overloads
+  (OnKickedByCow(FCEntityCow), OnStruckByLightning(FCEntityLightningBolt),
+  OnHeadCrabbedBySquid(FCEntitySquid)), while every caller invokes the widened btw.modern.Entity
+  hook, so they never dispatch.
+
+Fix:
+
+- jar{}: fc is now `from(sourceSets.fc.output) { exclude 'META-INF/MANIFEST.MF' }`, declared after
+  the Modern-Common child. The shadow list (jar excludes == removeModernCommonShadowedClasses) is
+  the only thing that lets fc win, in the jar and in dev alike. A new `jar.doLast` guard fails the
+  build unless btw/modern/ContainerChest is Modern-Common's bytes and btw/modern/Entity is fc's.
+- widenFcHookDescriptors pass (c): narrow hook overrides in fc Entity subclasses get the wide
+  `(Lbtw/modern/Entity;)V` descriptor and an `aload_1; checkcast <narrow>; astore_1` prologue;
+  classes are read with EXPAND_FRAMES and every widened method is logged. Passes (a)/(b) and the
+  flat-FC relocates are no-ops since the frozen-artifact regeneration; they now carry NOTEs and are
+  kept pending cleanup.
+- remapFcCode relocates `net.minecraft.server.MinecraftServer` to `btw.modern.MinecraftServer`. It
+  is the only net.minecraft.server name in fc (frozen Entity, EntityItem, EntityMinecart) and is
+  what lets WorldBridge extend WorldServer in (x).
+- tools/LinkAudit.java: the header documents the shared precedence rule; ROOT comes from the working
+  directory or -Dbtw.root; the reference scan now reads superclasses, interfaces, descriptors and
+  checkcast/new/ldc/indy constants instead of member-ref owners only (review BUILD-R1). New
+  sections: JAR PRECEDENCE CHECK (the built jar ships the modelled winner of every fc/Modern-Common
+  collision), FOREIGN net.minecraft REFS (any `net/minecraft/**` name outside `net/minecraft/src`,
+  or `net/minecraftforge/**` or `com/mojang/**`, linked by a winning fc or Modern-Common class; such
+  a name binds to the 1.20.1 class at runtime, as MinecraftServer.getServer did before the
+  relocate), and FC BYTECODE PATCHES (the pathing patch of (af)).
+- tools/BridgeAudit.java (orchestrator edit): the renderer texture check strips %blur%/%clamp% and
+  knows FCEntityRenderer's vanilla fallbacks (armour layers, power/witherarmor, glint, sheep fur,
+  spider and enderman eyes), so the new render paths of (ac)/(ad) raise no false "missing texture"
+  findings.
+- Stale comments corrected: dev source order, the jar block, the Client-vs-Server duplicate rule,
+  openUpEntityAccess, and the GL11 relocate comment (GL11 tracks colour, normal, lightmap,
+  texture-matrix translation, blend func and the TEXTURE_2D/BLEND/ALPHA_TEST/LIGHTING caps; only
+  depth/alpha-func/mask/polygon-offset, texture bind/params and immediate-mode calls are no-ops).
+
+Verification: final LinkAudit (after wave 5): shadow-list drift [] / [], 0 missing classes, 6
+missing members (8 in the pre-pass baseline; the 6 left are pre-existing and on inert paths:
+ILogAgent.logSevere, ItemArmor.func_94602_b, ServerConfigurationManager.transferEntityToWorld,
+TileEntityHopper.func_96114_a/suckItemsIntoHopper, WorldServer.resetUpdateEntityTick), FOREIGN REFS
+count=0, and JAR PRECEDENCE CHECK over 80 collisions with drift 0 / stale 0 / absent 0. Run against
+the old alpha.3 jar, the new check lists exactly the 16 drifts. Every build prints "Jar class
+precedence OK (ContainerChest = Modern-Common, Entity = fc)", and reverting the fc spec makes the
+guard fail. widenFcHookDescriptors logged 4 widened methods (Creeper x2, Pig, Zombie); javap shows
+the (btw.modern.Entity) descriptors and `java -Xverify:all` accepts the rewritten classes.
+BridgeAudit: 0 high-severity (the two particle-only aux-FX ids from (l) remain). Not run: a prod-jar
+game test of chest slots, anvil, enchanting table, villager trade, hopper minecart and a cow-kicked
+creeper.
+
+Caveats: EntityAIControlledByPlayer stays the inert Modern-Common stub in both environments (pig
+steering is not bridged). The guard's sentinel ContainerChest must stay off the shadow list. The two
+Client-only block-class overloads (FCBlockLogSmouldering, FCBlockNetherrackFalling) are not widened;
+their effect is client particles only. The widened OnStruckByLightning overloads now link and
+dispatch, but no lightning reaches them in game (triage HAI-M1): FCEntityLightningBolt is created
+only by the 1.5.2 WorldServer weather tick and the client's Packet71 handler (NetClientHandler),
+neither of which runs in the port, and 1.20.1's own LightningBolt is not passed to FC mobs (there is
+no thunderHit bridge). Creepers are not charged and pigs do not become pigmen; of the four widened
+methods only the cow-kick and squid head-crab ones have an in-game effect. The released
+1.3.0-alpha.3 jar keeps the old order: when triaging a report against it, check whether the code
+path runs through one of the 16 classes (for an older upload the set is unknown).
+
+## 2026-10-10 (x) One world identity: WorldBridge IS the WorldServer in worldServers[]; reload safety
+
+Symptom (triage HAI-5, RE1, RE2, RE3, RE-M2; design U6, U9, U9-ORDER):
+
+- FC cows that landed a kick threw `ClassCastException: btw.forge.WorldBridge cannot be cast to
+  btw.modern.WorldServer` at FCEntityCow.TransmitKickAttackToClients:528, skipping the rest of that
+  onUpdate; squid tentacle and attack-target syncs were lost the same way.
+- Witches froze after their first potion swap: the frozen EntityLiving.java:864 equipment loop cast
+  worldObj to WorldServer every tick, so onLivingUpdate never ran (seen in 9 Jul-9 sessions).
+- FC chickens never laid eggs, finite torches never burned out and the fire-starter chance never
+  decayed, because FCUtilsWorld.GetOverworldTimeServerOnly read a stub WorldInfo stuck at time 0.
+  The nether, wither and end progress flags were never saved, and worldServerForDimension(-1)
+  returned the overworld.
+- The tier-3 global ender chest was emptied on almost every reload.
+- Every closed world (server, levels, entities) stayed in memory for the life of the JVM.
+
+Root cause: FC saw two worlds per level. WorldBridge (extends World) served entities and blocks,
+while MinecraftServer.worldServers[] held ForgeWorldServerWrapper stubs with a default WorldInfo, in
+overworld/end/nether order. The earlier `extends WorldServer` attempt was reverted (2026-07-08
+section) because the frozen Entity.onEntityUpdate portal block calls
+WorldServer.getMinecraftServer(), whose 1.5.2 return type resolved to the 1.20.1 class.
+FcWorldSavedData reached the global inventory through getServer().worldServers[0], but the overworld
+WorldBridge is created during prepareLevels (spawn-chunk block entities and mobs), before
+ServerStartingEvent wires the server, so the load read nothing (fresh JVM) or the previous session's
+stub (re-entry) and the next save wrote an empty list over the file. Nothing cleared the static
+server or the bridge caches on stop, and each WeakHashMap cache value strongly referenced its key.
+
+Fix:
+
+- Modern-Common WorldServer gains getMinecraftServer() (1.5.2 WorldServer.java:1142) and
+  MinecraftServer gains getAllowNether(); with the relocate of (w) they link to
+  btw.modern.MinecraftServer. `WorldBridge extends btw.modern.WorldServer`; ForgeWorldServerWrapper
+  is deleted.
+- ForgeMinecraftServerWrapper.getAllowNether() returns false. Its only readers are the frozen
+  Entity/EntityMinecart portal blocks, and frozen EntityThrowable does set inPortal (FC urns, spider
+  webs); with true, 1.5.2 travelToDimension would discard the proxy and hit the missing
+  transferEntityToWorld. Puppet dimension travel stays with 1.20.1.
+- BTWLifecycle.wireWorlds fills worldServers[] with the real bridges in 1.5.2 order ([0] overworld,
+  [1] nether, [2] end, modded after; a missing slot aliases the overworld with a WARN), and
+  worldServerForDimension follows 1.5.2 (MinecraftServer.java:843-846).
+- The overworld's FcWorldSavedData (data/btw_fc_world_data.dat, not level.dat) saves the global
+  ender inventory under the port's key FCGlobalEnderItems (1.5.2 kept it in level.dat as
+  FCEnderItems) and the 1.5.2 progress flags FCNetherAccessed/FCWitherSummoned/FCEndAccessed
+  (WorldInfo.java:679-717), read from and written to the overworld bridge's own WorldInfo, keyed on
+  Level.OVERWORLD with no getServer() dependency. Every load/save section catches Throwable and logs
+  once (RE1).
+- New BTWLifecycle.onServerStopped (ServerStoppedEvent) nulls the static legacy server and its
+  worldServers[], clears the WorldBridge, EntityBridge, LivingEntityBridge and TileEntityBridge
+  caches, and detaches each WorldBridge (level nulled). EntityBridge, LivingEntityBridge,
+  TileEntityBridge and WorldInfoBridge hold their MC object weakly, and WorldBridge's
+  FC-entity-to-proxy map is weak-valued (RE2).
+- Other save/load paths made throw-proof in this pass: the ServerPlayerMixin NBT read/write and
+  restoreFrom hooks ((y); RE-M2, which runs on Minecraft's unguarded single-player player-load
+  path), ProxyBlockEntity save/load ((ae)) and setRemoved/clearRemoved (which run in stopServer
+  before session.lock is released) all catch Throwable. Related reload fixes live elsewhere:
+  headless item ids persist (RE5, (ag)), FC recipes survive login and /reload (RE6, (al)), and
+  puppet health survives reload (RE7, (aa)).
+- Supersedes the 2026-07-08 'REVERTED WorldBridge extends WorldServer' note and the LinkAudit
+  'WorldServer.getMinecraftServer is architecturally undeclarable' classification (both annotated
+  above).
+
+Verification: javap of the frozen btw.modern.Entity shows
+`WorldServer.getMinecraftServer:()Lbtw/modern/MinecraftServer;` and no net/minecraft/server/
+reference; LinkAudit no longer lists getMinecraftServer or getAllowNether. Server smoke test (both
+runs): "Wired world minecraft:overworld -> index 0 (FC dim 0)", "minecraft:the_nether -> index 1 (FC
+dim -1)", "minecraft:the_end -> index 2 (FC dim 1)", "World wiring complete: 3 worlds registered",
+no WorldServer ClassCastException and 0 ERROR lines. Not verified: the "Released BTW legacy server
+state" line, the heap check after quitting and session.lock release (the harness could not send
+'stop'), same-JVM re-entry, and the in-game checks: cow kicks play the client bow sound; witches
+keep fighting after drinking; fed chickens lay at dawn; finite torches expire; a tier-3 ender chest
+near spawn keeps its items across a fresh-JVM reload and a same-JVM re-entry.
+
+Caveats: torch and chicken timers saved while the clock read 0 catch up once, and global ender items
+already wiped cannot be recovered. FC mobs that change equipment now run onLivingUpdate, and mob
+loot pickup now removes the picked-up item (onItemPickup no longer throws before setDead()).
+Cow-kick, squid and attack-target FC|EV packets reach clients for the first time.
+Entity.travelToDimension stays unreachable by design. WorldBridge uses detach-on-stop rather than a
+weak reference to its ServerLevel (deferred), so a level that a mod unloads mid-session (dynamic
+dimensions; vanilla never does) stays reachable until the server stops, and a WorldBridge must not
+be used after ServerStoppedEvent. The triage found no BTW code path that reliably blocks re-entering
+a world; this entry removes the candidate failure modes (RE1, RE-M2, plus RE-M3 via (w)), but the
+original "can't re-enter" report is still unreproduced.
+
+## 2026-10-10 (y) Player bridge identity; melee, slowdown, block-speed and airborne penalties
+
+Symptom (triage HAI-1, RE-M1; design B3-CLIENT, B1, B2, B4):
+
+- After the first death in a session, or after leaving the End, hostile mobs ignored the player
+  until relog ("hostile mobs don't attack"), and the player stayed at the maximum FC health penalty:
+  25% movement and mining speed and the 'dying' HUD.
+- At FC health, hunger or gloom penalty levels, melee hits did about 1/8 of FC damage at modifier
+  0.5 and about 0 at 0.25; arrows, thorns and sweep damage were reduced too.
+- After a penalty cleared, the slowdown (and narrowed FOV) stayed until relog or death, and
+  sprint-jumping shed the debuff.
+- BTW's block movement modifier (+20% on hard surfaces) never applied to players.
+- A logged-out player's bridge stayed "alive", so FC mobs kept chasing a ghost frozen at the logout
+  spot.
+
+Root cause:
+
+- PlayerBridge.cache was a static WeakHashMap keyed by MC Entity.equals, which compares entity ids.
+  PlayerList.respawn builds a new ServerPlayer and then calls setId(oldId)
+  (PlayerList.java:440-443), so every lookup returned the dead player's bridge (health 0); FC target
+  acquisition rejected it as not alive. In singleplayer the LocalPlayer shares the ServerPlayer's
+  id, so the render thread got the server bridge. Values pinned their keys, and the map was not
+  thread-safe.
+- PlayerMixin.btw$applyMeleeDamageModifier used `@At("STORE")` with no @At ordinal (the `ordinal =
+  0` was the local's), so it scaled all four stores of `f` in Player.attack: m^3, or m^4 on a crit.
+  FCGameplayBridge.onLivingHurt then applied the modifier again to every player-attributed source.
+- FCGameplayBridge.onPlayerTick reconciled the MOVEMENT_SPEED modifier only while a penalty was
+  active, and rebuilt it every tick.
+- LivingEntityMixin and ClientPlayerSpeedMixin hooked LivingEntity.getSpeed, which Player.getSpeed
+  overrides without calling super, so both hooks were dead for players; getFlyingSpeed never saw the
+  penalty.
+- Nothing marked a removed player's bridge dead (1.5.2 calls setDead on logout and at the end of the
+  death timer).
+
+Fix:
+
+- The bridge lives in a volatile @Unique field on Player (PlayerMixin implements the new
+  PlayerBridge.Holder), and getOrCreate does double-checked creation under a lock: identity lookup,
+  collected with its player, safe on the render and server threads. A respawned or cloned
+  ServerPlayer keeps its own bridge, filled by ServerPlayerMixin.btw$restoreFrom. New
+  PlayerMixin.btw$markBridgeDead (Player.remove TAIL) sets isDead for every removal reason except
+  CHANGED_DIMENSION (logout, death timer, respawn, End exit), as 1.5.2 playerLoggedOut/onDeathUpdate
+  -> setDead did, so FC AI drops the target at once. Client players get their own bridge over a
+  read-only client world; PlayerBridge.createDetached serves the mining code of (z).
+- Melee: `@At(value = "STORE", ordinal = 0)`, so only the base store is scaled (1.5.2
+  EntityPlayer.java:1225-1242); onLivingHurt is deleted.
+- Slowdown: onPlayerTick sets the FC_PENALTY_UUID modifier to the current GetLandMovementModifier()
+  only when the value changes, and removes it at 1.0.
+- Block modifier: PlayerMixin.btw$applyBlockMovementModifier (Player.getSpeed RETURN, both sides)
+  applies only the block modifier, read from the block below Entity.getOnPos(); the penalty stays in
+  the attribute. The dead LivingEntityMixin hook and ClientPlayerSpeedMixin are deleted.
+- Airborne: PlayerMixin.btw$applyAirbornePenalty (Player.getFlyingSpeed RETURN) returns `0.02*m +
+  (sprinting ? 0.006 : 0)`, as 1.5.2 EntityPlayer.java:513-523, except in creative/spectator flight;
+  m is read on both sides from the synced attribute modifier.
+- PlayerBridge.username is set from the GameProfile in the constructor and bound by FCLoginHandler
+  on login and every PlayerEvent.Clone, so taming a wolf after a respawn no longer NPEs
+  (FCEntityWolf.java:310) or stores a null owner.
+- ServerPlayerMixin's NBT read/write and restoreFrom hooks catch Throwable and log once per player
+  per hook (RE1, RE-M2); the tick hook logs once per throw site ((am)).
+- Supersedes parts of 2026-07-09 (b), (e) and (j) (annotated there).
+
+Verification: compile and audits only. The smoke test's "[SELF-AUDIT/speed] checked 1177 blocks, 0
+with getSpeedFactor > 1.0" is unchanged; no player joined. In game (not yet run): /kill and respawn,
+then zombies and creepers target and hit the player again, food resets and there is no 25% crawl;
+after healing, `/attribute @s minecraft:generic.movement_speed modifier value get
+b3e3b4a0-fc01-4e3b-8c1a-deadbeef1234` finds no modifier without a relog; sprinting on stone is about
+20% faster than on grass and sprint-jumping does not accelerate; on a dedicated or LAN server a
+zombie stops chasing a player who logs out; taming a wolf after a respawn records the player's name;
+repeated quit-and-re-enter keeps the heap's PlayerBridge count at the number of live players.
+
+Caveats: the FOV still narrows while penalised (the penalty is an attribute modifier). Client-side
+bridges (LocalPlayer, RemotePlayer) refresh their position only when a client caller syncs them.
+Metadata-dependent GetMovementModifier overrides still see a null World and give 1.0, and FC's 0.8
+ground-cover factor is not bridged. As in 1.5.2, FC gloom and starvation effects now stop on a dead
+player during the death screen.
+
+## 2026-10-10 (z) FC dig speed on both sides; stump flicker; passable null-collision FC blocks
+
+Symptom (design B3, B3-MSM, B3-CLIENT; review P1):
+
+- Every BTW block (ids 175+) broke at the same speed whatever the tool: FC rough stone took about
+  3.4 s bare-handed or with any pick.
+- FC's health, hunger, fat and gloom penalties never slowed mining.
+- On a dedicated server, mining stone, ore or logs with FC hardness threw an NPE on the client, a
+  client crash on the first stone mined: the dig prediction
+  (BlockBehaviorMixin.btw$getDestroyProgress, no try/catch) ran FC's getBlockHardness against a
+  fresh PlayerBridge whose world was null (design B3-CLIENT). This comes from static analysis and was
+  not reproduced at runtime. In singleplayer the LocalPlayer shared the ServerPlayer's entity id, so
+  it used the server bridge and did not crash.
+- Interim regression inside this pass (review P1, fixed below): after the identity change of (y),
+  tree-base logs (stumps) broke, reappeared and broke again in singleplayer.
+- FC blocks that have no collision in 1.5.2 (rails, plants, torches, campfires, candles, webs,
+  ground cover, hand cranks, the invisible detector logic) were solid walls or steps.
+- Survival-mining a modern-only block (deepslate, tuff, granite, andesite, ...) with a vanilla or FC
+  tool could crash the integrated server (NPE in FCItemTool.onBlockDestroyed, rethrown by
+  PacketUtils), and FC tools took no durability from modern blocks.
+- In creative, blocks and seeds placed against FC terrain were used up.
+
+Root cause:
+
+- ProxyBlock.getDestroyProgress returned `1/(hardness*30)`, assuming Forge applies the tool
+  afterwards. 1.20.1 BlockBehaviour.getDestroyProgress applies the tool inside itself
+  (BlockBehaviour.java:364-372), and both game modes use the value raw.
+- m_fCurrentMiningSpeedModifier (FC packet 166) was never set.
+- The client predicted vanilla-id blocks through its own bridge, whose dummy world returned metadata
+  0, while the server derives meta 12 for a stump (WorldBridge.deriveVanillaMetadata) and FCBlockLog
+  triples a stump's hardness, so the client broke it 3x early and the server's STOP check (>= 0.7)
+  rejected the break.
+- ProxyBlock.getCollisionShape used the FC bounds even when FC's getCollisionBoundingBoxFromPool is
+  null, which in 1.5.2 means no collision (Block.java:658-666).
+- ProxyRegistry.getBlockId returns 0 for modern-only blocks, and 1.5.2 tool code dereferences
+  Block.blocksList[0] (FCItemTool.java:66, FCItemClub.java:58).
+- 1.20.1 restores the creative count only around ItemStack.useOn, never around Block.use.
+
+Fix:
+
+- New btw.forge.FCMiningSpeed.relativeHardness returns FC's own Block.getPlayerRelativeBlockHardness
+  (vanilla/server Block.java:2340-2361) on both sides: on the server through the player's bridge and
+  WorldBridge, on the client through PlayerBridge.createDetached(LocalPlayer) over
+  ProxyEntity.createDummyClientWorld (held by a WeakReference). FC's mining penalty is applied for
+  that call only, derived on each side from the same levels (the server bridge, or the PenaltySync
+  mirror). ProxyBlock.getDestroyProgress and BlockBehaviorMixin.btw$getDestroyProgress both call it;
+  if FC throws, a rate-limited BTW-Mining warning is logged and the old formula or vanilla is used.
+  FCGameplayBridge.onBreakSpeed stays a no-op, so nothing double-applies.
+- createDummyClientWorld.getBlockMetadata returns the now-static WorldBridge.deriveVanillaMetadata
+  for non-META states, so the client sees the server's stump, axis and fluid metadata (mining open
+  decision 2, option (b)).
+- ProxyBlock.getCollisionShape returns Shapes.empty() when FC's collision box is null (probed only
+  for FC classes that override it); selection keeps the FC bounds. FC webs (1037) slow entities
+  through makeStuckInBlock(0.25, 0.05, 0.25).
+- ProxyBlock.entityInside ports 1.5.2 contact fire for MC entities, players included (stoked fire, a
+  burning ladder, lit campfires): 1 inFire damage per tick, ignition for 8 s after 20 contact ticks
+  for players. Wet, fire-immune and creative players are not ignited; FC puppets are skipped because
+  FC already burns them.
+- Item-on-block stage 2 goes through ProxyBlock.tryPlaceHeldItem from both ProxyBlock.use and
+  BlockBehaviorMixin.btw$use; it writes FC's held-stack edits back and in creative restores the
+  stack's damage and size (1.5.2 ItemInWorldManager.java:394-402).
+- Modern blocks: ItemStackMixin and ProxyItem.mineBlock skip FC unless the id is an FC block (the
+  crash fix); ProxyItem.minedBlockIdForFc then reads ProxyRegistry.getWorldBlockId, so a modern
+  block reaches FC as the stand-in of (ag) with the MC destroy speed (liquids and missing ids are
+  skipped), and ProxyItem.mineBlock wears the held stack in place and broadcasts the break effect.
+
+Verification: compile and audits only; nobody mined anything in the smoke test. Expected in game
+(not yet run): FC rough stone (block_1027, hardness 2.25) takes about 22.5 s bare-handed, 3.35 s
+with a stone pick and 0.6 s with an iron pick, with one destroyBlock per break; a natural oak stump
+takes 3x as long as a higher log and does not flicker in singleplayer or on a dedicated server;
+on a dedicated server the client mines stone, ore and logs without an NPE; famished or gloom
+doubles dig time; players walk through FC campfires, candles, plants, torches and detector rails; an
+FC web slows like a cobweb; stoked fire burns and ignites a survival player but
+not a creative one; creative placement against FC terrain leaves the hotbar unchanged; an FC steel
+pickaxe on deepslate loses 1 durability per block without a crash; `grep BTW-Mining latest.log` is
+empty in normal play.
+
+Caveats: server-only vanillaMetaOverrides (vanilla blocks whose meta FC set explicitly) are
+invisible to the client prediction. 1.20.1-only blocks get no FC mining penalty. MC fluids now flow
+into null-collision ProxyBlocks and break them; that is 1.5.2-like for plants and circuits, but vine
+traps (leaves material) and placed buckets diverge. MC's cached per-state collision (suffocation,
+isSolid, the puppet ground check) is computed at meta 0. The collision probe allocates a
+btw.modern.World per query for FC classes that override getCollisionBoundingBoxFromPool. The
+contact-fire counter is kept per entity in ProxyBlock and survives stepping out and back in within
+20 ticks, where 1.5.2 resets it. Pre-existing: if FC re-syncs the PlayerBridge in the middle of a
+call, the held FC stack is detached and a later survival decrement is not written back.
+
+## 2026-10-10 (aa) FC mob puppets: kill credit, one HP pool, no MC drowning, death-only scroll drops
+
+Symptom (triage R2, D1, D2, D6, D-M1, R5, RE7, SW4, SW7):
+
+- One-hit player kills dropped red, uncollectable dragon orbs instead of green XP, which also fed
+  the red tint of (ac).
+- fc_squid drowned in rivers and lakes about 25 s after submerging, dropping ink sacs (and the
+  occasional Respiration scroll) with MC's generic player "oof" on each hit. Glow squids and
+  drowned, still vanilla then (see (ah)), dropped arcane scrolls while alive: Respiration about
+  every 12 s, Smite about every 50 s. Together these were the "ink sacs and arcane scrolls appearing
+  in lakes" reports.
+- Mobs killed by FC-side causes (fall, fire, FC-mob melee) vanished silently with full MC health.
+- Wounded FC mobs came back at full health after every reload; slimes could reload with the wrong
+  max health.
+- Spurious FC suffocation could still drain HP and play hurt sounds.
+- FC blazes, ghasts, pigmen, magma cubes and wither skeletons took damage in lava and fire.
+- Hostile mobs emitted one FLAME particle per second at their next path waypoint (debug leftover).
+
+Root cause: MC owns puppet HP, but:
+
+- ProxyMob, ProxyAnimal and ProxyPathfinderMob forwarded only non-lethal hits to FC
+  attackEntityFrom, the only place FC sets recentlyHit. The lethal hit went straight to die() ->
+  onDeath, so onDeathUpdate took BTW's "not killed by a player" dragon-orb branch
+  (EntityLiving.java:739-748), and vanilla XP was suppressed along with vanilla loot.
+- Damage FC applied inside onUpdate, or that other FC mobs dealt, never reached MC; the only
+  MC-to-FC mirror ran on hurt.
+- fc_squid is a ProxyPathfinderMob, not a WaterAnimal, so ForgeHooks.onLivingBreathe drowned it; the
+  proxies used MC's GENERIC_HURT/DEATH sounds.
+- ensureFcEntity called setHealth(max) after the NBT load.
+- FCEnvHurtGuard decided "suffocation" with an MC geometry probe that disagrees with FC's
+  isBlockNormalCube.
+- FCGameplayBridge.onLivingTick rolled FC's per-death CheckForScrollDrop odds on LivingTickEvent, 20
+  rolls a second, matching only the unreplaced vanilla classes.
+- MC's Entity.baseTick on_fire/lavaHurt ran alongside FC's own burning and lava damage, and no fc_*
+  type is fireImmune().
+
+Fix:
+
+- New FCPuppetSupport, shared by the three proxies. creditAttacker gives the 1.5.2 attackEntityFrom
+  credit (EntityLiving.java:1095-1118) on every MC-accepted hit and in die(), and die() follows the
+  1.5.2 order: credit, health 0, FC death sound, onDeath.
+- FCPuppetSupport.HealthLink reconciles before and after FC onUpdate: FC-side HP loss goes onto MC
+  (with MC's invulnerability window and an event 2), an FC death becomes MC die(generic) (event 3,
+  no second onDeath, vanilla loot suppressed), and MC-side heals go onto FC. tickDeath waits for
+  FC's onDeathUpdate, which spawns the XP at deathTime 20.
+- All proxies return canBreatheUnderwater() true and keep full MC air, leaving FC's own air logic
+  (EntityWaterMob, EntityLiving.onEntityUpdate:618-647) as the only one; getHurtSound/getDeathSound
+  return null because FC plays its own.
+- RE7: the loaded Health is kept; readAdditionalSaveData re-seeds MAX_HEALTH from the restored FC
+  state (slime and magma cube size) and clamps Health to it.
+- R5: FCEnvHurtGuard reads FC's CombatTracker entries from the update and reverts only inWall
+  damage, plus the hurtTime and hurt resistance it set when those were the update's only self-hits.
+  The revert runs in a finally block, so it also covers an onUpdate that throws; the old probe is
+  only a fallback. FCEnvHurtGuard.deferSelfSound, called first by WorldBridge.playSoundAtEntity,
+  holds back self-hurt sounds during the update and drops them when the only self-hits were reverted
+  inWall hits.
+- Fire: the proxies drop MC on_fire, lava and in_fire damage and skip lavaHurt; FC's own damage,
+  mirrored by the health link, is the only copy.
+- D2: onLivingTick is replaced by onLivingDrops (LivingDropsEvent): one roll at death, server only,
+  non-baby, doMobLoot, non-creative world type (1.5.2 EntityLiving.java:3343-3369), using FC's own
+  per-mob odds and enchantments (the old table had wrong entries for ghast, witch, blaze, magma cube
+  and wither skeleton). It matches vanilla mobs only; FC puppets roll inside FC.
+- SW4: the puppets' onGround patch counts only real collision shapes under the feet, so water is no
+  longer ground. SW7: the FLAME waypoint particles are removed, and [MOB-DMG]/[ENTITY-DIED] logging
+  is gone ((am)).
+
+Verification: compile and audits only. The smoke test spawned puppets (worldgen pigs, sheep, cows
+and chickens, structure villagers) with 0 ERROR lines, but no player interacted with them. In game
+(not yet run): kill a size-1 slime or a chicken with a sword and get a green, collectable orb, drops
+once and no dragon orb; `/summon betterthanwolves:fc_squid` in open water and poll Air (stays 300,
+no hurt sounds); push an FC cow off a 25-block drop (Health falls, drops once, proxy removed after
+FC's orb); damage a cow, save and reload (health kept); reload a damaged big slime (`Health <=
+MAX_HEALTH = size*size`); mobs pressed against walls neither flash, lose HP nor make periodic hurt
+sounds, while fall and lava still hurt; an FC blaze in lava takes no damage; a glow squid or drowned
+kept alive drops no scrolls.
+
+Caveats: land mobs now drown only through FC's own air logic, so FC's water-detection gaps apply
+(see (ag): an eye inside a waterlogged stair or slab is not "in water"). A fire-resistance potion on
+the MC side does not protect a puppet from FC fire damage, as before. Since (ah) replaces glow
+squids, drowned, husks, zombie villagers, strays and wither skeletons, onLivingDrops now rarely
+matches anything; those mobs roll FC's own scroll drop as puppets. The BTWNetwork protocol changed
+(now "3", see (al)), so mismatched client and server builds are refused.
+
+## 2026-10-10 (ab) Client FC mobs animate every tick; entity events reach every puppet
+
+Symptom (triage R8, HAI-7 data half; reviews RF-1, proxies P1): legs, body and head stuttered at 10
+Hz; sheep never grazed and wolves never visibly shook or howled; slimes never squished, chickens
+never flapped and ghasts never showed their firing face; wither side heads stayed fixed; an iron
+golem's raised arms and offered poppy never went back on the client; the creeper swell and flash
+stayed at 0. FC-originated entity events (8, 10, 6/7, 11-16) reached clients only for proxies
+spawned through WorldBridge.spawnEntityInWorld, never for replacer- or MC-spawned ones. An interim
+client wolf tick briefly left wolves that touched water permanently darkened (review P1, fixed
+below).
+
+Root cause: the client branch of the proxies' tick only copied position. State came from the 2-tick
+FCEntityStateSync snapshot, which overwrote the animation floats, so RenderLiving interpolated the
+same pair across two client ticks. No proxy overrode handleEntityEvent. The client halves of 1.5.2
+onUpdate/onLivingUpdate for slimes, chickens, ghasts, withers, iron golems, wolves and creepers
+never ran, and WorldBridge.setEntityState only knew FC-spawned proxies.
+
+Fix:
+
+- FCPuppetSupport.clientAnimTick runs after MC interpolation and is render-only (no physics, no
+  position writeback). It maintains prev and current position from MC; body and head yaw and swing
+  from the new per-tick BTWNetwork.FCAnimSync packet; limb swing from interpolated motion
+  (EntityLiving.java:1666-1677); hurt and death timers; sheep grazing; wolf howl, shake and head
+  tilt (the client starts the shake itself once the wolf is out of water, on the ground and still,
+  EntityWolf.onLivingUpdate :191-202); the creeper fuse counters lastActiveTime/timeSinceIgnited
+  (EntityCreeper.java:130-150; DataWatcher 16 arrives with the state sync); slime and magma cube
+  squish (EntitySlime.onUpdate :106-151); chicken wing flap (:65-95); the ghast firing face
+  (DataWatcher 16); wither head angles from the synced target ids (EntityWither.java:171-207); the
+  iron golem's attackTimer and holdRoseTick countdown (EntityIronGolem.java:113-121, fields reached
+  through a ClassValue); and silverfish ticksExisted for the body wave.
+- FC-relevant entity events and MC damage events are forwarded to the client FC entity's
+  handleHealthUpdate, and the live state sync no longer overwrites client-maintained fields.
+  WorldBridge.setEntityState (and explosions) fall back to finding the puppet by entity id, so
+  replacer- and MC-spawned puppets get FC events too.
+
+Verification: compile and audits only; nothing client-side was run. In game (not yet run): legs move
+smoothly and zombies swing when attacking; a wolf that swims, climbs out and stops shakes once and
+returns to normal brightness; slimes squash on landing; chickens flap while falling; a ghast opens
+its mouth while charging; wither side heads track their targets; a golem's arms settle about 0.5 s
+after a punch and its poppy is lowered after 20 s; a creeper swells and flashes white before
+exploding.
+
+Caveats: squid tentacle and body angles, and the cow-kick and squid tentacle-attack counters, are
+still not maintained on the client. Particle-only events (6/7 taming hearts and smoke, 12-14
+villager, 15 witch) are forwarded, but the client dummy world's spawnParticle is a no-op; enabling
+it would double the taming particles the server already sends.
+
+## 2026-10-10 (ac) Red mobs: 1.5.2 Tessellator colour rules, per-quad GL state, OverlayTexture flash
+
+Symptom (triage R1, R6, D3, R4; the "all mobs are forever red", "textures turn red" and "vanilla
+mobs constantly in a dying state" reports, which only 1.3.0-alpha.3 can produce): after any unowned
+"dragon" XP orb had been drawn, every later FC model on the render thread (mobs, arrows, windmills,
+urns, paintings, TESR items) was tinted opaque dark red. Owned orbs, lightning, lifted redstone and
+render-thread block bakes leaked other colours. Dragon orbs cannot be collected, live 6000 ticks and
+are saved, so the tint came back right after loading a world with orbs nearby. glColor-driven tints
+(sheep wool, wolf collars, dyed windmill blades, RenderItem tints) never showed. Each FC entity was
+drawn with one RenderType taken from its first quad, so armour, eyes and translucent layers could
+not render. Mobs never flashed red when hit and creepers never flashed white. Every FC capture was
+turned 180° about Y, so arrows pointed backwards.
+
+Root cause: btw.modern.Tessellator kept one sticky colour per thread. 1.5.2 Tessellator.startDrawing
+clears hasColor (Tessellator.java:322-339), so an uncoloured draw uses GL's current colour; the
+port's startDrawing*/startCapturing reset nothing, and GL11.glColor was tracked but never read. FC
+mob models never set a colour, so they inherited whatever the RenderXPOrb port of 2026-07-09 (g)
+(commit bd8f23f) last set: (0.25-0.5, 0, 0, alpha 0.5) for dragon orbs. The logged tint's alpha 0.50
+matches RenderXPOrb, not the 0.40 of a damage pass. FCEntityRenderer multiplied the texture by it
+under entityCutoutNoCull with no blending. GL blend, texture and lightmap state were discarded. The
+1.5.2 damage pass (RenderLiving.java:196-217) was never ported and FCEntityRenderer used NO_OVERLAY.
+The 180° turn compensated the old stand-in RenderLiving's glScalef(1,-1,-1) but was applied to every
+renderer. The dragon orbs that player kills spawned ((aa), R2) kept the source supplied. This is why
+2026-07-09 (u) and (v) could not work (see the corrections there).
+
+Fix:
+
+- Tessellator follows the 1.5.2 per-draw rules: startDrawing* and startCapturing clear hasColor,
+  hasNormals, hasBrightness and isColorDisabled, and uncoloured or un-normalled vertices take GL11's
+  current colour and normal (white and 0,1,0 by default). startCapturing also calls
+  GL11.resetCaptureState(), 1.5.2's per-object defaults (RenderManager.java:203-204,
+  TileEntityRenderer.java:154-155), and clears the tessellator translation, which a renderer that
+  threw between setTranslation and its undo used to leave on every later capture (review RC-1).
+- GL primitives: strips become paired quads (FC's lightning bolt), triangles and fans become
+  degenerate quads, and lines and points are dropped. A /terrain.png or /gui/items.png bind keeps an
+  icon name already recorded.
+- GL11 tracks, per thread, GL_TEXTURE_2D per texture unit (OpenGlHelper.setActiveTexture), GL_BLEND
+  and glBlendFunc, GL_ALPHA_TEST, GL_LIGHTING, the lightmap coords and glMatrixMode; a GL_TEXTURE
+  translation is recorded as a swirl offset. Every CapturedQuad snapshots this state.
+- FCEntityRenderer batches quads per (texture, blend, light override, swirl): entityCutoutNoCull for
+  opaque, entityTranslucent for SRC_ALPHA/ONE_MINUS_SRC_ALPHA (slime shell), eyes for additive
+  (spider, enderman and wolf eyes), energySwirl for a texture-matrix scroll (creeper and wither
+  power), armorEntityGlint for misc/glint.png, lightning() for untextured additive geometry; other
+  untextured quads are skipped.
+- Overlay: OverlayTexture.pack(u(RenderLiving.getOverlayWhiteness), v(hurtTime > 0 || deathTime >
+  0)), applied only to batches drawn from entity textures. Icon batches (held items, carried blocks,
+  the snowman's pumpkin) use NO_OVERLAY, as 1.5.2's damage passes re-render only mainModel and
+  armour (RenderLiving.java:189 vs :196-234; review RC-2).
+- Textures: bundled 1.5.2 originals first, with 1.20.1 fallbacks for armour layers, creeper and
+  wither armour, glint, sheep fur and eyes; bare icon names use the bundled file, else the
+  block-atlas sprite; unknown paths are logged once.
+- The 180° flip applies only when GL11.usedLegacyEntityFlip() reports the old stand-in's flip, which
+  no longer happens after (ad).
+
+Verification: compile and audits only (BridgeAudit's texture check knows the new fallbacks, (w)).
+Nothing client-side was run, so the tint fix is verified by code review only. In game (not yet run),
+the triage's reproduction: kill a 1-HP slime or let a zombie burn at dawn so a dragon orb appears;
+the orb renders dim red and mobs drawn afterwards look normal. Also: a hit gives about 10 ticks of
+red flash; a creeper fuse pulses white and a charged creeper shows a swirl; spider and enderman eyes
+glow at night; slimes show a translucent shell; sheep wool and wolf collars carry their dye; dyed
+windmill blades are coloured; arrows point the way they fly; lightning is a translucent blue-white
+bolt; block models and TESR items look unchanged.
+
+Caveats: the hurt tint follows the client FC entity's hurtTime/deathTime (maintained on the client
+by (ab)), so a server hurtTime that gets stuck would now really show as a persistent red tint; the
+inWall revert of (aa) therefore matters visually. Untextured non-additive geometry has no MC
+equivalent and is dropped (the RenderLiving colour pass, the mining-charge flash, name-tag
+backgrounds, the fishing line). A light override is applied as the per-channel maximum with the host
+light. Strip conversion assumes paired vertices. Non-living FC renderers lose the old 180° turn;
+that matches 1.5.2, but windmill and water-wheel spin direction and fixed billboard facing change
+visibly.
+
+## 2026-10-10 (ad) 1.5.2 entity renderers ported; held items, armour, carried blocks, block icons
+
+Symptom (triage R7, SW2, SW6; design U5b; the "mob animations buggy" reports): chicken wings, wolf
+tails and squid tentacles spun continuously; zombies and skeletons never swung their arms and showed
+no held item or armour; sheep had no wool; slimes were all one size with no shell; babies were
+adult-sized; dying mobs stood upright and vanished; squids were yawed twice; creepers neither
+swelled nor flashed; endermen had no eyes and no carried block; villager zombies used the plain
+zombie head; magma cubes, withers and wither skulls drew the debug box (so did the fc_iron_golem
+and fc_silverfish types that (ah) added in this pass, until their renderers landed; in alpha.3 those
+mobs showed as a vanilla villager or zombie). Follow-ups found while porting (interim states of
+this pass, not alpha.3 behaviour): held items drew the missing texture, carried and held blocks
+sat half a block off, an invisible mob showed the orange debug box, a held item emitted about 1026
+edge quads instead of 66, held blocks drew as flat icons with wrong textures, flowers carried by
+endermen drew as cubes, held and worn blocks were textured with the mob's own skin until the first
+FC block was meshed, a carried grass block showed the 1.20.1 tall-grass texture with a grey top, and
+undyed leather armour on mobs rendered black or untinted with no trim layer.
+
+Root cause: Modern-Common RenderLiving was a minimal stand-in, unchanged since 2443805. It never
+called setLivingAnimations, renderSwingProgress, handleRotationFloat, shouldRenderPass or
+renderEquippedItems, never set model.isChild/isRiding/onGround, and passed ticksExisted+pt where
+1.5.2 passes handleRotationFloat (ModelChicken.java:99-100, ModelWolf.java:199, ModelSquid.java:48),
+which made wings, tails and tentacles spin. It also rotated by 180-bodyYaw itself before calling
+rotateCorpse, which squids override. The vanilla Render* subclasses were 5-7 line constructor stubs.
+Downstream Modern-Common gaps: RenderBlocks.renderBlockAsItem lacked 1.5.2's 90° turn and ±0.5
+centring and never dispatched to block.RenderBlockAsItem; ItemBlock inherited Item's sprite number 1
+and item icon, where 1.5.2 returns 0 and the block's top texture (ItemBlock.java:42-56); the plant
+stand-ins kept render type 0; block icons were registered lazily on the first FC block capture,
+while 1.5.2 TextureMap registered every block before anything drew; BlockGrass had none of 1.5.2's
+client methods; 1.5.2 item icon names (swordIron, hatchetIron, dyePowder_black, ...) were renamed in
+1.20.1; the vanilla armour was built without an EnumArmorMaterial and ItemArmor.getColor returned 0
+(reviews RP-4, RC-3).
+
+Fix:
+
+- RenderLiving is now 1.5.2 doRenderLiving (vanilla/client RenderLiving.java:66-257), issuing GL11
+  calls as 1.5.2 does: rotateCorpse with the deathTime tip-over, glScalef(-1,-1,1),
+  preRenderCallback before the -1.5078 translate, child `limbSwing*3`, the
+  shouldRenderPass/renderPassModel loop with the glint, and renderEquippedItems. The
+  hurt/death/creeper colour pass is left to (ac)'s OverlayTexture through the new
+  RenderLiving.getOverlayWhiteness; name tags are left to 1.20.1.
+- Ported every vanilla renderer FC registers (FCBetterThanWolves.java:2395-2446): RenderBat, Blaze,
+  Chicken, Cow (FC udder), Creeper, Enderman, Ghast, MagmaCube, Ocelot, Pig, Sheep, Skeleton, Slime,
+  SnowMan, Spider, Villager (FC priest eyes), Witch, Wither, WitherSkull (now a plain Render), Wolf,
+  Zombie, and RenderBiped (armour passes, FCItemArmorMod, held items, arm pose, and worn skulls
+  including FC's infused skull and its eyes pass). New models: ModelZombieVillager, ModelMagmaCube,
+  ModelWither, ModelSkeletonHead, ModelSilverfish. ModelCow gains the calf head offset and the FC
+  kick leg; ModelWitch resets its nose offsets each call (review RP-1). RenderIronGolem and
+  RenderSilverfish are registered for the frozen classes (U5b). Members the Modern-Common stubs lack
+  are reached through the new RenderEntityAccess (cached reflection, checked against the frozen
+  classes with javap). This also resolves LinkAudit's FCClientRenderSpider.setSpiderEyeBrightness.
+- Held items: ItemRenderer.renderItem(EntityLiving, ItemStack, int) and RenderManager.itemRenderer
+  are added; the extrusion slice count comes from the icon (sliceSheetWidth/Height, also used by
+  RenderItem, which now takes the 1.5.2 `fancyGraphics || m_bForceFancyItemRender` path).
+  FCBakedModel.VANILLA_ITEM_TEXTURE_MAP maps 156 lower-cased 1.5.2 item icon names (144 listed
+  plus the 12 music discs) to minecraft:item/ textures, and VANILLA_TEXTURE_MAP gains the plant and torch names (rose -> poppy,
+  flower -> dandelion, tallgrass -> grass, saplings, mushrooms, dead bush, redstone torch).
+  FCEntityRenderer accepts a bundled icon file only for "fc*" names.
+- Blocks as items: RenderBlocks.renderBlockAsItem dispatches to block.RenderBlockAsItem as 1.5.2
+  does (RenderBlocks.java:9453-9456); the default's re-entry is answered by
+  renderBlockAsItemVanilla, so there is no recursion, and an override that throws is logged once and
+  drawn plain afterwards. renderBlockAsItemVanilla follows 1.5.2: dispenser/dropper/furnace metadata
+  3, render types 1, 6, 13, 16, 19 and 23, the ±0.5 centring, GetBlockBoundsFromPoolForItemRender
+  instead of overwriting the shared block bounds, and the useInventoryTint colour (without 1.5.2's
+  brightness factor). DoesRenderIDRenderItemIn3d is the 1.5.2 table and Block.DoesItemRenderAsBlock
+  uses it; drawCrossedSquares, renderBlockStemSmall and renderBlockCropsImpl are verbatim ports.
+  Render types: BlockFlower 1 (saplings, mushrooms, dead bush and tall grass inherit it), BlockStem
+  19, BlockCactus 13 (with its 1.5.2 icons), BlockReed 1, BlockLilyPad 23, BlockNetherStalk 6.
+  ItemBlock returns sprite number 0 unless the block names an item icon, and getIconFromDamage
+  returns the block's top icon, falling back to the item icon.
+- Icons and colour: BTWClientEvents.onModifyBakingResult runs
+  FCBakedModel.ensureGlobalIconsRegistered() at the end of model baking (also on the
+  placeholder-model-missing branch, review CL-R1), so block icons exist before anything draws; the
+  lazy pass remains as a fallback. BlockGrass gains 1.5.2 getIcon/registerIcons (grass_top, the dirt
+  bottom, grass_side plus its overlay), the default colour 0x7CBD6B and colorMultiplier;
+  BlockTallGrass.getRenderColor is ported.
+- FCEntityRenderer draws the debug box only when the FC entity or its renderer is missing, or when
+  doRender threw and captured nothing; a clean empty capture draws nothing (an invisible mob, as in
+  1.5.2).
+- Armour: the vanilla armour is built with CLOTH/CHAIN/IRON/DIAMOND/GOLD, and
+  ItemArmor.hasColor/getColor/removeColor/func_82813_b are ported (undyed leather is 10511680,
+  brown).
+
+Verification: compile and audits only; [SELF-AUDIT/renderer] is client-side and was not run. A javap
+check confirmed that every renderer constructor and method FC client bytecode calls exists with the
+1.5.2 descriptor (for example `RenderSpider.setSpiderEyeBrightness(Lbtw/modern/EntitySpider;IF)I`)
+and that every reflectively reached frozen member exists; the wave-1 review token-diffed the ports
+against vanilla/client. In game (not yet run): chicken wings rest folded and wolf tails follow
+health; sheep wool is coloured and disappears when sheared; slimes scale with size; babies are
+small; dying mobs tip over (spiders onto their backs); squids face their swim direction; magma
+cubes, withers, wither skulls, golems and silverfish render; a skeleton's bow and a zombie's sword
+show their sprites; the snowman's pumpkin sits on its head and an enderman's carried block is
+centred; an enderman's flower draws as crossed planes and its grass block has a green top; an
+invisible mob shows no orange box; leather armour on a mob is brown with its trim layer.
+
+Caveats: the animations are only as good as the client FC state of (ab). A player skull with a
+SkullOwner draws the default char.png (no skin download). Icon names shared by a terrain icon and an
+item icon (clay, brick, reeds, netherquartz, comparator) resolve to the block texture, and skulls
+and beds have no 1.20.1 item texture. The torch, chest, anvil, hopper and other special item
+branches still draw as cubes. ItemBlockWithMetadata, ItemMultiTextureTile and ItemColored flat icons
+use meta 0. Held block items run FC RenderBlockAsItem overrides with a null blockAccess; an override
+that dereferences it is logged once and drawn plain from then on. Grass colour is a fixed default
+because the port's BiomeGenBase.getBiomeGrassColor is a constant. The 90° turn now matches 1.5.2, so
+blocks with a distinct face (the pumpkin) face differently from before. Vanilla iron golems and
+silverfish are not replaced; only FC-spawned ones use these renderers. ModernBlockStandIn blocks get
+no icons (they have no textures anyway).
+
+## 2026-10-10 (ae) FC blocks render live (neighbours, tile entities); chest, basket, placed-tool TESRs
+
+Symptom (design U8, U8b, U8d, U7, U7b; triage HAI-10 stepSound; reviews BR-1..BR-5, CM-R1): in-world
+FC blocks always rendered from a one-time per-meta capture against a fake world. Tables and benches
+kept all their legs; grates, slats and wicker panes never connected; platforms showed every rail;
+cauldron and crucible contents never showed; campfire and stoked-fire flames ignored position; FC
+fences and panes next to modern solids drew no arm. Blood-wood stairs (1009) were invisible
+(FCBlockPlanks icon NPE) and smoothstone stairs (1003) used the missing texture. Wheat crops and
+weeds (1089-1091), the BTW chest (1035) and the placed tool were invisible, and open wicker baskets
+showed no stored item. FC mobs sometimes skipped a tick on landing (StepSound NPE). Interim
+regression inside this pass (review MC2-R1, fixed below): once (af) let ground cover rest on slabs,
+ash on a vanilla double slab drew half a block low, inside the slab; in alpha.3 ground cover could
+not rest on slabs at all.
+
+Root cause: FCBakedModel's live branch needed ModelData that only ProxyBlock.getModelData supplied,
+which is not a Forge hook and was never called (Forge asks the model,
+ChunkRenderDispatcher.java:631). Icons were registered only on ProxyBlocks (1.5.2
+TextureMap.java:61-71 does every block), and the sprite cache was a plain map shared with mesh
+threads. Modern-Common Block.RenderCrossHatch was an empty stub, and Block had no default stepSound
+(1.5.2 Block.java:474). BTWClientEvents used the pre-relocation TileEntityChestRenderer name and
+omitted the wicker basket. ProxyBlockEntity's client world had no provider, so frozen
+`Entity.<init>` NPE'd in every FC TESR that builds an EntityItem, and RenderManager.options was
+never set. LiveAccess read identity ids instead of the ids the server uses.
+
+Fix:
+
+- FCBakedModel overrides getModelData. Static per-meta captures go through StaticAccess, which
+  records neighbour, TE and opacity reads (plus a (1,0,0) parity capture); only the dependent metas
+  are re-rendered live on each chunk rebuild through LiveAccess (WorldBridge semantics, default TE
+  when missing), falling back to the static quads. LiveAccess.getBlockId uses
+  ProxyRegistry.getWorldBlockId (double slabs, stand-ins and water-filled plants, as the server sees
+  them), and vanilla neighbours report metadata through WorldBridge.deriveVanillaMetadata.
+  runFcRender mirrors RenderBlocks.java:9442-9448, resets Tessellator and GL11 state afterwards, and
+  clears renderer.blockAccess so no chunk snapshot or ClientLevel stays pinned across world
+  switches.
+- Icons are registered on every block; spriteCache is a ConcurrentHashMap, generation-tagged and
+  cleared on the block atlas's TextureStitchEvent.Post, so a resource reload cannot leave stale
+  sprites. The dead ProxyBlock.getModelData is deleted.
+- RenderCrossHatch is ported verbatim, and the Block constructor defaults stepSound to
+  soundPowderFootstep.
+- The chest TESR uses btw.modern.TileEntityChestRenderer. The wicker basket uses the lid-only
+  FCTileEntityBasketRenderer with its stored item drawn natively, and the lid is hinged on the
+  PoseStack (FCBlockEntityRenderer.applyBasketLidHinge, porting :94-120 and :131-139) because the
+  capture applies the GL matrix at addVertex time, so FC's post-vertex glRotatef never reached the
+  lid. createClientWorld sets a WorldProvider, and RenderManager.options is a GameSettings with
+  fancyGraphics=true.
+- FCBlockEntityRenderer: each capture starts and ends clean; the campfire and brick-oven FC TESRs
+  are skipped because their cook item is drawn natively; the placed tool uses its 1.20.1 item
+  sprite; quads are batched per texture and blend (cutout, translucent, eyes, glint; untextured
+  skipped); bare icon names resolve to block-atlas sprites.
+- ProxyBlockEntity.load builds the replacement FC tile entity completely before publishing it
+  (volatile field). On the client a same-class rebuild copies the client-only animation fields
+  (basket lid ratio and closing flag, chest numUsingPlayers/lidAngle/prevLidAngle), so the
+  once-a-second sync no longer resets an open basket's item or snaps a chest lid shut (1.5.2
+  NetClientHandler.java:1191-1219 kept the client TE). onDataPacket re-meshes through
+  sendBlockUpdated only when the fcSync data changed (1.5.2 readNBTFromPacket ->
+  markBlockRangeForRenderUpdate). Save and load catch Throwable and log once (RE1).
+
+Verification: compile and audits only; nothing client-side was run, so none of the expected client
+log lines ("Registered 6 FC tile entity special renderers.", "Registered icons on N blocks",
+per-block "live-capture metas: 0x..") has been observed. In game (not yet run): a 3x3 of tables
+keeps only the outer legs, panes connect and platform inner rails vanish; wheat is visible; the BTW
+chest renders and its lid stays open while the GUI is open; a placed iron axe shows its texture; an
+open wicker basket swings its lid up to 45° and raises its item once; an item put into a cauldron or
+hopper updates the block within a tick or two; FC textures stay correct after a resource-pack
+change; ash on a vanilla double slab sits on top of it.
+
+Caveats: the breaking overlay, pistons and falling blocks still use the static quads. Live metas
+re-run FC under a global lock on every rebuild; add a memo cache if chunk-build times regress. The
+basket item is drawn once, without 1.5.2's jittered copies. If the Tessellator is ever changed to
+apply the modelview at draw(), applyBasketLidHinge must go or the lid rotates twice. Client-only
+tile-entity state other than the copied fields is still reset on every data packet, and re-meshing
+follows fcSync only. FCTileEntityBasketRenderer.m_localRenderBlocks still holds the last client
+world wrapper (one ClientLevel). Blocks that had a null stepSound now play the 1.5.2 default stone
+sounds.
+
+## 2026-10-10 (af) 1.5.2 AI scheduler (creepers); passable fluids and plants; block collision; pathing below y=0
+
+Symptom (triage HAI-2, SW3, SW-M1, HAI-3 pathing half; reviews AP-1..AP-7, MC-R2, PATH-R1):
+
+- Creepers walked to about 3 blocks from the player and stood there, never hissing ("creepers don't
+  explode").
+- FC zombies, skeletons, creepers and animals walked on top of water and lava at land speed and
+  never swam or sank ("zombies casually walking on water"). They also stood on tall grass, flowers,
+  crops, fire, cobwebs, sugar cane, vines, redstone dust, levers, buttons, pressure plates, signs,
+  tripwire and portals, and collided with single slabs, repeaters and comparators as full blocks.
+  Fence gates and slabs were full cubes; FC ladders, chests, slabs, siding, mouldings and axles
+  collided as full cubes or as whatever shape was last traced anywhere.
+- Small FC mobs pressed into passable cells, or against a chest, took an FC inWall hit every tick:
+  hurt-sound spam, reset breeding love, wolves un-sitting.
+- Below y=0 (deepslate caves, a superflat at -60), FC mobs stood still: they did not chase or attack
+  and barely wandered.
+
+Root cause:
+
+- The Modern-Common EntityAITasks reset clashing running tasks before the new task's startExecuting
+  and never ran updateTask on the start tick. FCMOD's EntityAIAttackOnCollide.resetTask clears the
+  attack target, so EntityAICreeperSwell.startExecuting always captured a null target and stopped
+  the next tick, every 3 ticks. 1.5.2 (EntityAITasks.java:69-194) starts the new task first, ticks
+  it the same tick, and drops the clashing task on a later full pass.
+- Modern-Common Block subclasses lacked the 1.5.2 collision overrides (for example
+  BlockFluid.getCollisionBoundingBoxFromPool returning null, BlockFluid.java:182-185) and their
+  isOpaqueCube()/renderAsNormalBlock() == false pairs, so fluids and non-solid blocks inherited
+  Block's full cube and Block.isNormalCube called them solid. BlockFluid.getFluidHeightPercent was
+  inverted ((8-meta)/9 instead of (meta+1)/9). Block.getCollisionBoundingBoxFromPool and
+  getSelectedBoundingBoxFromPool read the shared minX..maxZ fields instead of FCMOD's
+  GetBlockBoundsFromPoolBasedOnState(...).offset (Block.java:3373-3376, 3769-3772); canCollideCheck
+  returned true instead of isCollidable(); CollisionRayTraceVsBlockBounds was a `return null` stub.
+- Frozen pathing assumed y >= 0. PathNavigate.getPathableYPos truncates with `(int)` toward zero, so
+  a mob at y=-59 was reported at -58 while its path points sat at -59; pathFollow never advanced and
+  the stuck check cleared the path (the main cause). getSafePoint's drop-to-ground scan is bounded
+  by `par3 > 0`, and ChunkCache returned air outside [0, 256).
+
+Fix (Modern-Common unless noted):
+
+- EntityAITasks.onUpdateTasks, canUse and areTasksCompatible are ported 1:1 from 1.5.2, keeping the
+  per-task try/catch and the once-per-JVM [AI-TASK-FAIL] log.
+- Null collision for BlockFluid, BlockFire (isCollidable false), BlockReed, BlockWeb (with
+  setInWeb), BlockVine, BlockRedstoneWire, BlockLever, BlockPortal, the BlockFlower family,
+  BlockButton, BlockBasePressurePlate, BlockSign, BlockTripWire and BlockTripWireSource; BlockCactus
+  inset boxes, the BlockSoulSand 7/8 box, the BlockLilyPad boat exclusion and an empty
+  BlockEndPortal list; FCMOD constructor bounds for BlockFlower and BlockRedstoneLogic;
+  isOpaqueCube/renderAsNormalBlock false for every class made passable and for BlockChest
+  (BlockChest.java:39-50). getFluidHeightPercent is (meta+1)/9.
+  BlockFlower.onEntityCollidedWithBlock applies the FCBlockPlants 0.8 on-ground damping, and
+  BlockCactus applies attackEntityFrom(cactus, 1), since MC's CactusBlock.entityInside never runs
+  for puppets.
+- Block collision, selection and the FCMOD ray trace (CollisionRayTraceVsBlockBounds,
+  MouseOverRayTrace, and collisionRayTrace for classes that override
+  GetBlockBoundsFromPoolBasedOnState) use the per-position state bounds; a throwing or null override
+  falls back to the fields with one [BLOCK-BOUNDS] warning per class. canCollideCheck returns
+  isCollidable().
+- BlockFenceGate gets the 1.5.2 collision (none when open, a 1.5-high box when closed) and
+  getBlocksMovement; BlockHalfSlab gets the FCMOD bounds (double full, bit 8 top half), isOpaqueCube
+  = isDoubleSlab, HasLargeCenterHardPointToFacing and the ground-cover and spawn hooks;
+  BlockRailBase gets GetBlockBoundsFromPoolBasedOnState (ascending 0.625, else 0.125; collision
+  stays null). These read the gate and slab metadata that (ag) now derives; the first pass had
+  withdrawn them because the bridge could not yet supply it (AP-1, AP-4, AP-7).
+- Pathing: new World.getFcMinBuildHeight/getFcMaxBuildHeight (0/256; WorldBridge returns the level's
+  range). Modern-Common ChunkCache is a full port that clips to that range and is now the only copy
+  (removed from the remapFcCode whitelist, both shadow lists and openUpEntityAccess). New Forge
+  build task extendFcPathingBuildRange (ASM, idempotent, fails the build on an unexpected bytecode
+  shape) rewrites getSafePoint's two `iload_3; ifle` checks to `par3 >
+  worldObj.getFcMinBuildHeight()` and every truncating y cast in PathNavigate (9), PathFinder (1)
+  and EntityAIFleeSun (1) to MathHelper.floor_double. World.getPathEntityToEntity floors
+  target.posY, and GetBlockNaturalLightValue_do clamps to the build range.
+  WorldBridge.getHeight/getActualHeight return the build top (320), not the span (384).
+
+Verification: compile and audits. LinkAudit's FC BYTECODE PATCHES line reports the pathing patch
+applied, and the build log shows extendFcPathingBuildRange recognising its patched classes; javap
+shows invokevirtual World.getFcMinBuildHeight in getSafePoint and no d2i left in PathNavigate, and
+both classes pass `java -Xverify:all`. The creeper and water cases were traced through the code: the
+swell task now starts while the target is still set, sets creeperState 1 in the same tick and keeps
+running after AttackOnCollide is dropped; with a null fluid box frozen Entity.handleWaterMovement
+finds the water and EntityLiving takes the water branch. In game (not yet run): a creeper hisses and
+explodes at a survival player; `/summon betterthanwolves:fc_zombie ~ ~3 ~` over water splashes in
+and bobs; an FC mob held under source water starts drowning after about 15 s; FC mobs stand 0.125
+high on a repeater and 0.5 on a bottom slab; a closed fence gate stops them and an open one lets
+them through; chickens in tall grass take no damage and move slower; a mob pushed into a cactus
+takes damage; on a superflat at -60, FC zombies chase and hit the player and mobs do not walk off
+ledges.
+
+Caveats: the scheduler change (start before drop, update in the start tick) applies to every FC AI
+task, not just creepers. BlockPistonMoving collision is not ported (the bridge has no
+TileEntityPiston). Not ported: pressure plate and tripwire triggering, nether and end portal travel,
+and soul sand damping (left out on purpose). Single slabs are no longer normal cubes, as in 1.5.2:
+FC falling blocks fall off a bottom slab, FC attachments hold only on a slab's solid face, and
+single slabs do not rotate on turntables. GetFixedBlockBoundsFromPool still returns the shared
+mutable fields, so some FC default-subtype overrides can see last-written bounds (pre-existing).
+Other frozen `(int)` y casts outside pathing are exact on the ground and off by one only for
+fractional negative y (EntityMob.CanSpawnOnBlockBelow, EntityAnimal.GetGrazeBlockForPos, Entity
+dismount); EntityAIOcelotSit's casts are authentic 1.5.2. Frozen Entity still kills entities below
+y=-64. LinkAudit confirms only the getSafePoint part of the patch; the d2i rewrites rely on the
+task's own exact-count check.
+
+## 2026-10-10 (ag) Block-id mapping: modern-block stand-ins, translated aux-SFX (ghast shrieks), portal hook
+
+Symptom (triage GH1, GH3, GH5, HAI-3, HAI-4, HAI-7, D4, D5, RE4, RE5; design U4, U4-b,
+PATHFINDER-NPE; reviews BM-R1..R4 and the wave-3 Modern-Common fixer):
+
+- "Constant ghast noises in the Overworld": every naturally spawned bat shrieked GHAST_WARN on
+  take-off (volume 10, Hostile category, audible within 64 blocks, subtitle "Ghast shoots"). A
+  zombie infecting a villager played the ghast fireball; door and fizz sounds played as an ender-eye
+  launch and a firework; ghast charge and fireball were silent.
+- Pathfinding NPEs (`"tempBlock" is null` at PathFinder.GetPathWeightAtLocation), so mobs near hay,
+  terracotta, carpet or coal blocks never pathed to the player.
+- Puppets fell through deepslate, tuff, granite and other new blocks to bedrock and walked through
+  walls of them (cave mobs below y=0 sat inside the rock and never saw the player); penned animals
+  hopped fences and walls.
+- FC squids in seagrass, kelp or waterlogged cells read inWater=false, froze and drowned FC-side; FC
+  entities felt a current at coral reefs.
+- Creeper blasts ignored mobGriefing=false and were not credited to the creeper.
+- FC saw wrong metadata for gates, slabs, stairs and trapdoors (east MC stairs turned upside down on
+  an FC turntable; closed west/east trapdoors read as open).
+- After a restart, FC containers lost or swapped post-1.5.2 items, and modern-only spawn eggs were
+  stuck in FC containers.
+- Overworld nether portals spawned zombified piglins, never seeded possession and never set the
+  nether-accessed flag.
+- MC snow layers on stone, dirt or grass vanished whenever a neighbouring block changed, and burning
+  leaves or wood cinders left no ash on ordinary ground.
+
+Root cause:
+
+- 1.5.2 aux-SFX ids were passed raw to ServerLevel.levelEvent at all three WorldBridge entry points,
+  but 1.20.1 renumbered them: 1015 is GHAST_WARN, and bat take-off moved to 1025. Bats run the
+  frozen 1.5.2 EntityBat, and 1.20.1 spawns bats only with open air above, so every one shrieked on
+  its first AI tick, in overlapping packs.
+- ProxyRegistry mapped ids 95/137/152/159/170-173 to empty blocksList slots; every 1.20.1-only state
+  read as air on FC's world-read path; WorldBridge.getCollidingBoundingBoxes dropped 1.5.2's
+  floor(minY)-1 start.
+- No material query read FluidState. Explosions used a null source and ExplosionInteraction.BLOCK,
+  and stored createExplosion's flag (isSmoking) as isFlaming.
+- deriveVanillaMetadata sent gates, stairs and trapdoors through the generic HORIZONTAL_FACING
+  branch and ignored SlabBlock.TYPE.
+- Headless item ids (25000+) were allocated per JVM in first-seen order and never persisted, while
+  FC NBT stores numeric ids; all spawn eggs mapped to 383; getItemId fell back to the raw MC
+  registry id, which indexes unrelated FC items.
+- 1.20.1 NetherPortalBlock overrides randomTick without calling super, so BlockBehaviorMixin's
+  routing never reached FCBlockPortal.updateTick.
+- Modern-Common Block.CanGroundCoverRestOnBlock was a `false` stub (1.5.2 Block.java:2590-2598
+  checks for a solid top surface). MC snow layers route to FCBlockSnowCover through
+  BlockBehaviorMixin, whose onNeighborBlockChange then removed every layer.
+
+Fix:
+
+- New AuxSfxMapping translates every 1.5.2 playAuxSFX/broadcastSound id at all three entry points:
+  1015 -> 1025, 1016 -> 1026 (plus FC's extra moan), 1017 -> 1027, 1007 -> 1015, 1008 -> 1016, 1009
+  -> 1018, 1004 -> 1009 with data 0; 2001 sends Block.getId(state) and 2002 the potion colour; the
+  door sound (1003) is played directly. Nothing is forwarded raw any more.
+- ProxyRegistry.getBlockId returns 0 unless blocksList[id] exists. New
+  ProxyRegistry.getWorldBlockId, used by WorldBridge.getBlockId, ProxyBlock's shapes and
+  FCBakedModel.LiveAccess: double slabs read as 43/125; colliding modern-only states read as a
+  ModernBlockStandIn (solid cube = 160, shaped collider = 161, allocated lazily from the free ids
+  159-174; wither-immune full blocks read as bedrock 7). A stand-in takes its collision, path rules,
+  hardpoints, hardness and blast resistance from the live MC state, cannot be moved by FC pistons,
+  is inert to the saw and block dispenser, drops MC loot, and is never written. Non-colliding
+  water-bearing states (seagrass, kelp, bubble columns) read as water.
+- getCollidingBoundingBoxes scans from minY-1. handleMaterialAcceleration, isAnyLiquid and
+  isMaterialInBB also count waterlogged water, and unmapped water-holders always report metadata 0
+  (source).
+- Explosions use the FC entity's proxy as the source, honour isFlaming, and use interaction NONE
+  when not smoking, MOB for mob sources and BLOCK otherwise.
+- `public static deriveVanillaMetadata(BlockGetter, BlockState, BlockPos)` never throws and encodes
+  gates (direction | 4 when open), slabs (species | 8 for top), stairs (0=E, 1=W, 2=S, 3=N, | 4
+  upside down), trapdoors (0=N, 1=S, 2=W, 3=E, | 4 open, | 8 upper half) and the flattened subtypes;
+  applyFcMetadataToVanillaBlock has matching write branches, and resolveVanillaBlockState places the
+  subtype variant. vanillaMetaOverrides remember which MC block FC wrote to and are dropped once MC
+  replaces it; the map is concurrent.
+- Headless ids persist per world (data/btw_headless_items.dat), are restored at the overworld's
+  LevelEvent.Load before any chunk loads and reset at server stop; the world's saved numbering wins
+  a conflict. The item maps are concurrent (RE4). Eggs of non-1.5.2 mobs are headless;
+  getOrCreateLegacyId checks 1.5.2 item ids before BlockItems; getItemId returns 0 for unmapped
+  items.
+- New NetherPortalBlockMixin routes randomTick to FCBlockPortal.RandomUpdateTick and always cancels
+  vanilla, since BTW suppressed portal pigmen (FCBlockPortal.java:42-54).
+  WorldProvider.isSurfaceWorld excludes the End (WorldProviderEnd.java:55-58) and canRespawnHere is
+  false there.
+- Block.CanGroundCoverRestOnBlock ports 1.5.2 (`world.doesBlockHaveSolidTopSurface`).
+- setEntityState and explosions find replacer- and MC-spawned puppets by entity id ((ab));
+  playSoundAtEntity defers puppets' self-hurt sounds ((aa)).
+
+Verification: server smoke test: both runs log "[STAND-IN] modern-only blocks read by FC as legacy
+160 (solid cube) / 161 (shaped collider)" followed by per-block lines (minecraft:copper_ore and
+granite -> 160 in both runs; dirt_path -> 161 in the second run only), no `"tempBlock" is null`
+lines and 0 ERROR lines. In game (not yet run):
+`/summon minecraft:bat` in cave air gives a faint flutter with the subtitle "Bat takes off", not
+"Ghast shoots"; cows and zombies stand on a floating deepslate, tuff or cherry-plank platform and
+stay inside oak-fence, cobble-wall and closed-gate pens; an FC squid in a kelp pool keeps swimming;
+with mobGriefing false a creeper blast leaves blocks intact and the death message says "by Creeper";
+east-facing MC stairs rotate correctly on an FC turntable; closed west/east trapdoors stop FC mobs;
+after a reload "[HEADLESS] restored N headless item ids" is logged and a copper ingot in an FC
+hopper survives a full restart; an Overworld portal next to penned FC animals logs 'possession 0->1'
+within minutes, spawns no zombified piglins and saves FCNetherAccessed; snow next to a newly placed
+block stays.
+
+Caveats: puppets inside modern solids trip FC suffocation, which (aa) reverts. Stone step sounds
+play on modern wood, packed and blue ice have normal friction to FC, and no-collision climbables
+stay air. An eye inside a waterlogged stair or slab is not "in water" FC-side, because frozen
+Entity.isInsideOfMaterial reads getBlockId. Dynamite, vases and TNT still ignore mobGriefing, as in
+1.5.2. Headless ids allocated before this fix cannot be recovered, and FC stacks created in memory
+before a world loads keep an evicted id (transient). A vanillaMetaOverrides entry is still trusted
+when MC changes a property of the same block (crop AGE through bone meal). Overworld possession,
+with its squid -> ghast and other transformations, is reachable for the first time in the port, so
+`[BTW-Possession]` and `[GHAST-SPAWN]` lines near player-built portals are now expected (see the (f)
+correction). WorldBridge.doesBlockHaveSolidTopSurface uses MC isFaceSturdy(UP), which is a little
+more permissive than 1.5.2 (ground cover can rest on glass). Not addressed: the particle-only aux-FX
+2241 and 2282 ((l)), and triage GH6 (millstone and wet-cement display-tick sounds still go through
+the client adapter's no-op playSoundEffect).
+
+## 2026-10-10 (ah) Replaced mobs run FC spawn init and keep state; 1.20.1 variants; swamp witches; wither
+
+Symptom (triage SW1, SW5, HAI-6, GH2; design U5, U5b; reviews W2-mobs-R1..R6):
+
+- Skeletons had no bows and fought in melee ("skeletons without bows"); FC sheep were all white;
+  every villager was a farmer; no zombie wore armour; skeleton-trap horsemen and spider jockeys lost
+  their bows and mounts.
+- Name tags, baby age, tame owner, collar and sitting state, sheep colour, profession, equipment,
+  persistence and health from pre-mod saves were dropped.
+- The FC soul-urn golem and FC silverfish appeared client-side as a vanilla villager or zombie, and
+  became fc_villager or fc_zombie after a reload.
+- Drowned, husks, zombie villagers, strays, wither skeletons and glow squid stayed vanilla 1.20.1
+  mobs.
+- Witches spawned in almost every Overworld biome, each idling with ghast moans (a minor second
+  source of the ghast-noise reports).
+- Wither side heads never turned, withers had no boss bar, and a summoned wither could despawn.
+- Feeding an FC animal did not use the item up.
+- FC villagers, snowmen and mobs holding picked-up loot vanished once the player was more than 128
+  blocks away.
+- (Found in review) spawners spawned replaced mobs without limit, and raids with witches stalled.
+
+Root cause: VanillaMobReplacer swapped positions only. It never ran FC's 1.5.2 spawn initialiser
+(PreInitCreature + initCreature at SpawnerAnimals.java:203/211/272, PreInitCreature +
+SpawnerInitCreature at MobSpawnerBaseLogic.java:137/219, initCreature at
+ItemMonsterPlacer.java:104), mapped no state, and ran inside EntityJoinLevelEvent, which fires mid
+chunk promotion for worldgen entities. ForgeRegistries.ENTITY_TYPES.getValue() returns PIG for a
+missing key, and EntityProxyFactory gave unregistered living FC classes the VILLAGER/ZOMBIE/PIG
+types. The 1.20.1-only zombie and skeleton subtypes are separate EntityTypes and were missing from
+REPLACEMENTS. 1.20.1 monsters() gives witches weight 5 everywhere, while BTW adds FCEntityWitch to
+swamps only (BiomeGenSwamp.java:37, weight 1). SoundMapping sent "mob.ghast.affectionate scream" to
+GHAST_AMBIENT (the moans) instead of GHAST_SCREAM, the file 1.5.2 played. FC interact edits the held
+stack in place and nothing wrote it back. Mob.removeWhenFarAway ignored FC canDespawn and
+persistence. BaseSpawner counts the vanilla class (BaseSpawner.java:125), and Raid.updateRaiders
+only drops removed raiders.
+
+Fix:
+
+- VanillaMobReplacer: the join handler cancels the vanilla mob, drops JOCKEY extras (and
+  spider-jockey skeletons) and queues the rest; the queue drains at ServerTickEvent END and on
+  ServerStopping and discards every queued vanilla entity, so raids no longer wait on cancelled
+  witches. Each mob becomes its fc_* proxy with the same position, rotation and UUID, with FC state
+  set up before addFreshEntity.
+- Fresh spawns run FC init: PreInitCreature for natural, worldgen and spawner spawns, then
+  SpawnerInitCreature for spawners (BTW spawner skeletons get no bow) and initCreature otherwise;
+  villagers keep their building profession.
+- Disk loads, breeding, conversion, buckets and NBT summons carry state instead: name, persistence,
+  health share, age, fleece colour and sheared, saddle, slime size, wolf
+  tame/owner/sit/angry/collar, profession, wither summon charge, and equipment in 1.5.2 slot order
+  with its 1.20.1 drop chances (picked-up player gear stays a guaranteed drop).
+- Variants: zombie villager, husk and drowned become fc_zombie (zombie villagers keep the villager
+  look only on transfer paths or SPAWN_EGG/COMMAND/DISPENSER spawns; natural, worldgen, spawner and
+  structure ones become plain FC zombies, as BTW never spawned villager zombies); stray and wither
+  skeleton become fc_skeleton (wither skeletons get setSkeletonType(1) before init, so they carry
+  the stone sword); glow squid becomes fc_squid. MC health and the health link of (aa) are re-seeded
+  after init.
+- New fc_iron_golem and fc_silverfish types (U5b; renderers in (ad)); EntityProxyFactory refuses
+  unregistered living classes (WARN once) and ignores ItemEntityBridge views.
+- Witches: new biome modifiers remove_witch_outside_swamps.json (`#minecraft:is_overworld` minus
+  `#forge:is_swamp`) and add_swamp_witch.json (weight 5, group 1-1); with vanilla's own 5 the swamp
+  share is 10/521, 1.5.2's 1/53. "mob.ghast.affectionate scream" maps to GHAST_SCREAM.
+- Wither: FC withers get a ServerBossEvent (purple, no darkening) and never despawn (1.5.2
+  EntityWither.despawnEntity override); the head angles are animated by (ab).
+- ProxyMob and ProxyPathfinderMob removeWhenFarAway respect FC canDespawn/GetIsPersistent;
+  mobInteract writes FC's held-stack edits back.
+- Spawner cap: a new onFinalizeSpawn handler counts FC entities of the replacement type plus pending
+  queue entries inside the spawner's 1.20.1 box (SpawnRange and MaxNearbyEntities from the spawner
+  NBT, default 4 and 6) and cancels the spawn at the cap.
+
+Verification: server smoke test: both runs log "Registered 54 BTW entity types with Forge
+registries." and "[MobReplacer] minecraft:pig/sheep/cow/chicken -> betterthanwolves:fc_*
+(CHUNK_GENERATION)" with 0 ERROR lines; only the second run also logs "[MobReplacer]
+minecraft:villager -> betterthanwolves:fc_villager (STRUCTURE)". In game (not yet run): a new world has sheep in mixed colours,
+skeletons that shoot arrows, villagers in varied robes and some armoured zombies; `/summon
+minecraft:sheep ~ ~ ~ {Color:14,CustomName:'"Bob"',PersistenceRequired:1b}` gives a red, named FC
+sheep that persists; `/summon` of wither_skeleton, husk, drowned, zombie_villager, stray and
+glow_squid gives FC mobs; no witches spawn outside swamps and a swamp witch's idle sound has no
+"Ghast cries" subtitle; a summoned wither keeps its boss bar beyond 128 blocks; feeding wheat to an
+FC cow uses one wheat; mobs at a dungeon spawner plateau at 6; a raid with a witch wave completes.
+
+Caveats: riding is not carried over, and vanilla villager trades, gossip and XP are dropped. 1.20.1
+finalizeSpawn results (vanilla armour, baby zombies, herd babies) are discarded on purpose. A mob
+whose chunk unloads within the one-tick deferral is dropped (logged once per type). Drowned spawns
+give FC zombies in water, and igloo and abandoned-village zombie villagers lose their villager
+identity (deliberate, per BTW). Vanilla iron golems and silverfish are still not replaced. The witch
+swamp weight matches 1.5.2 by share, not by the literal weight 1. The spawner cap uses 1.20.1's box,
+reads the spawner NBT on every attempt, and cancelled attempts still play the spawner's 2004
+particle event. U5 (wave 2) landed after U6 ((x), wave 1), so armed skeletons no longer hit the
+frozen equipment-loop cast that froze witches (the ordering the triage required for HAI-6).
+
+## 2026-10-10 (ai) Inventory write-back, variant mapping, FC/MC enchantments, live container slots
+
+Symptom (design U1, U1b, U2; reviews INV-R1..R5, CM-R2):
+
+- Right-clicking any BTW block, pressing an FC container button (Infernal Enchanter) or hitting a
+  mob with an FC tool changed items elsewhere in the inventory: orange wool became a random colour,
+  spruce/birch/jungle logs became oak, names and NBT were dropped, spawn eggs were deleted ("Cannot
+  convert FC ItemStack with legacy ID 383"), FC tool wear was reverted, and written-back stacks
+  picked up a stray {Damage:0} and stopped stacking. Variants stored in FC baskets, hoppers and
+  chests, or dropped from the crafting grid, collapsed too.
+- The Infernal Enchanter took the scroll and XP but did not enchant tools or armour (books worked).
+- Shift-clicking into a partial FC container slot deleted the merged items, and a partial
+  shift-click out duplicated them; shift-crafting in the shipped jar gave the item without consuming
+  the grid (NPE in SlotCrafting.onCrafting); buckets that a recipe should return vanished; pressing
+  Q over an FC slot holding an item MC cannot display deleted one item per press.
+- MC enchantments (Efficiency, Unbreaking, Silk Touch, Fortune, Looting, Power, Infinity, ...) had
+  no effect in FC code.
+
+Root cause:
+
+- InventoryBridge.writeBackAll rebuilt all 40 MC slots from the FC snapshot through a lossy mapping:
+  wrapItemStack sent orange wool to (35,n,0) and a spruce log to (17,n,0); toMcStack sent (17,0) to
+  OAK_LOG, had no mapping for 383, and applied damage before copying the stale tag, whose Damage
+  wins in 1.20.1.
+- ForgeNBTCompound kept FC's setTag lists twice (the live tagMap object and a set-time snapshot in
+  the CompoundTag), and getTagList returned a detached copy for an empty list, so 1.5.2
+  ItemStack.addEnchantment's append was lost. Every damageable 1.20.1 item carries tag.Damage, so it
+  is always a ForgeNBTCompound.
+- InventoryAdapter.getItem returned a fresh copy on every call, but 1.20.1 menus edit Slot.getItem()
+  in place and only call setChanged() (AbstractContainerMenu.java:612-627), as 1.5.2 containers did.
+  quickMoveStack passed the drained EMPTY stack to onTake, so FC got onPickupFromSlot(null).
+  Slot.tryRemove runs remove() before it checks for an EMPTY result.
+- FC reads only the 1.5.2 "ench" list, never 1.20.1 "Enchantments".
+
+Fix:
+
+- InventoryBridge.sync() records a per-slot baseline (FC object, MC object, id/size/damage, and a
+  copy-free tag comparison that ignores Damage). writeBackAll and the
+  setInventorySlotContents/decrStackSize/getStackInSlotOnClosing write-throughs write only the slots
+  FC changed. A same-item change is patched onto the live MC stack (ItemStackHelper.applyFcState:
+  tag, durability on damageable items only, count); only a different item or subtype is rebuilt,
+  matching 1.5.2's in-place edits (InventoryPlayer.java:214,250). writeBack adopts a detached FC
+  stack only while the slot still holds the stack sync() handed out. Slots that fail to convert are
+  locked; an item FC puts into one is moved to a slot both sides see as empty, or dropped at the
+  player, with a rate-limited [INV-WB] WARN. toMcStack resolves the item first, then copies NBT,
+  then applies durability, and strips a stale Damage tag from non-damageable items.
+- New LegacyVariants maps 1.5.2 subtypes both ways: wood species 5/6/17/18/126, sandstone, tall
+  grass, wool, stone slab, silverfish, stone brick, wall, anvil, quartz, coal, golden apple, dye,
+  skull, and spawn eggs by EntityList id (misses cached).
+- ForgeNBTCompound: getTagList returns the live tagMap list whenever there is one, and registers a
+  list it built from the CompoundTag as the live object, as 1.5.2 returns the stored instance
+  (NBTTagCompound.java:353-363); mergeTagMapInto lets FC's live lists and compounds win; copy() goes
+  through toMcTag; getCompoundTag/setCompoundTag keep tagMap consistent.
+- InventoryAdapter hands out one mirror stack per slot and folds MC's in-place edits back into FC on
+  setChanged; FCContainerMenu flushes the mirrors at the start of each broadcastChanges and in
+  removed(). quickMoveStack moves into accepting slots on the other side (never result or output
+  slots) and passes FC a copy of the original stack at the remaining size (1.5.2
+  FCContainerWorkbench.java:94-108). ContainerMappedSlot wraps onPickupFromSlot and then flushes the
+  player inventory; mayPlace and mayPickup refuse a slot holding an FC item MC cannot display.
+- ItemStackHelper.toFcStack adds a live "ench" mirror of "Enchantments"; foldFcEnchantments reverses
+  it (an unchanged mirror is dropped, FC changes replace only the entries FC can express, levels are
+  not cast to byte), and InventoryBridge fingerprints compare the folded form.
+
+Verification: compile and audits only; no inventory was exercised (no client, no player). In game
+(not yet run): inventory items survive BTW-block right-clicks unchanged and the 383 warning is gone;
+FC tool hits keep wearing durability; orange wool and spruce logs keep their variant through FC
+containers and grid drops; the Infernal Enchanter enchants an iron pickaxe (keeping an existing
+Sharpness on a sword), and the enchantment survives two save/reload cycles; chest test A (10 in the
+slot plus a shift-click of 30 gives 40 after reopening) and test B (a partial shift-click out of 64
+leaves 50); shift-crafting consumes one ingredient set per craft; a cake recipe returns 3 buckets;
+an Efficiency/Unbreaking pickaxe digs FC stone faster and `/data get entity @s SelectedItem` shows
+each enchantment once.
+
+Caveats: modern-only variants that collapse onto one legacy id (blue orchid, wet sponge, carved
+pumpkin, the bed colours, and the modern black/brown/blue/white dyes, which come back as ink sac,
+cocoa, lapis and bone meal) keep their identity only while FC leaves them alone. If FC and MC both
+change a slot between a sync and a write-back, FC wins. Shift-click ranges are still MC-generic
+rather than FC transferStackInSlot (open decision). A slot holding an FC item with no MC mapping is
+inert until the mapping exists. ForgeNBTCompound.setTag(key, ForgeNBTCompound) still stores the
+child's raw CompoundTag without its tagMap, which affects FC stacks written straight into a
+ForgeNBTCompound (FcWorldSavedData slots). Enchanted-book StoredEnchantments are not mirrored. FC
+now sees MC enchantments: authentic, but noticeable (Silk Touch, Fortune and Looting apply to FC
+drops, MC-enchanted ProxyItems glint, and the Infernal Enchanter counts existing enchantments).
+
+## 2026-10-10 (aj) Item use: one arrow per bow shot, FC right-click once, entity items, 1.5.2 food values
+
+Symptom (reviews IP-R1..R6, IU-R1..R5, FD-R1, FD-R3, FI-R1..R4):
+
+- The vanilla bow fired two arrows per release (FC's and vanilla's); the FC composite bow could not
+  be drawn; composite-bow and broadhead arrows vanished when picked up.
+- Every ProxyItem right-click ran FC twice (soul urns and dynamite threw two entities for one item;
+  FC buckets and the baited fishing rod acted twice), FC right-click items were never used up, and
+  off-hand items ran FC against the main-hand stack.
+- The breeding harness, dung and dye did nothing to FC animals.
+- In creative, FC seeds, hoes and flint and steel used on blocks were consumed or damaged.
+- Food: FC-replaced foods (raw meats, melon, mushroom stew, rotten flesh, and, once the 1.5.2 item
+  ids were resolved first, carrots and potatoes) restored hunger twice (a carrot gave 12/60 instead
+  of 3). BTW's rebalanced vanilla foods restored 1.20.1 nutrition x3 with every vanilla effect
+  cancelled (bread 15 instead of 9, steak 24 instead of 15, cookie 6 instead of 3, golden apple 12
+  and no effect at all instead of 3 plus Regeneration I for 5 s; spider eyes did not poison), and
+  cookies and pie could not be eaten when full. FC soups never returned their bowl and mushroom stew
+  could give two. A vanilla potion with a full inventory gave two bottles. FC chocolate milk lost its
+  bucket. In creative, chocolate milk was used up, eating an FC-replaced food played FC's "can't
+  eat" sound, and a full inventory got a free bowl.
+- Interim states inside this pass, fixed below: resolving 1.5.2 item ids first let one pumpkin seed
+  feed forever (review IU-R1); the wave-4 effect handshake gave golden apples 1.20.1's Regeneration
+  II and Absorption (review FD-R1); and the wave-5 ItemFood registration briefly extended the
+  creative "can't eat" sound to most foods (review FI-R4).
+
+Root cause: ItemStackMixin.btw$releaseUsing ran FCItemBow without cancelling vanilla, and
+ProxyItem.releaseUsing ran FC again. Modern-Common ItemBow lacked setMaxDamage(384),
+getMaxItemUseDuration 72000 and EnumAction.bow (ItemBow.java:26, :106-117). ProxyEntity.playerTouch
+never wrote the inventory back after EntityArrow.onCollideWithPlayer.
+ServerPlayerGameModeMixin.btw$useItem dispatched FC for ProxyItems that ProxyItem.use already
+dispatches, and for the off hand; FC's in-place edits stayed in the PlayerBridge snapshot. ProxyItem
+called useItemOnEntity while the shipped Client FC items override itemInteractionForEntity, and
+passed a LivingEntityBridge, so `instanceof FCEntitySheep` never matched; FCItemDye had no entity
+hook. btw$useItemOn pre-empted 1.20.1's creative restore without doing 1.5.2's. The mixins resolved
+every BlockItem by its block (carrot -> crop 141, not FC food 391). FoodDataMixin cancelled vanilla
+nutrition on the deprecated 2-arg FoodData.eat, which Forge's Player.eat (Player.java:1996) never
+calls; LivingEntityMixin cancelled vanilla effects for any item with an FC id, including golden
+apples and spider eyes that FC never fed. Modern-Common registered BTW's rebalanced vanilla foods as
+plain Item, so FC never fed them. FC soups add the bowl through the snapshot-only
+addItemStackToInventory, which was never written back; ProxyItem discarded the stack FC's onEaten
+returned; Modern-Common EntityPlayer.canEat refuses invulnerable players while 1.20.1 lets them eat;
+Modern-Common InventoryPlayer lacked 1.5.2's creative branch.
+
+Fix:
+
+- Bow: ItemStackMixin.btw$releaseUsing is not cancellable. For the vanilla bow, FC is skipped
+  whenever vanilla has something to fire (creative, Infinity, or a non-empty getProjectile), so the
+  one arrow is vanilla's; FC runs only for a rotten-arrow draw, then writes back and wears the bow,
+  sending broadcastBreakEvent before the slot empties. Modern-Common ItemBow gets the three 1.5.2
+  members and the interim wear is removed. ProxyEntity.playerTouch writes the inventory back.
+- Right-click: btw$useItem skips LegacyProxyItem stacks and the off hand; ProxyItem.use is main-hand
+  only and applies FC's returned stack to the held slot (1.5.2
+  ItemInWorldManager.tryUseItem:338-361) with a selective write-back. btw$useItemOn is main-hand
+  only, restores creative damage and size, and catches FC throwables. New ProxyItem.fcItemFor
+  resolves the 1.5.2 item id before the block.
+- Entity items: new ProxyItem.interactWithEntityFc tries itemInteractionForEntity, then
+  useItemOnEntity, on the puppet's own FC entity and applies the size change; it serves
+  interactLivingEntity and a new ItemStackMixin hook for dyes (server only).
+- Food: FoodDataMixin injects into the Forge 3-arg eat (remap = false). Vanilla nutrition and
+  (LivingEntityMixin) vanilla effects are cancelled only when PlayerBridge.fcFedForEat(item, eater)
+  is true; the bridge's FoodStats subclass records the ItemFood that 1.5.2 ItemFood.onEaten fed this
+  tick, so every food restores exactly once. Item.initializeVanillaItems registers every FCMOD
+  vanilla food as btw.modern.ItemFood with the exact 1.5.2 values (heal, saturation, wolf meat,
+  always-edible, potion effect, buoyancy, pig food), including a nested 1.5.2 ItemAppleGold with
+  subtypes and Item.poisonousPotato (394). ItemStackMixin.btw$finishUsing shrinks FC foods that
+  1.20.1 does not consider edible (pumpkin seeds), writes FC's bowl back for FC-fed BowlFoodItems
+  and returns the eaten stack instead of vanilla's bowl, skips FC for any PotionItem, and runs FC on
+  a detached copy for an off-hand eat. ProxyItem.finishUsingItem writes the inventory back after
+  onEaten, returns a different non-empty result stack (the chocolate-milk bucket) to the hand that
+  was used, and skips the shrink in creative.
+- Orchestrator follow-ups to the wave-5 review: ServerPlayerGameModeMixin.btw$useItem returns early
+  for an FC ItemFood when the player is invulnerable, so creative eating is vanilla and silent
+  (FI-R4); Modern-Common InventoryPlayer.addItemStackToInventory ports the 1.5.2 creative branch, so
+  a full creative inventory swallows the stack and no free bowl drops (FI-R3a); the food comments in
+  PlayerBridge, FoodDataMixin and LivingEntityMixin were refreshed.
+- FC calls on player-tick and packet paths (onEaten, onUpdate, hitEntity, tryHarvestBlock) catch
+  Throwable and log once (ProxyItem.logFcFailureOnce); a failed harvest still writes back and
+  returns true only if the block changed.
+
+Verification: compile and audits only. The FoodDataMixin target was checked against the binpatched
+1.20.1 jar with javap (the 3-arg eat keeps its literal name), and the server smoke test showed no
+Mixin apply error; no item was used. In game (not yet run): a vanilla bow fires exactly one arrow
+that hits vanilla mobs, can be picked up, wears the bow and honours Power, Punch, Flame and
+Infinity; the composite bow draws, fires one arrow per shot, loses 1 durability per shot (576 max)
+and its arrows return when picked up; a soul urn throws one entity per click; dyeing an FC sheep
+uses one dye; FC hunger: bread +9, steak +15, cooked chicken or cod +12, apple, golden carrot and
+cookie +3, carrot +3, raw beef +12; a golden apple gives +3 and Regeneration I for 5 s, the
+enchanted one Regeneration IV 30 s, Resistance and Fire Resistance; mushroom stew and FC soups give
+exactly one bowl; a potion drunk with a full inventory leaves one bottle; chocolate milk leaves an
+empty bucket; in creative food is eaten silently with no free bowl.
+
+Caveats: the vanilla bow uses vanilla's arrow choice (any slot, tipped and spectral arrows) and pull
+strength, not FCItemBow's hotbar-only rule and GetBowPullStrengthModifier; switching it to the FC
+arrow is an open decision. The composite bow shows the draw pose but no pull frames (no
+ItemProperties). btw$useItem still lets vanilla run after FC for vanilla items with FC replacements
+and does not apply FC's returned stack there, and btw$useItemOn still runs before block activation.
+MC-side stack sizes of vanilla-id foods stay at 1.20.1's 64 while FC sees 16, per the port-wide
+policy (BTWRegistration.java:125-127). A potion's bottle goes to the hand, as in vanilla, instead of
+1.5.2's first free slot. The client briefly predicts a bowl in hand until the server's slot update
+arrives.
+
+## 2026-10-10 (ak) FC sees dropped items (ItemEntityBridge); FC projectiles and damage reach vanilla entities
+
+Symptom (design U3, U3b, U3c; reviews ITEMS-R1..R4, FD-R2):
+
+- FC code never noticed dropped items. Animals ignored loose food (FCEntityAIMoveToLooseFood never
+  moved, EntityAnimal.CheckForLooseFood never ate); ocelots, spiders, dire wolves and zombies never
+  ate meat; villagers never tossed milk. Bellows didn't blow items, and mining charges and cactus
+  didn't destroy them. The BTW hopper, cauldron and crucible never collected items dropped on top,
+  campfires didn't burn dropped fuel, bone meal did nothing on farmland or planters, and items
+  tripped FC tripwires.
+- FC arrows, thrown items and fireballs flew through every vanilla mob, boat and end crystal.
+- FC skeleton and ghast projectiles hit players as GENERIC damage: no "shot by", no shield, no
+  projectile protection. FC mining charges did generic damage too.
+- FC block damage (FC cactus) did nothing to vanilla entities.
+
+Root cause: every dropped item is a real MC ItemEntity, and WorldBridge.extractFcEntity only
+unwrapped proxies and players, so getEntitiesWithinAABB(EntityItem.class, ...) was always empty. The
+block-callback wrappers passed items as a generic EntityBridge, so `instanceof EntityItem` was
+false. MC's checkInsideBlocks starts at minY+1e-7, while FCMOD EntityItem.doBlockCollisions starts
+at minY-0.01 (EntityItem.java:483-500), so a full-height hopper or vessel under an item never got
+the callback. getEntitiesWithinAABBExcludingEntity returned FC entities only, while FC projectiles
+hit-test every entity in the box (EntityArrow.java:234-259). LivingEntityBridge.attackEntityFrom
+used generic() and always returned true, EntityBridge.attackEntityFrom returned false, and
+DamageSourceMapping mapped arrow, thrown, fireball and explosion to generic.
+
+Fix:
+
+- New ItemEntityBridge, an FC-side view of an MC ItemEntity (its runtime superclass is the frozen
+  EntityItem; it uses only members both copies declare), stored on the entity through the new
+  ItemEntityMixin field (FcItemBridgeHolder). wrap() flushes, then syncs the box, motion, onGround,
+  isDead, age, pickupDelay and the FC stack; flush() writes back only FC deltas (the count as a
+  delta on MC's live stack, a replaced stack as a full conversion, the pickup delay, velocity and
+  position); setDead discards. Flush points are getItem() HEAD, the next wrap, isEntityAlive and
+  LevelTickEvent END. onUpdate and onCollideWithPlayer are no-ops because MC owns physics and
+  pickup. Both mixin hooks are guarded: a link failure logs one ERROR and disables them for the
+  session.
+- WorldBridge.getEntitiesWithinAABB, getEntitiesWithinAABBExcludingEntity and getEntityByID expose
+  items through the bridge. The wrapEntity helpers in ProxyBlock, BlockBehaviorMixin and BlockMixin
+  return the bridge for items, or null (callback skipped) for an item already consumed in the same
+  pass, and stepOn skips onEntityWalking for items, as 1.5.2 EntityItem.canTriggerWalking() is
+  false. The ItemEntityMixin tick visits the extra floor(minY-0.01) layer for FC blocks that
+  override onEntityCollidedWithBlock (U3c). EntityProxyFactory refuses to re-spawn a live bridge.
+- Mob loot pickup is live again: the frozen onItemPickup WorldServer cast holds since (x), and the
+  item is setDead() through the bridge, so nothing is duplicated.
+- FC projectiles (EntityArrow, EntityThrowable, EntityFireball) also get the vanilla entities a
+  vanilla projectile could hit (isAlive && isPickable): living ones as the cached
+  LivingEntityBridge, others as the new WorldBridge.VanillaProjectileTarget, whose attackEntityFrom
+  is MC hurt() with a mapped source. FC projectiles now damage boats and minecarts, break paintings
+  and item frames, detonate end crystals and hurt the dragon through its parts; rejected hits
+  ricochet as in 1.5.2 (EntityArrow.java:308-347).
+- Damage: WorldBridge.toMcDamageSource and DamageSourceMapping.getModern map arrow -> ARROW, thrown
+  -> THROWN, fireball -> FIREBALL (UNATTRIBUTED_FIREBALL without a shooter), indirectMagic ->
+  INDIRECT_MAGIC, explosion -> EXPLOSION and explosion.player -> PLAYER_EXPLOSION, with the
+  projectile as the direct entity and the shooter as the causing entity. New
+  DamageSourceMapping.hurtFromFc (server only, never throws) runs MC hurt() and returns its result;
+  LivingEntityBridge and EntityBridge use it. PlayerBridge strips 1.20.1 difficulty scaling from
+  indirect sources, because 1.5.2 never scaled projectile damage (EntityDamageSource.java:45-48),
+  but keeps it for plain explosions.
+
+Verification: compile and audits only. The `[ITEM-BRIDGE] FC view of ItemEntity#..` and `write-back
+... count N -> N-1` lines are now DEBUG (orchestrator edit); only failures WARN. In game (not yet
+run): hungry chickens walk to dropped seeds and eat one at a time, and when grabbing them mid-meal,
+seeds eaten plus seeds picked up equals 64; items dropped on a BTW hopper, cauldron or crucible are
+collected (gravel through a soul-sand filter gives sand and flint); bone meal fertilises farmland;
+an FC arrow damages a cow (which flees), a zombie targets the shooter, a kill reads "shot by", an
+enderman teleports and the arrow bounces; an FC bow breaks boats, item frames and end crystals and
+lowers the dragon's health; an FC skeleton's arrow does the same damage on Easy, Normal and Hard,
+reads "was shot by Skeleton" and is blocked by a shield; a mining charge does more damage on Hard,
+less with Blast Protection and none on Peaceful.
+
+Caveats: loot-capable zombies and skeletons pick up dropped items again (1.5.2), with no pickup
+animation (Packet22Collect is ignored); whether the held item shows on the client is unverified.
+Only the count, type and replacement are written back to dropped stacks, not FC in-place NBT or age
+edits. The frozen 5-HP item health pool is per bridge. New FC item spawns land 0.125 above their
+1.5.2 height. checkNoEntityCollision and canPlaceEntityOnSide still count items as obstructions. FC
+arrows hurt a perched dragon (vanilla deflects only AbstractArrow there). FC projectiles on players
+are not difficulty-scaled (1.5.2 parity, unlike 1.20.1 skeleton arrows). Vanilla mobs wrapped in FC
+block callbacks now take FC block damage (1.5.2 parity).
+
+## 2026-10-10 (al) Recipes (login, /reload, 2x2 grid, table rules), JEI, FC login handshake, entity names
+
+Symptom (triage RE6, CTX-4, CTX-5, CTX-6; reviews RO-1..RO-5, CN-R1, MC2-R2, FD-R4):
+
+- Unlocked FC recipes vanished from the recipe book on every re-entry ("Tried to load unrecognized
+  recipe: betterthanwolves:fc_recipe_N removed now"), recipe-book auto-fill did nothing for them,
+  and /reload removed all FC recipes until a restart.
+- In the 2x2 grid, FC's code-driven recipes (axe + log chopping, knitting, fishing-rod baiting) did
+  not exist, and tools used as ingredients (shears, chisels, axes) were used up instead of losing
+  durability. At the crafting table, FC "any metadata" ingredients never matched (the 3x3 wool block
+  could not be crafted anywhere), shaped Block ingredients accepted only their first variant (oak
+  planks for the axle and hamper) in every grid and in JEI, wool blocks and wool armour lost their
+  averaged colour, per-ingredient side effects (blood-wood soul dust, pumpkin seeds, iron-chisel
+  gravel, bow string, crafting sounds) never happened, and a mould left in the Soulforge grid
+  blocked matches.
+- JEI covered only the 5 bulk categories.
+- No "BTW V4.B0000003" line on joining; on dedicated servers no version check and no
+  hardcore-options sync, so client-side player names always followed the default.
+- Death messages and other displays of an FC entity type showed the raw key ("Steve was shot by
+  entity.betterthanwolves.fc_skeleton").
+
+Root cause: RecipeBridge wrote FC recipes into RecipeManager.recipes but not byName, which byKey()
+and the recipe book read (RecipeManager.java:37-38, 145-147; ServerRecipeBook.java:97-105); it ran
+only at ServerStartingEvent and dropped every IRecipe that was not ShapedRecipes/ShapelessRecipes.
+The 2x2 grid is MC's InventoryMenu with plain MC recipes, without the 1.5.2
+SlotCrafting.onPickupFromSlot rules (SlotCrafting.java:118-185). Modern-Common
+ShapedRecipes/ShapelessRecipes tested -1 as the wildcard, which ItemStack clamps to 0 (1.5.2 uses
+32767); CraftingManager made shaped Block ingredients damage 0; AddShapedRecipeWithCustomClass
+ignored its class; Item.OnUsedInCrafting(int, ...) was empty instead of forwarding to the 2-arg hook
+(Item.java:1067-1070), and the frozen SlotCrafting calls only that overload; the FCMOD mould skips
+were never ported. The FCMOD login hook lived in vanilla ServerConfigurationManager.java:133, which
+the port does not use; ForgeNetServerHandler only debug-logged FC's FC|VC and FC|OP payloads, and
+their 1.5.2 consumers (FCMOD edits in RenderPlayer/RenderLiving name tags) have no 1.20.1
+counterpart. en_us.json had no entity.betterthanwolves.* keys.
+
+Fix:
+
+- RecipeBridge rebuilds the list and calls RecipeManager.replaceRecipes, so both indexes agree, and
+  re-injects on OnDatapackSyncEvent(player == null). Recipes with an unmappable ingredient are
+  skipped rather than injected incomplete, and fcStackAlternatives expands 32767 to every variant.
+- New FCCraftingRecipes: Shaped/Shapeless subclasses keep the vanilla serializers but override
+  getRemainingItems with the SlotCrafting rules (not-consumed items stay; damaged items lose 1
+  durability or break, except for creative crafters; FC container items return), calling exactly one
+  OnUsedInCrafting overload per ingredient as 1.5.2 does. FC hooks and m_iTimesCraftedThisTick run
+  only for a ServerPlayer crafter. A CustomRecipe delegates matches, assemble and remaining items to
+  FC's IRecipe through an InventoryCrafting adapter; it syncs through the registered serializer
+  betterthanwolves:fc_custom_crafting as (index, class name) and is inert on mismatch.
+- Modern-Common: the wildcard is 32767 and shaped Block ingredients are 32767;
+  AddShapedRecipeWithCustomClass builds the FC subclass through its (int, int, ItemStack[],
+  ItemStack) constructor (one entry; a plain fallback is logged once); Item.OnUsedInCrafting(int,
+  ...) forwards to the 2-arg hook, guarded so a throwing hook cannot stop SlotCrafting;
+  ShapelessRecipes and ShapedRecipes skip fcItemMould stacks (vanilla/server
+  ShapelessRecipes.java:63-68, ShapedRecipes.java:115-120).
+- JEI: Soulforge (the 4x4 FCCraftingManagerAnvil) and Campfire categories, display recipes for the
+  code-driven recipes (probed with FC's own matches/getCraftingResult), and information pages for
+  the kiln, saw, turntable, hopper filters and souls, hibachi/stoked fire, cooking vessels and
+  campfire, with text taken from the FC block code.
+- New FCLoginHandler (PlayerLoggedInEvent) reflectively calls
+  FCBetterThanWolves.ServerPlayerConnectionInitialized with the bridge's ForgeNetServerHandler (chat
+  packets become system messages), falls back to the MC chat API, and shows a one-time port note.
+  ForgeNetServerHandler forwards FC|VC and FC|OP raw through the new S2C message
+  BTWNetwork.FCPayload (id 4, 1.5.2 Packet250 limits; PROTOCOL_VERSION is now "3"); the client-only
+  FCClientPayloadHandler calls FCAddOnHandler.ClientCustomPacketReceived, so FC's own code prints
+  'BTW version check successful.' and stores the options.
+- Player-name levels: FCClientPayloadHandler.NameTagRules re-applies level 1 (Hardcore: no player
+  name tags, no tag on a sneaking entity; RenderNameTagEvent DENY), and the new client mixin
+  EntityRendererNameTagMixin reproduces level 2 (Obstructed) by depth-testing the faint first label
+  pass for players (DisplayMode.SEE_THROUGH -> NORMAL, as 1.5.2 RenderLiving.java:512-520 kept
+  GL_DEPTH_TEST on). The level resets to -1 on disconnect.
+- en_us.json gains 55 `entity.betterthanwolves.<id>` names: vanilla en_US.lang names, FC's
+  getEntityName overrides ("The Beast", "Jungle Spider"), BTW_en_US.lang item and tile names for
+  FC-only entities, and 1.20.1 names where 1.5.2 had none.
+
+Verification: server smoke test (both runs): "Injected 666 crafting (3 code-driven) + 23 smelting FC
+recipes into RecipeManager (0 FC crafting recipes skipped: unconvertible)", 0 ERROR lines. The
+client payload chain was type-checked with JDK 17 javac and loaded under `-Xverify:all`; no client
+joined, no player logged in, and no multiplayer session was run. In game (not yet run): unlock an FC
+recipe, quit and re-enter, and there is no "unrecognized recipe" line and auto-fill still works;
+after /reload the log shows "Recipe reload detected; re-injecting FC recipes"; in the 2x2 grid an
+iron axe plus a spruce log gives 2 spruce planks with sawdust and bark, and the axe loses 1
+durability; shears plus leather keeps the shears; at the table the wool block and wool armour craft
+with the averaged colour, sticks craft from any planks and the axle accepts spruce planks; a
+singleplayer join shows "BTW V4.B0000003"; a dedicated-server join shows the connect line, 'BTW
+version check successful.' and 'Hardcore Modes: ...'; with fcEnableHardcorePlayerNames=1 no player
+tags show and with 2 they show in the open but not through walls; JEI shows the Soulforge and
+Campfire tabs and the info pages; death by an FC skeleton reads "was shot by Skeleton".
+
+Caveats: FC's RemoveVanillaRecipe/RemoveShapelessRecipe calls are still no-ops, so 1.20.1 recipes
+that 4.B removed stay craftable (deferred: it needs a careful mapping from 1.5.2 patterns to 1.20.1
+recipe ids). A dedicated client predicts shaped and shapeless remainders with vanilla rules for one
+frame. Forge's channel and version checks refuse mismatched port builds before login, so FC's red
+version-mismatch warning is practically unreachable. Other FC payload channels (FC|SE, FC|OI) are
+still only debug-logged. The FC|OP buoy flag has no consumer (EntityItem.UpdateHardcoreBuoy is not
+ported). Level 2 applies to players only; 1.5.2 applied it to every living label. Player name tags
+are now hidden by default on servers and LAN, which is authentic but user-visible. A mod that
+@Redirects the same Font.drawInBatch call would make the mixin fail at load. Some entity names
+repeat (fc_wither and fc_wither_persistent are both "Wither"). The wiki and original-BTW links in
+CURSEFORGE.md remain maintainer TODOs.
+
+## 2026-10-10 (am) Log cleanup; per-throw-site failure logging; ReportedException causes
+
+Symptom (design U10; triage HAI-10, SW7): latest.log carried diagnostics from closed investigations:
+checkAndOpenContainer, 'Opening MC screen' and 'Container changed!' on every GUI open;
+mirrorFcSlots; 'Enchanter levels/slots' on every tick while the Infernal Enchanter was open;
+BTW-Penalties every 100 ticks with log4j-invalid '{:.1f}' placeholders (so its labels were shifted);
+BTW-Fall lines on every landing; campfire save/load, [SYNC], [TURNTABLE-TICK]/[SIDE-BLOCK] and
+[FURNACE-TICK] from block entities; [TRANSMIT-H]/[ROTATE]/[ATTACHED] on every turntable rotation;
+about 10 [BTW-DEBUG] lines per block break; [TRADE] on every trade; [SETMETA], [ON-PLACE], use() and
+spawnEntityInWorld lines; per-block-model capture dumps, per-entity render lines and 'Cook stack
+found' on the client; [AI-DBG], [MOB-DMG] and [ENTITY-DIED]. At the same time real failures were
+hidden: FCContainerMenu.stillValid swallowed FC exceptions silently, container failures went to
+DEBUG with getMessage() only, one global 10 s limiter masked every other site, puppet onUpdate
+failures were sampled at tickCount % 100, FC block tick failures were silent except for kilns, and
+frozen code's btw.modern.ReportedException hid the real exception because the Modern-Common copy had
+no getCause().
+
+Root cause: instrumentation left in place after investigations closed; failure paths rate-limited by
+time or tick sampling instead of by throw site; ReportedException missing the vanilla getCause()
+override (ReportedException.java:34-37).
+
+Fix:
+
+- The listed diagnostics are deleted (ContainerBridge, FCContainerMenu, ServerPlayerMixin,
+  ProxyBlockEntity, ProxyMob, ProxyBlock, WorldBridge, Modern-Common Block, ItemInWorldManager,
+  SlotMerchantResult and the dead EntityLiving AI_TRACE_LOG, FCBakedModel, FCEntityRenderer,
+  FCBlockEntityRenderer). The PlayerMixin and LivingEntityMixin fall-debug injectors were HEAD-only
+  and non-cancellable, so deleting them changes no behaviour. The GUI-open lines and the
+  block-capture summary are DEBUG, and ItemEntityBridge's view and write-back lines were demoted
+  from INFO to DEBUG (orchestrator edit).
+- Per-throw-site logging: FCContainerMenu.warnFcFailure, ServerPlayerMixin.btw$logTickFailure,
+  FCPuppetSupport.logFailureOnce/logNbtFailure (the proxies' onUpdate, interact, attackEntityFrom,
+  onDeath, NBT read/write, clientAnimTick and health link), the ProxyBlockEntity tick, ProxyBlock
+  tick/randomTick, WorldBridge spawn, closest-entity, explosion and wrap failures, and
+  FCEntityRenderer doRender. The key is the exception class plus the first non-JDK frame of the
+  unwrapped cause (FCPuppetSupport.unwrap also reads the crash report's cause); the first occurrence
+  logs WARN or ERROR with the stack, and repeats are only counted (one line at 10, 100, 1000, ...)
+  or not logged again.
+- Every FC call FCContainerMenu makes from a menu (stillValid, clickMenuButton, broadcastChanges,
+  removed), and the ProxyBlockEntity tick, catch Throwable, so an Error from frozen/Modern-Common
+  divergence no longer crashes the server as a 'Ticking entity'; stillValid keeps the menu open and
+  clickMenuButton returns false.
+- ReportedException.getCause() returns the crash report's cause, so 'Caused by' lines appear
+  wherever such a wrapper is logged.
+- Kept on purpose: PossessionDiagnostics and WorldBridge's [GHAST-SPAWN] (until (f) is closed by an
+  in-game GH1 confirmation), and the one-per-block-model 'live-capture metas: 0x..' INFO for the
+  render checks of (ae).
+
+Verification: compile and audits. The server smoke-test logs contain none of the removed tags and no
+BTW WARN or ERROR lines (the WARNs present are Forge config and dev-environment notices).
+Client-side greps not yet run: after a client session, this should print 0 (one line; copy it
+whole):
+
+```
+grep -cE "checkAndOpenContainer|mirrorFcSlots|Enchanter (levels|slots)|BTW-Penalties|causeFallDamage|checkFallDamage|\[SYNC\]|\[TURNTABLE-TICK\]|\[FURNACE-TICK\]|\[AI-DBG\]|doCaptureAndBuild|First quad|Cook stack found" latest.log
+```
+
+A forced FC exception in a container should produce exactly one WARN with a stack, then count
+lines.
+
+Caveats: the tick dedup is global per site, not per player, so a second player hitting the same site
+shows only in the count lines. A failure that repeats every tick still costs one getStackTrace() per
+tick to compute its key. ProxyEntity still deduplicates onUpdate failures by exception class only.
+Failures that used to be silent now print one WARN or ERROR per site, which may surface latent FC
+container bugs; that is intended.

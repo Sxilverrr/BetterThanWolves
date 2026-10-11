@@ -11,9 +11,11 @@
     "CrossbowPiercingMixin",
     "FoodDataMixin",
     "FrostWalkerRadiusMixin",
+    "ItemEntityMixin",
     "ItemStackMixin",
     "LivingEntityMixin",
     "MendingCapMixin",
+    "NetherPortalBlockMixin",
     "PlayerMixin",
     "RespawnAnchorChargeMixin",
     "ServerLevelMixin",
@@ -24,7 +26,7 @@
     "TotemOfUndyingMixin"
   ],
   "client": [
-    "ClientPlayerSpeedMixin"
+    "EntityRendererNameTagMixin"
   ],
   "injectors": {
     "defaultRequire": 1

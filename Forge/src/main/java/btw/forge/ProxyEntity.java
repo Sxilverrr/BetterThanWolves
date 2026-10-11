@@ -35,6 +35,9 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-ProxyEntity");
 
+    private static final java.util.Set<String> LOGGED_TICK_FAILURES =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private btw.modern.Entity fcEntity;
     private String fcClassName = "";
 
@@ -100,7 +103,9 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
                 syncToFc();
             }
         } catch (Throwable e) {
-            LOGGER.info("Could not create FC entity {}: {}", className, e.getMessage(), e);
+            if (FCPuppetSupport.firstFailure("create|" + className)) {
+                LOGGER.warn("Could not create FC entity {}: {}", className, e.getMessage(), e);
+            }
         }
     }
 
@@ -136,10 +141,19 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
 
             public int getBlockMetadata(int x, int y, int z) {
                 if (level == null) return 0;
-                net.minecraft.world.level.block.state.BlockState s =
-                        level.getBlockState(new net.minecraft.core.BlockPos(x, y, z));
+                net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(x, y, z);
+                net.minecraft.world.level.block.state.BlockState s = level.getBlockState(pos);
                 if (s.hasProperty(ProxyBlock.META)) return s.getValue(ProxyBlock.META);
-                return 0;
+                // Vanilla-id blocks: the SAME legacy-metadata derivation the server's WorldBridge uses
+                // (log axis + stump bit, fluid level, facing, ...). Client PlayerBridge worlds predict
+                // digging through this (FCMiningSpeed): returning 0 made a stump log (FCBlockLog hardness
+                // x3 for meta 12) break 3x early on the client and reappear until the server finished.
+                // (Server-only vanillaMetaOverrides are not visible here.)
+                try {
+                    return WorldBridge.deriveVanillaMetadata(level, s, pos);
+                } catch (Throwable t) {
+                    return 0;
+                }
             }
 
             public btw.modern.Material getBlockMaterial(int x, int y, int z) {
@@ -273,31 +287,15 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
     public void tick() {
         syncToFc();
         if (fcEntity != null) {
-            boolean wasDead = fcEntity.isDead;
             try {
                 fcEntity.onUpdate();
             } catch (Throwable e) {
                 // Throwable, not Exception: a NoSuchMethodError/NoClassDefFoundError
                 // from a bridge gap is an Error and would kill the server tick.
-                LOGGER.warn("FC entity onUpdate() threw: {}: {}",
-                        e.getClass().getSimpleName(), e.getMessage());
-            }
-            if (!wasDead && fcEntity.isDead) {
-                LOGGER.info("[ENTITY-DIED] {} at ({},{},{}) on tick after onUpdate. worldObj={} worldRemote={}",
-                        fcEntity.getClass().getSimpleName(),
-                        String.format("%.1f", fcEntity.posX), String.format("%.1f", fcEntity.posY), String.format("%.1f", fcEntity.posZ),
-                        fcEntity.worldObj != null ? fcEntity.worldObj.getClass().getSimpleName() : "null",
-                        fcEntity.worldObj != null ? fcEntity.worldObj.isRemote : "N/A");
-                // Log what block is at the center for mech power entities
-                if (fcEntity.worldObj != null) {
-                    int cx = btw.modern.MathHelper.floor_double(fcEntity.posX);
-                    int cy = btw.modern.MathHelper.floor_double(fcEntity.posY);
-                    int cz = btw.modern.MathHelper.floor_double(fcEntity.posZ);
-                    int centerId = fcEntity.worldObj.getBlockId(cx, cy, cz);
-                    LOGGER.info("[ENTITY-DIED] center block at ({},{},{}) = id {} ({})",
-                            cx, cy, cz, centerId,
-                            centerId > 0 && centerId < btw.modern.Block.blocksList.length && btw.modern.Block.blocksList[centerId] != null
-                                    ? btw.modern.Block.blocksList[centerId].getClass().getSimpleName() : "null");
+                // Logged once per (class, exception): this runs every tick on both sides.
+                if (LOGGED_TICK_FAILURES.add(fcEntity.getClass().getName() + '|' + e.getClass().getName())) {
+                    LOGGER.warn("FC entity onUpdate() threw: {}: {}",
+                            e.getClass().getSimpleName(), e.getMessage());
                 }
             }
         }
@@ -394,7 +392,16 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
                             "onCollideWithPlayer", btw.modern.EntityPlayer.class);
                     onCollideWithPlayerMethod = m;
                 }
-                m.invoke(fcEntity, btw.forge.PlayerBridge.getOrCreate(sp));
+                PlayerBridge pb = PlayerBridge.getOrCreate(sp);
+                m.invoke(fcEntity, pb);
+                // Arrow pickup puts the arrow into the FC inventory snapshot (vanilla/server
+                // EntityArrow.java:516 AddArrowToPlayerInv -> :600 addItemStackToInventory, which
+                // fills mainInventory[] directly) and then setDead()s the arrow (:526). Without
+                // this write-back the next syncFromReal rebuilt the slots from MC: the arrow
+                // vanished from the world AND the inventory (composite-bow / broadhead arrows).
+                // Only after a normal return: a throw before setDead() leaves the arrow alive, so
+                // writing its item back would hand it out again on the next touch.
+                pb.syncInventoryToReal();
                 // Orb/arrow pickup calls setDead() — discard the proxy now
                 // rather than waiting for the next tick.
                 syncFromFc();
@@ -403,8 +410,11 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
                 while (root.getCause() != null && root.getCause() != root) {
                     root = root.getCause();
                 }
-                LOGGER.warn("FC entity onCollideWithPlayer() threw: {}: {}",
-                        root.getClass().getSimpleName(), root.getMessage());
+                // Once per (class, exception): this runs every tick while the player touches it.
+                if (LOGGED_TICK_FAILURES.add("touch|" + fcEntity.getClass().getName() + '|' + root.getClass().getName())) {
+                    LOGGER.warn("FC entity onCollideWithPlayer() threw: {}: {}",
+                            root.getClass().getSimpleName(), root.getMessage(), root);
+                }
             }
         }
         super.playerTouch(player);

@@ -1,14 +1,47 @@
 package btw.forge;
 
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.player.Inventory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /**
  * Bridges {@link Inventory} to {@link btw.modern.InventoryPlayer}.
  * FC code accesses inventory slots, current item, and armor through
  * btw.modern.InventoryPlayer fields and methods.
+ *
+ * <p>{@link #sync()} snapshots every MC slot into an FC stack and records a per-slot baseline.
+ * Write-back is selective: only a slot whose FC stack FC replaced or changed since the baseline is
+ * written to the real inventory, and a same-item change is patched onto the existing MC stack in
+ * place. 1.5.2 edits the player's ItemStack[] in place (InventoryPlayer.java:214 storePartialItemStack,
+ * :250 consumeInventoryItem; ItemStack.damageItem :323-345) and never rewrites a slot it did not
+ * touch, so an untouched slot must keep its exact MC stack (subtype, NBT, anything FC cannot
+ * represent).</p>
  */
 public class InventoryBridge extends btw.modern.InventoryPlayer {
+    private static final Logger LOGGER = LogManager.getLogger("BTW-InventoryBridge");
+
     private final Inventory inventory;
+
+    // Per-slot baseline captured by sync()/write-back. Slot i < mainInventory.length is the main
+    // inventory, the rest is armor -- the 1.5.2 InventoryPlayer slot layout, same as MC Inventory.
+    private final int slotCount = mainInventory.length + armorInventory.length;
+    private final btw.modern.ItemStack[] baseFc = new btw.modern.ItemStack[slotCount];
+    private final net.minecraft.world.item.ItemStack[] baseMc = new net.minecraft.world.item.ItemStack[slotCount];
+    private final int[] baseId = new int[slotCount];
+    private final int[] baseSize = new int[slotCount];
+    private final int[] baseDamage = new int[slotCount];
+    private final CompoundTag[] baseTag = new CompoundTag[slotCount];
+    /**
+     * The FC stack sync() handed out per slot. Unlike baseFc it is not moved by write-through
+     * rebaselining, so writeBack can tell "FC still holds the synced stack" from "FC replaced it".
+     */
+    private final btw.modern.ItemStack[] syncFc = new btw.modern.ItemStack[slotCount];
+    /** Slots whose MC stack could not be converted: FC sees them empty, write-back never touches them. */
+    private final boolean[] locked = new boolean[slotCount];
+
+    private static long lastWarnMs;
+    private static long lastRelocateWarnMs;
 
     public InventoryBridge(Inventory inventory) {
         super(null); // btw.modern.InventoryPlayer(EntityPlayer) constructor
@@ -22,15 +55,36 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
 
         // Sync main inventory (36 slots)
         for (int i = 0; i < mainInventory.length && i < inventory.items.size(); i++) {
-            net.minecraft.world.item.ItemStack modern = inventory.items.get(i);
-            mainInventory[i] = wrapItemStack(modern);
+            syncSlot(i, inventory.items.get(i));
         }
 
         // Sync armor inventory (4 slots)
         for (int i = 0; i < armorInventory.length && i < inventory.armor.size(); i++) {
-            net.minecraft.world.item.ItemStack modern = inventory.armor.get(i);
-            armorInventory[i] = wrapItemStack(modern);
+            syncSlot(mainInventory.length + i, inventory.armor.get(i));
         }
+    }
+
+    private void syncSlot(int i, net.minecraft.world.item.ItemStack modern) {
+        btw.modern.ItemStack fc;
+        CompoundTag fingerprint;
+        try {
+            fc = ItemStackHelper.toFcStack(modern);
+            // sync() runs on every PlayerBridge.getOrCreate: keep the previous baseline snapshot
+            // while the MC tag still equals it (compare, no copy). A baseline is never mutated.
+            CompoundTag prev = baseTag[i];
+            fingerprint = prev != null && ItemStackHelper.mcTagMatches(modern, prev)
+                    ? prev : ItemStackHelper.mcTagFingerprint(modern);
+            locked[i] = false;
+        } catch (Throwable t) {
+            // FC must not see (and later overwrite) a slot it could not read
+            fc = null;
+            fingerprint = null;
+            locked[i] = modern != null && !modern.isEmpty();
+            warn("sync slot " + i + " (" + modern + ")", t);
+        }
+        setSnapshot(i, fc);
+        syncFc[i] = fc;
+        rebaseline(i, modern, fingerprint);
     }
 
     @Override
@@ -60,81 +114,35 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
 
     @Override
     public void setInventorySlotContents(int slot, btw.modern.ItemStack stack) {
-        // Write through to the REAL MC inventory so changes persist
-        net.minecraft.world.item.ItemStack mcStack = ItemStackHelper.toMcStack(stack);
-        if (slot >= 0 && slot < inventory.items.size()) {
-            inventory.items.set(slot, mcStack);
-        } else {
-            int armorSlot = slot - mainInventory.length;
-            if (armorSlot >= 0 && armorSlot < inventory.armor.size()) {
-                inventory.armor.set(armorSlot, mcStack);
-            }
-        }
-        // Also update FC snapshot
+        if (slot < 0 || slot >= getSizeInventory()) return;
+        // FC snapshot first, then write that one slot through to the REAL MC inventory
         super.setInventorySlotContents(slot, stack);
+        writeBackSlot(slot);
     }
 
     @Override
     public btw.modern.ItemStack decrStackSize(int slot, int count) {
-        // Decrement in the REAL MC inventory
-        net.minecraft.world.item.ItemStack mcStack;
-        if (slot >= 0 && slot < inventory.items.size()) {
-            mcStack = inventory.items.get(slot);
-        } else {
-            int armorSlot = slot - mainInventory.length;
-            if (armorSlot >= 0 && armorSlot < inventory.armor.size()) {
-                mcStack = inventory.armor.get(armorSlot);
-            } else {
-                return null;
-            }
-        }
-        if (mcStack.isEmpty()) return null;
+        // 1.5.2 InventoryPlayer.decrStackSize (vanilla/server InventoryPlayer.java:340): split the
+        // slot's own stack, null it when emptied. Only this slot is written back; a full re-sync
+        // here used to discard FC's pending in-place edits in every other slot and detach the
+        // stacks FC still held.
+        if (slot < 0 || slot >= getSizeInventory()) return null;
+        btw.modern.ItemStack removed = super.decrStackSize(slot, count);
+        writeBackSlot(slot);
+        return removed;
+    }
 
-        net.minecraft.world.item.ItemStack removed;
-        if (mcStack.getCount() <= count) {
-            removed = mcStack.copy();
-            if (slot >= 0 && slot < inventory.items.size()) {
-                inventory.items.set(slot, net.minecraft.world.item.ItemStack.EMPTY);
-            } else {
-                inventory.armor.set(slot - mainInventory.length, net.minecraft.world.item.ItemStack.EMPTY);
-            }
-        } else {
-            removed = mcStack.split(count);
-        }
-        // Sync FC snapshot
-        sync();
-        return ItemStackHelper.toFcStack(removed);
+    @Override
+    public btw.modern.ItemStack getStackInSlotOnClosing(int slot) {
+        if (slot < 0 || slot >= getSizeInventory()) return null;
+        btw.modern.ItemStack stack = super.getStackInSlotOnClosing(slot);
+        writeBackSlot(slot);
+        return stack;
     }
 
     @Override
     public int getSizeInventory() {
         return mainInventory.length + armorInventory.length;
-    }
-
-    /**
-     * Wraps a modern Forge ItemStack into a btw.modern.ItemStack.
-     * Returns null for empty stacks.
-     */
-    private static btw.modern.ItemStack wrapItemStack(net.minecraft.world.item.ItemStack modern) {
-        if (modern == null || modern.isEmpty()) return null;
-
-        // getOrCreateLegacyId always succeeds: unknown items get a
-        // headless passthrough entry so they survive FC container logic.
-        int legacyId = ProxyRegistry.getOrCreateLegacyId(modern.getItem());
-        if (legacyId <= 0) return null;
-
-        int damage = modern.getDamageValue();
-        int count = modern.getCount();
-        btw.modern.ItemStack fcStack = new btw.modern.ItemStack(legacyId, count, damage);
-
-        // Copy NBT from MC stack to FC stack so accumulated data (fire chance,
-        // last use time, custom names, etc.) persists across interactions.
-        net.minecraft.nbt.CompoundTag mcTag = modern.getTag();
-        if (mcTag != null && !mcTag.isEmpty()) {
-            fcStack.setTagCompound(new btw.forge.ForgeNBTCompound(mcTag.copy()));
-        }
-
-        return fcStack;
     }
 
     /**
@@ -146,35 +154,19 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
      */
     public void writeBack(btw.modern.ItemStack fcStack, int slot) {
         if (slot < 0) slot = inventory.selected;
-        if (slot < 0 || slot >= inventory.items.size()) return;
+        if (slot < 0 || slot >= mainInventory.length) return;
 
-        net.minecraft.world.item.ItemStack mcStack = inventory.items.get(slot);
-        if (mcStack == null || mcStack.isEmpty()) return;
-
-        if (fcStack == null || fcStack.stackSize <= 0) {
-            // Item consumed or broken — remove from MC inventory
-            inventory.items.set(slot, net.minecraft.world.item.ItemStack.EMPTY);
-            return;
-        }
-
-        // Sync NBT tag data FIRST (FC stores accumulated chance, time of last use,
-        // custom names, enchantments, etc. in the tag compound)
-        if (fcStack.hasTagCompound()) {
-            btw.modern.NBTTagCompound fcTag = fcStack.getTagCompound();
-            if (fcTag instanceof btw.forge.ForgeNBTCompound forgeTag) {
-                mcStack.setTag(forgeTag.getTag().copy());
-            } else {
-                try {
-                    net.minecraft.nbt.CompoundTag mcTag = ItemStackHelper.toMcTag(fcTag);
-                    if (mcTag != null) mcStack.setTag(mcTag);
-                } catch (Exception ignored) {}
+        if (fcStack != null && fcStack != mainInventory[slot]) {
+            // Detached FC stack (a re-sync replaced the stack FC was holding): adopt it only while
+            // the slot still holds the stack sync() handed out. If FC replaced or cleared the slot
+            // since (destroyCurrentEquippedItem, setInventorySlotContents with a new stack of the
+            // same id), syncFc no longer matches -- baseFc does, after write-through rebaselining --
+            // and the slot's own FC state is what gets written.
+            if (mainInventory[slot] == syncFc[slot] && syncFc[slot] != null && fcStack.itemID == baseId[slot]) {
+                mainInventory[slot] = fcStack;
             }
         }
-
-        // Sync damage and count AFTER NBT (so setDamageValue wins over any
-        // stale "Damage" key that was in the copied NBT)
-        mcStack.setDamageValue(fcStack.getItemDamage());
-        mcStack.setCount(fcStack.stackSize);
+        writeBackSlot(slot);
     }
 
     /**
@@ -185,22 +177,130 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
     }
 
     /**
-     * Flushes the entire FC inventory snapshot back to the real MC inventory.
+     * Flushes the FC inventory snapshot back to the real MC inventory.
      *
      * <p>FC code may mutate ItemStack objects in mainInventory[] directly
      * (e.g., {@code slotStack.stackSize += placeCount} during merge), which
      * bypasses the write-through in setInventorySlotContents/decrStackSize.
-     * Call this after any FC operation that may have modified player inventory.</p>
+     * Call this after any FC operation that may have modified player inventory.
+     * Only slots FC changed since the last sync are written.</p>
      */
     public void writeBackAll() {
-        for (int i = 0; i < mainInventory.length && i < inventory.items.size(); i++) {
-            net.minecraft.world.item.ItemStack mcStack = ItemStackHelper.toMcStack(mainInventory[i]);
-            inventory.items.set(i, mcStack);
+        for (int i = 0; i < slotCount; i++) writeBackSlot(i);
+    }
+
+    private btw.modern.ItemStack snapshot(int i) {
+        return i < mainInventory.length ? mainInventory[i] : armorInventory[i - mainInventory.length];
+    }
+
+    private void setSnapshot(int i, btw.modern.ItemStack fc) {
+        if (i < mainInventory.length) {
+            mainInventory[i] = fc;
+        } else {
+            armorInventory[i - mainInventory.length] = fc;
         }
-        for (int i = 0; i < armorInventory.length && i < inventory.armor.size(); i++) {
-            net.minecraft.world.item.ItemStack mcStack = ItemStackHelper.toMcStack(armorInventory[i]);
-            inventory.armor.set(i, mcStack);
+    }
+
+    private void rebaseline(int i, net.minecraft.world.item.ItemStack mc, CompoundTag tagFingerprint) {
+        btw.modern.ItemStack fc = snapshot(i);
+        baseFc[i] = fc;
+        baseMc[i] = mc;
+        baseId[i] = fc != null ? fc.itemID : 0;
+        baseSize[i] = fc != null ? fc.stackSize : 0;
+        baseDamage[i] = fc != null ? fc.getItemDamage() : 0;
+        baseTag[i] = fc != null ? tagFingerprint : null;
+    }
+
+    /** True when FC replaced slot i or changed its id/count/damage/NBT since the baseline. */
+    private boolean fcChanged(int i) {
+        btw.modern.ItemStack fc = snapshot(i);
+        if (fc != baseFc[i]) return true;
+        if (fc == null) return false;
+        if (fc.itemID != baseId[i] || fc.stackSize != baseSize[i] || fc.getItemDamage() != baseDamage[i]) return true;
+        return !ItemStackHelper.fcTagMatches(fc, baseTag[i]);
+    }
+
+    /**
+     * Writes slot i to the real inventory only if FC changed it since the baseline. A change to the
+     * same item (count, durability, NBT) is patched onto the live MC stack so the modern identity
+     * survives; only a different item/subtype is rebuilt through ItemStackHelper.toMcStack.
+     */
+    private void writeBackSlot(int i) {
+        if (i < 0 || i >= slotCount) return;
+        try {
+            if (!fcChanged(i)) return;
+            boolean armor = i >= mainInventory.length;
+            net.minecraft.core.NonNullList<net.minecraft.world.item.ItemStack> list =
+                    armor ? inventory.armor : inventory.items;
+            int idx = armor ? i - mainInventory.length : i;
+            if (idx >= list.size()) return;
+            btw.modern.ItemStack fc = snapshot(i);
+            if (locked[i]) {
+                // FC never saw this slot's real stack, so it is never overwritten. FC sees the slot
+                // empty, though, and may have put an item there (InventoryPlayer.addItemStackToInventory
+                // fills the first null slot, as SlotCrafting does with returned buckets,
+                // vanilla/server SlotCrafting.java:156-179): move that item, don't lose it. Relocate
+                // first: if it throws, the item stays in the snapshot and the next write-back retries.
+                if (fc != null && fc.stackSize > 0) relocate(fc, i);
+                setSnapshot(i, null);
+                rebaseline(i, list.get(idx), null);
+                return;
+            }
+            CompoundTag tagNow = ItemStackHelper.fcTagFingerprint(fc);
+            net.minecraft.world.item.ItemStack live = list.get(idx);
+            if (fc == null || fc.stackSize <= 0) {
+                list.set(idx, net.minecraft.world.item.ItemStack.EMPTY);
+            } else if (live == baseMc[i] && !live.isEmpty() && baseFc[i] != null && fc.itemID == baseId[i]
+                    && (ItemStackHelper.isDamageable(live) || fc.getItemDamage() == baseDamage[i])) {
+                // same item, FC changed count/durability/NBT: patch in place
+                ItemStackHelper.applyFcState(live, fc, !java.util.Objects.equals(tagNow, baseTag[i]));
+            } else {
+                list.set(idx, ItemStackHelper.toMcStack(fc)); // FC put a different item / subtype here
+            }
+            rebaseline(i, list.get(idx), tagNow);
+        } catch (Throwable t) {
+            warn("write-back slot " + i, t);
         }
+    }
+
+    /**
+     * Puts an FC stack that FC placed into locked slot {@code from} into a main-inventory slot that
+     * both FC and MC see empty (and FC has not touched since the baseline), so the two views stay
+     * consistent; drops it at the player when there is none.
+     */
+    private void relocate(btw.modern.ItemStack fc, int from) {
+        net.minecraft.world.item.ItemStack mc = ItemStackHelper.toMcStack(fc);
+        if (mc.isEmpty()) {
+            warnRelocate("FC item id " + fc.itemID + " put into locked slot " + from + " has no MC item; discarded");
+            return;
+        }
+        for (int j = 0; j < mainInventory.length && j < inventory.items.size(); j++) {
+            if (j == from || locked[j] || mainInventory[j] != null || baseFc[j] != null
+                    || !inventory.items.get(j).isEmpty()) continue;
+            mainInventory[j] = fc;
+            inventory.items.set(j, mc);
+            rebaseline(j, mc, ItemStackHelper.fcTagFingerprint(fc));
+            warnRelocate("FC put " + mc + " into locked slot " + from + "; moved to slot " + j);
+            return;
+        }
+        if (!inventory.player.level().isClientSide) {
+            inventory.player.drop(mc, false, false);
+            warnRelocate("FC put " + mc + " into locked slot " + from + " with no free slot; dropped at the player");
+        }
+    }
+
+    private static void warnRelocate(String what) {
+        long now = System.currentTimeMillis();
+        if (now - lastRelocateWarnMs < 10_000L) return;
+        lastRelocateWarnMs = now;
+        LOGGER.warn("[INV-WB] {} (further within 10s suppressed)", what);
+    }
+
+    private static void warn(String what, Throwable t) {
+        long now = System.currentTimeMillis();
+        if (now - lastWarnMs < 10_000L) return;
+        lastWarnMs = now;
+        LOGGER.warn("[INV-WB] {} failed: {} (further failures within 10s suppressed)", what, t.toString(), t);
     }
 
     /**

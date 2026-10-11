@@ -15,6 +15,21 @@ public class BlockChest extends BlockContainer {
         this.setBlockBounds(0.0625F, 0.0F, 0.0625F, 0.9375F, 0.875F, 0.9375F);
     }
 
+    // 1.5.2 BlockChest.isOpaqueCube / renderAsNormalBlock (vanilla/client BlockChest.java:39-50). FCBlockChest (id 54
+    // and 1035) extends this and overrides neither. With the inherited true, Block.isNormalCube(54) and so
+    // World.isBlockNormalCube reported the inset chest as a full solid cube, so an FC mob narrower than ~0.625
+    // pressed against a chest had its eye sample inside it (Entity.isEntityInsideOpaqueBlock) and took an inWall
+    // hit every tick.
+    @Override
+    public boolean isOpaqueCube() {
+        return false;
+    }
+
+    @Override
+    public boolean renderAsNormalBlock() {
+        return false;
+    }
+
     @Override
     public void setBlockBoundsBasedOnState(IBlockAccess blockAccess, int x, int y, int z) {
         if (blockAccess.getBlockId(x, y, z - 1) == this.blockID) {

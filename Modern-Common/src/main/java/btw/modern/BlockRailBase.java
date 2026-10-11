@@ -55,6 +55,22 @@ public abstract class BlockRailBase extends Block {
         return null;
     }
 
+    // 1.5.2 (FCMOD) BlockRailBase.GetBlockBoundsFromPoolBasedOnState (vanilla/client BlockRailBase.java:371-387): ascending
+    // rails (metadata 2-5) are 0.625 high for ray traces and selection, everything else 0.125. Collision stays null
+    // (above); ProxyBlock.getCollisionShape gives FC detector rails (ProxyBlocks 235/236) an empty MC collision shape
+    // for that null, so these bounds only shape the selection box. As in 1.5.2 the raw metadata is tested, so a
+    // powered ascending rail (meta | 8) selects as 0.125 high.
+    @Override
+    public AxisAlignedBB GetBlockBoundsFromPoolBasedOnState(IBlockAccess blockAccess, int i, int j, int k) {
+        int iDirection = blockAccess.getBlockMetadata(i, j, k);
+
+        if (iDirection >= 2 && iDirection <= 5) {
+            return AxisAlignedBB.getAABBPool().getAABB(0D, 0D, 0D, 1D, 0.625D, 1D);
+        } else {
+            return AxisAlignedBB.getAABBPool().getAABB(0D, 0D, 0D, 1D, 0.125F, 1D);
+        }
+    }
+
     // --- Rail-specific methods ---
 
     /**

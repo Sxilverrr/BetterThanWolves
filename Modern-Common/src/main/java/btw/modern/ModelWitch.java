@@ -44,7 +44,9 @@ public class ModelWitch extends ModelVillager
     public void setRotationAngles(float par1, float par2, float par3, float par4, float par5, float par6, Entity par7Entity)
     {
         super.setRotationAngles(par1, par2, par3, par4, par5, par6, par7Entity);
-        // nose offset fields not needed for bridge
+        // 1.5.2 ModelWitch.java:61: the nose offsets set below for a held item must be cleared
+        // every frame, as the one RenderWitch model is shared by every witch.
+        this.field_82898_f.field_82906_o = this.field_82898_f.field_82908_p = this.field_82898_f.field_82907_q = 0.0F;
         float var8 = 0.01F * (float)(par7Entity.entityId % 10);
         this.field_82898_f.rotateAngleX = MathHelper.sin((float)par7Entity.ticksExisted * var8) * 4.5F * (float)Math.PI / 180.0F;
         this.field_82898_f.rotateAngleY = 0.0F;

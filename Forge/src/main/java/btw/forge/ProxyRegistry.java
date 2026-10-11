@@ -1,16 +1,26 @@
 package btw.forge;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.SlabBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.SlabType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Simple registry mapping legacy int block/item IDs to their Forge proxy
@@ -26,16 +36,21 @@ public class ProxyRegistry {
     private static final Logger LOGGER = LogManager.getLogger("BTW-ProxyRegistry");
 
     private static final Map<Integer, ProxyBlock> blocksByLegacyId = new HashMap<>();
-    private static final Map<Integer, net.minecraft.world.item.Item> itemsByLegacyId = new HashMap<>();
+    // Concurrent: written at runtime by createHeadlessItem / restoreHeadlessIds and read by both the
+    // integrated-server thread and the render thread (singleplayer shares these statics; triage RE4).
+    private static final Map<Integer, net.minecraft.world.item.Item> itemsByLegacyId = new ConcurrentHashMap<>();
 
     /**
      * Maps modern vanilla Block instances to their legacy MC 1.5.2 numeric IDs.
-     * Populated lazily on first access via {@link #initVanillaBlockMap()}.
+     * Populated lazily on first access via {@link #initVanillaBlockMap()}. Insertion-ordered (MC Blocks
+     * use identity equals/hashCode) so the reverse map below picks the FIRST block listed for an id:
+     * an IdentityHashMap iterated in identity-hash order, i.e. a different species/colour per JVM run.
      */
-    private static final Map<Block, Integer> vanillaBlockToLegacyId = new IdentityHashMap<>();
-    /** Reverse mapping: legacy block ID → modern MC Block. Built from vanillaBlockToLegacyId. */
+    private static final Map<Block, Integer> vanillaBlockToLegacyId = new LinkedHashMap<>();
+    /** Reverse mapping: legacy block ID → modern MC Block (first listed wins). Built from vanillaBlockToLegacyId. */
     private static final Map<Integer, Block> legacyIdToVanillaBlock = new HashMap<>();
-    private static boolean vanillaBlockMapInitialized = false;
+    // volatile: the maps are filled under the class lock, then published by this write (RE4)
+    private static volatile boolean vanillaBlockMapInitialized = false;
 
     /**
      * Maps modern vanilla Item instances to their legacy MC 1.5.2 numeric IDs.
@@ -44,7 +59,7 @@ public class ProxyRegistry {
     private static final Map<Item, Integer> vanillaItemToLegacyId = new IdentityHashMap<>();
     /** Reverse mapping: legacy item ID → modern MC Item. Built from vanillaItemToLegacyId. */
     private static final Map<Integer, Item> legacyIdToVanillaItem = new HashMap<>();
-    private static boolean vanillaItemMapInitialized = false;
+    private static volatile boolean vanillaItemMapInitialized = false;
 
     // ---- blocks ----
 
@@ -73,10 +88,15 @@ public class ProxyRegistry {
 
     // ---- items ----
 
-    /** Reverse map: MC Item → FC legacy ID for ProxyItems. */
-    private static final Map<net.minecraft.world.item.Item, Integer> proxyItemToLegacyId = new java.util.HashMap<>();
+    /**
+     * Reverse map: MC Item → FC legacy ID for ProxyItems and headless items. Concurrent for the same
+     * reason as itemsByLegacyId (RE4); a plain HashMap read here while createHeadlessItem resized it on
+     * the other thread could miss and allocate a second headless id for the same item.
+     */
+    private static final Map<net.minecraft.world.item.Item, Integer> proxyItemToLegacyId = new ConcurrentHashMap<>();
 
     public static void registerItem(int legacyId, net.minecraft.world.item.Item item) {
+        if (item == null) return;   // ConcurrentHashMap takes no null keys/values
         itemsByLegacyId.put(legacyId, item);
         proxyItemToLegacyId.put(item, legacyId);
     }
@@ -108,33 +128,84 @@ public class ProxyRegistry {
     }
 
     /**
-     * 1.5.2 blocks whose metadata subtypes are distinct 1.20.1 blocks (wood species). Legacy
-     * worldgen collapses all four species onto one legacy id, so the single getModernBlock()
-     * mapping always resolves to oak. This table restores the species from the drop's metadata
-     * (bits 0-1) so a chopped spruce/birch/jungle log/leaf/plank/slab yields the correct block.
+     * 1.5.2 blocks whose metadata subtypes are distinct 1.20.1 blocks (wood species, wool colour,
+     * sandstone/stone-brick/slab type, ...). Legacy ids collapse every variant onto one id, so the single
+     * getModernBlock() mapping resolves to one canonical block. This table restores the variant from the
+     * subtype bits of the metadata ({@code meta & mask}; slab bit 8 = upper half, log bits 2-3 = axis are
+     * outside the mask), in the order of the 1.5.2 subtype tables (BlockWood.java:19, BlockSapling.java:20,
+     * BlockLog.java:21, BlockLeaves.java:20, BlockSandStone.java:21, BlockTallGrass.java:22, BlockCloth,
+     * BlockStep.java:23, BlockSilverfish.java:23, BlockStoneBrick.java:21, BlockWoodSlab.java:23,
+     * BlockWall.java:22), matching LegacyVariants' canonical item picks (24:2 = cut sandstone,
+     * 44:0 = smooth stone slab). A null entry has no 1.20.1 block under this id.
      */
-    private static final Map<Integer, net.minecraft.world.level.block.Block[]> VARIANT_BLOCKS =
-            new java.util.HashMap<>();
+    private static final Map<Integer, Variants> VARIANT_BLOCKS = new HashMap<>();
+    /** Reverse of VARIANT_BLOCKS: block -> its subtype metadata (WorldBridge.deriveVanillaMetadata). */
+    private static final Map<Block, Integer> VARIANT_META = new IdentityHashMap<>();
+
+    private static final class Variants {
+        final int mask;
+        final Block[] blocks;
+
+        Variants(int mask, Block... blocks) {
+            this.mask = mask;
+            this.blocks = blocks;
+        }
+    }
+
+    private static void variants(int legacyId, int mask, Block... blocks) {
+        VARIANT_BLOCKS.put(legacyId, new Variants(mask, blocks));
+        for (int meta = 0; meta < blocks.length; meta++) {
+            if (blocks[meta] != null) VARIANT_META.putIfAbsent(blocks[meta], meta);
+        }
+    }
+
     static {
-        VARIANT_BLOCKS.put(17, new net.minecraft.world.level.block.Block[]{
-                Blocks.OAK_LOG, Blocks.SPRUCE_LOG, Blocks.BIRCH_LOG, Blocks.JUNGLE_LOG});
-        VARIANT_BLOCKS.put(18, new net.minecraft.world.level.block.Block[]{
-                Blocks.OAK_LEAVES, Blocks.SPRUCE_LEAVES, Blocks.BIRCH_LEAVES, Blocks.JUNGLE_LEAVES});
-        VARIANT_BLOCKS.put(5, new net.minecraft.world.level.block.Block[]{
-                Blocks.OAK_PLANKS, Blocks.SPRUCE_PLANKS, Blocks.BIRCH_PLANKS, Blocks.JUNGLE_PLANKS});
-        VARIANT_BLOCKS.put(126, new net.minecraft.world.level.block.Block[]{
-                Blocks.OAK_SLAB, Blocks.SPRUCE_SLAB, Blocks.BIRCH_SLAB, Blocks.JUNGLE_SLAB});
+        variants(5, 3, Blocks.OAK_PLANKS, Blocks.SPRUCE_PLANKS, Blocks.BIRCH_PLANKS, Blocks.JUNGLE_PLANKS);
+        variants(6, 3, Blocks.OAK_SAPLING, Blocks.SPRUCE_SAPLING, Blocks.BIRCH_SAPLING, Blocks.JUNGLE_SAPLING);
+        variants(17, 3, Blocks.OAK_LOG, Blocks.SPRUCE_LOG, Blocks.BIRCH_LOG, Blocks.JUNGLE_LOG);
+        variants(18, 3, Blocks.OAK_LEAVES, Blocks.SPRUCE_LEAVES, Blocks.BIRCH_LEAVES, Blocks.JUNGLE_LEAVES);
+        // {default, chiseled, smooth}: 1.5.2 "smooth" sandstone is 1.20.1 cut sandstone
+        variants(24, 3, Blocks.SANDSTONE, Blocks.CHISELED_SANDSTONE, Blocks.CUT_SANDSTONE);
+        // {deadbush, tallgrass, fern}: the dead shrub keeps its own id 32 in 1.20.1 terms
+        variants(31, 3, null, Blocks.GRASS, Blocks.FERN);
+        variants(35, 15, Blocks.WHITE_WOOL, Blocks.ORANGE_WOOL, Blocks.MAGENTA_WOOL, Blocks.LIGHT_BLUE_WOOL,
+                Blocks.YELLOW_WOOL, Blocks.LIME_WOOL, Blocks.PINK_WOOL, Blocks.GRAY_WOOL,
+                Blocks.LIGHT_GRAY_WOOL, Blocks.CYAN_WOOL, Blocks.PURPLE_WOOL, Blocks.BLUE_WOOL,
+                Blocks.BROWN_WOOL, Blocks.GREEN_WOOL, Blocks.RED_WOOL, Blocks.BLACK_WOOL);
+        // {stone, sand, wood, cobble, brick, smoothStoneBrick, netherBrick, quartz}; 43 = the double slab
+        Block[] stoneSlabs = {Blocks.SMOOTH_STONE_SLAB, Blocks.SANDSTONE_SLAB, Blocks.PETRIFIED_OAK_SLAB,
+                Blocks.COBBLESTONE_SLAB, Blocks.BRICK_SLAB, Blocks.STONE_BRICK_SLAB, Blocks.NETHER_BRICK_SLAB,
+                Blocks.QUARTZ_SLAB};
+        variants(44, 7, stoneSlabs);
+        variants(43, 7, stoneSlabs);
+        variants(97, 3, Blocks.INFESTED_STONE, Blocks.INFESTED_COBBLESTONE, Blocks.INFESTED_STONE_BRICKS);
+        variants(98, 3, Blocks.STONE_BRICKS, Blocks.MOSSY_STONE_BRICKS, Blocks.CRACKED_STONE_BRICKS,
+                Blocks.CHISELED_STONE_BRICKS);
+        Block[] woodSlabs = {Blocks.OAK_SLAB, Blocks.SPRUCE_SLAB, Blocks.BIRCH_SLAB, Blocks.JUNGLE_SLAB};
+        variants(126, 3, woodSlabs);
+        variants(125, 3, woodSlabs);
+        variants(139, 1, Blocks.COBBLESTONE_WALL, Blocks.MOSSY_COBBLESTONE_WALL);
     }
 
     /**
-     * Returns the 1.20.1 block variant for a legacy id + damage/metadata (wood species in bits
-     * 0-1), or null if the id has no per-metadata variants.
+     * Returns the 1.20.1 block variant for a legacy id + damage/metadata (the id's subtype bits),
+     * or null if the id has no per-metadata variants (or none for this subtype).
      */
     public static net.minecraft.world.level.block.Block getModernBlockVariant(int legacyId, int damage) {
-        net.minecraft.world.level.block.Block[] variants = VARIANT_BLOCKS.get(legacyId);
+        Variants variants = VARIANT_BLOCKS.get(legacyId);
         if (variants == null) return null;
-        int idx = damage & 3;
-        return idx < variants.length ? variants[idx] : variants[0];
+        int idx = damage & variants.mask;
+        return idx < variants.blocks.length && variants.blocks[idx] != null
+                ? variants.blocks[idx] : variants.blocks[0];
+    }
+
+    /**
+     * 1.5.2 subtype metadata of a 1.20.1 block that is one variant of a legacy id (spruce planks -> 1,
+     * orange wool -> 1, cut sandstone -> 2, cobblestone slab -> 3), or -1 if it is not a table variant.
+     */
+    static int getLegacyVariantMeta(net.minecraft.world.level.block.Block block) {
+        Integer meta = VARIANT_META.get(block);
+        return meta != null ? meta : -1;
     }
 
     // ================================================================
@@ -142,12 +213,14 @@ public class ProxyRegistry {
     // ================================================================
 
     /**
-     * Returns the legacy MC 1.5.2 block ID for a modern block instance.
-     * <ul>
-     *   <li>If the block is a {@link ProxyBlock}, returns its legacy ID directly.</li>
-     *   <li>Otherwise, looks up the vanilla block in the static mapping table.</li>
-     *   <li>Returns 0 (air) if the block is unmapped.</li>
-     * </ul>
+     * Legacy 1.5.2 id for a modern block (identity mapping, used for routing MC callbacks/items to FC:
+     * getFcBlock, BlockBehaviorMixin, ItemStackMixin...). Returns 0 when unmapped OR when the mapped id
+     * has no entry in btw.modern.Block.blocksList. 1.5.2/BTW code dereferences blocksList[id] unguarded for
+     * any id > 0 (vanilla/client PathFinder.java:452, EntityLiving.java:3708, Entity.java:943/1028), and this
+     * table maps 95/137/152 (1.5.2 ids with no block created here) and 159/170-173 (1.6+ ids) to empty slots
+     * (triage HAI-4: "tempBlock is null" in PathFinder.GetPathWeightAtLocation).
+     * Modern-only blocks must keep returning 0 HERE so they never run FC block code; FC reads of the live
+     * world use {@link #getWorldBlockId} instead.
      */
     public static int getBlockId(Block block) {
         if (block instanceof ProxyBlock pb) {
@@ -155,7 +228,53 @@ public class ProxyRegistry {
         }
         ensureVanillaBlockMapInitialized();
         Integer id = vanillaBlockToLegacyId.get(block);
-        return id != null ? id : 0;
+        return id != null && hasFcBlock(id) ? id : 0;
+    }
+
+    /** True if btw.modern.Block.blocksList[id] is populated. */
+    static boolean hasFcBlock(int id) {
+        return id > 0 && id < btw.modern.Block.blocksList.length
+                && btw.modern.Block.blocksList[id] != null;
+    }
+
+    /** True if any 1.20.1 block maps to this legacy id (ProxyBlock or vanilla table). Stand-in ids must avoid these. */
+    static boolean isLegacyIdMapped(int id) {
+        ensureVanillaBlockMapInitialized();
+        return blocksByLegacyId.containsKey(id) || legacyIdToVanillaBlock.containsKey(id);
+    }
+
+    /** 1.5.2 Block.waterMoving: what Blocks.WATER reads as (vanilla/client Block.java:98). */
+    private static final int LEGACY_WATER_ID = 8;
+    /** 1.5.2 Block.stoneSingleSlab / woodSingleSlab; their double-slab ids are one lower (vanilla/client Block.java:212-213, 301-302). */
+    private static final int LEGACY_STONE_SLAB_ID = 44;
+    private static final int LEGACY_WOOD_SLAB_ID = 126;
+
+    /**
+     * Legacy id FC sees when it reads the LIVE WORLD (WorldBridge.getBlockId -> PathFinder, Entity.moveEntity
+     * collisions, isBlockNormalCube, FC neighbour logic). Identity mapping, except:
+     * <ul>
+     *   <li>an MC double slab reads as the 1.5.2 double-slab id 43 / 125 (BlockStep / BlockWoodSlab
+     *       isDoubleSlab; the bottom/top half is reported through metadata bit 8);</li>
+     *   <li>a colliding 1.20.1 state with no usable 1.5.2 id reads as a {@link ModernBlockStandIn}
+     *       instead of air (design_blockmap U4: puppets fell through deepslate/tuff);</li>
+     *   <li>a non-colliding unmapped state whose fluid is water (seagrass, kelp, bubble column, coral,
+     *       waterlogged plants) reads as water: in 1.5.2 terms that cell IS water (triage D5).</li>
+     * </ul>
+     * Guaranteed: 0 or an id whose blocksList slot is populated. Not for routing/items: those keep
+     * {@link #getBlockId(Block)}.
+     */
+    public static int getWorldBlockId(BlockState state, BlockGetter level, BlockPos pos) {
+        int id = getBlockId(state.getBlock());
+        if ((id == LEGACY_STONE_SLAB_ID || id == LEGACY_WOOD_SLAB_ID) && state.hasProperty(SlabBlock.TYPE)
+                && state.getValue(SlabBlock.TYPE) == SlabType.DOUBLE) {
+            id -= 1;
+        } else if (id == 0 && !state.isAir()) {
+            id = ModernBlockStandIn.idFor(state, level, pos);
+            if (id == 0 && state.getFluidState().is(FluidTags.WATER)) {
+                id = LEGACY_WATER_ID;
+            }
+        }
+        return hasFcBlock(id) ? id : 0;
     }
 
     /**
@@ -169,7 +288,15 @@ public class ProxyRegistry {
         return null;
     }
 
-    private static synchronized void ensureVanillaBlockMapInitialized() {
+    // Double-checked: getBlockId runs per block read on the server thread, the render thread and the
+    // chunk-mesh threads; only the first call needs the lock (RE4).
+    private static void ensureVanillaBlockMapInitialized() {
+        if (!vanillaBlockMapInitialized) {
+            initVanillaBlockMapOnce();
+        }
+    }
+
+    private static synchronized void initVanillaBlockMapOnce() {
         if (!vanillaBlockMapInitialized) {
             initVanillaBlockMap();
             vanillaBlockMapInitialized = true;
@@ -242,12 +369,13 @@ public class ProxyRegistry {
         // ID 24: Sandstone
         vanillaBlockToLegacyId.put(Blocks.SANDSTONE, 24);
         vanillaBlockToLegacyId.put(Blocks.CHISELED_SANDSTONE, 24);
+        vanillaBlockToLegacyId.put(Blocks.CUT_SANDSTONE, 24);       // 1.5.2 "smooth" sandstone (24:2)
         vanillaBlockToLegacyId.put(Blocks.SMOOTH_SANDSTONE, 24);
         // ID 25: Note Block
         vanillaBlockToLegacyId.put(Blocks.NOTE_BLOCK, 25);
-        // ID 26: Bed
-        vanillaBlockToLegacyId.put(Blocks.WHITE_BED, 26);
+        // ID 26: Bed (red first: the 1.5.2 bed, and item 355 -> RED_BED)
         vanillaBlockToLegacyId.put(Blocks.RED_BED, 26);
+        vanillaBlockToLegacyId.put(Blocks.WHITE_BED, 26);
         vanillaBlockToLegacyId.put(Blocks.BLACK_BED, 26);
         vanillaBlockToLegacyId.put(Blocks.BLUE_BED, 26);
         vanillaBlockToLegacyId.put(Blocks.BROWN_BED, 26);
@@ -318,10 +446,13 @@ public class ProxyRegistry {
         vanillaBlockToLegacyId.put(Blocks.GOLD_BLOCK, 41);
         // ID 42: Iron Block
         vanillaBlockToLegacyId.put(Blocks.IRON_BLOCK, 42);
-        // ID 43: Double Stone Slab
-        // (In modern MC, double slabs are separate blocks or don't exist as such)
-        // ID 44: Stone Slab
+        // ID 43: Double Stone Slab -- an MC slab with TYPE=DOUBLE: no table entry (identity routing keeps 44),
+        // reported by getWorldBlockId and placed through getModernBlockVariant(43, meta).
+        // ID 44: Stone Slab. The 1.5.2 stone slab (44:0) is 1.20.1's smooth stone slab (canonical pick,
+        // as LegacyVariants); a double slab reads as 43 on the world-read path (getWorldBlockId).
+        vanillaBlockToLegacyId.put(Blocks.SMOOTH_STONE_SLAB, 44);
         vanillaBlockToLegacyId.put(Blocks.STONE_SLAB, 44);
+        vanillaBlockToLegacyId.put(Blocks.PETRIFIED_OAK_SLAB, 44);
         vanillaBlockToLegacyId.put(Blocks.SANDSTONE_SLAB, 44);
         vanillaBlockToLegacyId.put(Blocks.COBBLESTONE_SLAB, 44);
         vanillaBlockToLegacyId.put(Blocks.BRICK_SLAB, 44);
@@ -496,7 +627,7 @@ public class ProxyRegistry {
         // ID 123: Redstone Lamp (off)
         vanillaBlockToLegacyId.put(Blocks.REDSTONE_LAMP, 123);
         // ID 124: Redstone Lamp (on) — same block in modern with lit property
-        // ID 125: Double Wooden Slab (no direct modern equivalent)
+        // ID 125: Double Wooden Slab -- like 43: getWorldBlockId / getModernBlockVariant(125, meta)
         // ID 126: Wooden Slab
         vanillaBlockToLegacyId.put(Blocks.OAK_SLAB, 126);
         vanillaBlockToLegacyId.put(Blocks.SPRUCE_SLAB, 126);
@@ -605,7 +736,8 @@ public class ProxyRegistry {
         // ID 173: Block of Coal
         vanillaBlockToLegacyId.put(Blocks.COAL_BLOCK, 173);
 
-        // Build reverse mapping: legacy ID → modern Block
+        // Build reverse mapping: legacy ID → modern Block (insertion order: the first block listed for an
+        // id is its canonical pick -- oak, white wool, smooth stone slab, ...)
         for (var entry : vanillaBlockToLegacyId.entrySet()) {
             legacyIdToVanillaBlock.putIfAbsent(entry.getValue(), entry.getKey());
         }
@@ -619,20 +751,33 @@ public class ProxyRegistry {
     // ================================================================
 
     /**
-     * Returns the legacy MC 1.5.2 item ID for a modern item instance.
+     * Returns the legacy MC 1.5.2 item ID for a modern item instance (routing: FoodDataMixin,
+     * ItemStackMixin, LivingEntityMixin, ServerPlayerGameModeMixin index itemsList with it).
      * <ul>
-     *   <li>Looks up the vanilla item in the static mapping table.</li>
-     *   <li>Falls back to the MC registry ID if the item is unmapped.</li>
+     *   <li>ProxyItems (FC items) and the vanilla table answer their 1.5.2 id.</li>
+     *   <li>Anything else answers 0 ("no FC item": vanilla behaviour). It used to answer the MC raw registry
+     *       id, which indexes an unrelated FC item or an ItemBlock (itemsList[0..255] are block ids), so
+     *       using a modern-only item could run another item's FC code (design_blockmap cross-cluster 1).
+     *       Headless passthrough ids (&gt;= 25000) are not FC items either.</li>
      * </ul>
      */
     public static int getItemId(Item item) {
+        if (item == null) return 0;
         // Check ProxyItem reverse map first (FC-specific items)
         Integer proxyId = proxyItemToLegacyId.get(item);
-        if (proxyId != null) return proxyId;
+        if (proxyId != null && proxyId < HEADLESS_BASE_ID) return proxyId;
         // Check vanilla item map
         ensureVanillaItemMapInitialized();
         Integer id = vanillaItemToLegacyId.get(item);
-        return id != null ? id : Item.getId(item);
+        if (id != null) return id;
+        // Flattened 1.5.2 subtypes (bone meal / dyes 351, charcoal 263, enchanted golden apple 322, skulls 397)
+        try {
+            int[] legacy = LegacyVariants.toLegacy(item);
+            if (legacy != null) return legacy[0];
+        } catch (Throwable ignored) {
+            // LegacyVariants logs its own init failure
+        }
+        return 0;
     }
 
     /**
@@ -650,11 +795,23 @@ public class ProxyRegistry {
     // Headless item system: passthrough entries for modern-only items
     // ================================================================
 
+    /** First headless id: clear of every FC item id (which max out around ~2000). */
+    static final int HEADLESS_BASE_ID = 25000;
+
     /**
-     * Next available ID for headless items. Starts at 25000 to avoid
-     * all FC item IDs (which max out around ~2000).
+     * Next available ID for headless items. Guarded by the ProxyRegistry class lock (createHeadlessItem,
+     * restoreHeadlessIds, resetHeadlessIds).
      */
-    private static int nextHeadlessId = 25000;
+    private static int nextHeadlessId = HEADLESS_BASE_ID;
+
+    /**
+     * Headless id -> item registry name for every headless id of the running world (triage RE5). FC NBT stores
+     * the numeric id (Modern-Common ItemStack.writeToNBT), and headless ids are allocated in first-seen order,
+     * so FcWorldSavedData persists this table per world and restores it before any chunk loads; ids whose
+     * item no longer exists stay reserved so a new item can never inherit their saved stacks.
+     */
+    private static final Map<Integer, String> headlessNames = new ConcurrentHashMap<>();
+    private static volatile boolean headlessOverflowLogged;
 
     /**
      * Returns a legacy ID for any modern MC item, creating a headless
@@ -666,31 +823,16 @@ public class ProxyRegistry {
      * itemID and doesn't NPE; the item roundtrips losslessly.</p>
      *
      * @param modernItem the MC 1.20.1 Item instance
-     * @return a positive legacy ID guaranteed to have an entry in itemsList
+     * @return a positive legacy ID guaranteed to have an entry in itemsList (0 only if the headless id
+     *         space is exhausted)
      */
     public static int getOrCreateLegacyId(Item modernItem) {
         if (modernItem == null) return 0;
 
-        // Check BlockItem first
-        if (modernItem instanceof net.minecraft.world.item.BlockItem bi) {
-            int blockId = getBlockId(bi.getBlock());
-            if (blockId > 0 && blockId < btw.modern.Block.blocksList.length
-                    && btw.modern.Block.blocksList[blockId] != null) {
-                return blockId;
-            }
-        }
-
-        // Check existing item mapping
-        Integer existing = proxyItemToLegacyId.get(modernItem);
-        if (existing != null && existing > 0) {
-            // Verify it has an FC entry
-            if (existing < btw.modern.Item.itemsList.length
-                    && btw.modern.Item.itemsList[existing] != null) {
-                return existing;
-            }
-        }
-
-        // Check vanilla item map
+        // 1.5.2 item ids first: in 1.20.1 wheat seeds, string, redstone, the cauldron/brewing stand/sign/door
+        // items, ... are BlockItems of their crop/wire/block, but 1.5.2 kept separate item ids (seeds 295 vs
+        // crops 59, string 287 vs tripwire 132, redstone 331 vs wire 55, cauldron 380 vs 118; vanilla/client
+        // Item.java:117/109/212/325), and FC item checks (isBreedingItem(Item.seeds), ...) compare those.
         ensureVanillaItemMapInitialized();
         Integer vanillaId = vanillaItemToLegacyId.get(modernItem);
         if (vanillaId != null && vanillaId > 0) {
@@ -701,6 +843,24 @@ public class ProxyRegistry {
             if (hasItem || hasBlock) return vanillaId;
         }
 
+        // Then the block form (getBlockId already filters ids with an empty blocksList slot)
+        if (modernItem instanceof net.minecraft.world.item.BlockItem bi) {
+            int blockId = getBlockId(bi.getBlock());
+            if (blockId > 0) {
+                return blockId;
+            }
+        }
+
+        // Check existing item mapping (ProxyItems, headless ids)
+        Integer existing = proxyItemToLegacyId.get(modernItem);
+        if (existing != null && existing > 0) {
+            // Verify it has an FC entry
+            if (existing < btw.modern.Item.itemsList.length
+                    && btw.modern.Item.itemsList[existing] != null) {
+                return existing;
+            }
+        }
+
         // No valid FC entry — create a headless passthrough item
         return createHeadlessItem(modernItem);
     }
@@ -708,9 +868,23 @@ public class ProxyRegistry {
     private static synchronized int createHeadlessItem(Item modernItem) {
         // Double-check in case another thread raced
         Integer raceCheck = proxyItemToLegacyId.get(modernItem);
-        if (raceCheck != null && raceCheck >= 25000) return raceCheck;
+        if (raceCheck != null && raceCheck >= HEADLESS_BASE_ID) return raceCheck;
 
-        int id = nextHeadlessId++;
+        // Skip ids a restored world table reserved for items that no longer exist
+        int id = nextHeadlessId;
+        while (id < btw.modern.Item.itemsList.length
+                && (headlessNames.containsKey(id) || btw.modern.Item.itemsList[id] != null)) {
+            id++;
+        }
+        if (id >= btw.modern.Item.itemsList.length) {
+            if (!headlessOverflowLogged) {
+                headlessOverflowLogged = true;
+                LOGGER.error("Headless item ids exhausted ({}..{}); modern item {} has no FC form",
+                        HEADLESS_BASE_ID, btw.modern.Item.itemsList.length - 1, registryName(modernItem));
+            }
+            return 0;
+        }
+        nextHeadlessId = id + 1;
         // Item constructor does: this.itemID = 256 + rawId; itemsList[itemID] = this;
         // So rawId = id - 256
         btw.modern.Item headless = new btw.modern.Item(id - 256);
@@ -719,13 +893,123 @@ public class ProxyRegistry {
         // Register both directions
         itemsByLegacyId.put(id, modernItem);
         proxyItemToLegacyId.put(modernItem, id);
+        String name = registryName(modernItem);
+        if (name != null) headlessNames.put(id, name);
 
-        LOGGER.debug("Created headless FC item ID {} for modern item {}",
-                id, net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(modernItem));
+        LOGGER.debug("Created headless FC item ID {} for modern item {}", id, name);
         return id;
     }
 
-    private static synchronized void ensureVanillaItemMapInitialized() {
+    /** Registry name of a modern item, or null if it is not registered. */
+    private static String registryName(Item item) {
+        ResourceLocation key = net.minecraftforge.registries.ForgeRegistries.ITEMS.getKey(item);
+        return key != null ? key.toString() : null;
+    }
+
+    /**
+     * RE5: every headless id known this session with its item's registry name (restored reservations
+     * included), for FcWorldSavedData to persist with the world.
+     */
+    static synchronized Map<Integer, String> snapshotHeadlessIds() {
+        return new TreeMap<>(headlessNames);
+    }
+
+    /**
+     * RE5: re-creates the headless ids a world saved (id -> item registry name) so the FC stacks stored with
+     * them load as the same item. Must run before the world's chunks load (FcWorldSavedData hooks the
+     * overworld's LevelEvent.Load). Saved ids are always reserved; an item that no longer exists leaves its
+     * id empty (its stacks load as nothing instead of as some other item); an item that has a real legacy
+     * id by now keeps it for new stacks while its old headless id still loads as it. The world's numbering
+     * always wins over an id this session handed out before the world loaded (see the first pass).
+     */
+    static synchronized void restoreHeadlessIds(Map<Integer, String> saved) {
+        if (saved == null || saved.isEmpty()) return;
+        int restored = 0, missing = 0, rehomed = 0;
+        // Pass 1: an id this session already gave to a DIFFERENT item, before the world loaded (a client-side
+        // conversion while connected to another server, any conversion between the previous world's reset and
+        // this load). That allocation is in no NBT of this world, whereas this world's FC stacks hold the saved
+        // id: keeping the session item loaded every such stack as it, and the next save made the swap
+        // permanent (w2 review BM-R2). Evict it; its next conversion re-homes it at a fresh id
+        // (getOrCreateLegacyId -> createHeadlessItem, past every saved id), unless pass 2 restores it at its own
+        // saved id. Only FC stacks created this session, before the load, still carry the evicted id.
+        for (Map.Entry<Integer, String> e : saved.entrySet()) {
+            Integer boxedId = e.getKey();
+            String name = e.getValue();
+            if (boxedId == null || name == null) continue;
+            int id = boxedId;
+            if (id < HEADLESS_BASE_ID || id >= btw.modern.Item.itemsList.length) continue;
+            String known = headlessNames.get(id);
+            if (name.equals(known) || (known == null && btw.modern.Item.itemsList[id] == null)) continue;
+            Item live = itemsByLegacyId.remove(id);
+            if (live != null) proxyItemToLegacyId.remove(live, id);
+            headlessNames.remove(id);
+            btw.modern.Item.itemsList[id] = null;
+            rehomed++;
+            LOGGER.warn("[HEADLESS] saved id {} ({}) was already given to {} in this session; the world's numbering"
+                    + " wins and {} moves to a new id", id, name, known, known);
+        }
+        // Pass 2: install the saved ids.
+        for (Map.Entry<Integer, String> e : saved.entrySet()) {
+            Integer boxedId = e.getKey();
+            String name = e.getValue();
+            if (boxedId == null || name == null) continue;
+            int id = boxedId;
+            if (id < HEADLESS_BASE_ID || id >= btw.modern.Item.itemsList.length) continue;
+            nextHeadlessId = Math.max(nextHeadlessId, id + 1);
+            if (headlessNames.containsKey(id) || btw.modern.Item.itemsList[id] != null) {
+                continue; // the same item already holds this id this session (pass 1 evicted any other)
+            }
+            headlessNames.put(id, name);
+            ResourceLocation rl = ResourceLocation.tryParse(name);
+            Item item = rl != null && net.minecraftforge.registries.ForgeRegistries.ITEMS.containsKey(rl)
+                    ? net.minecraftforge.registries.ForgeRegistries.ITEMS.getValue(rl) : null;
+            if (item == null || item == Items.AIR) {
+                missing++;
+                continue;
+            }
+            btw.modern.Item headless = new btw.modern.Item(id - 256);
+            headless.setMaxStackSize(item.getMaxStackSize());
+            itemsByLegacyId.put(id, item);
+            if (!proxyItemToLegacyId.containsKey(item) && !hasRealLegacyId(item)) {
+                proxyItemToLegacyId.put(item, id);
+            }
+            restored++;
+        }
+        LOGGER.info("[HEADLESS] restored {} headless item ids ({} items no longer exist, {} session items re-homed);"
+                + " next id {}", restored, missing, rehomed, nextHeadlessId);
+    }
+
+    /**
+     * RE5: forgets the running world's headless ids once its server has stopped, so the next world opened in
+     * this JVM restores exactly its own table (two worlds may have numbered the same items differently).
+     */
+    static synchronized void resetHeadlessIds() {
+        for (int id = HEADLESS_BASE_ID; id < nextHeadlessId && id < btw.modern.Item.itemsList.length; id++) {
+            btw.modern.Item.itemsList[id] = null;
+            itemsByLegacyId.remove(id);
+        }
+        proxyItemToLegacyId.values().removeIf(v -> v >= HEADLESS_BASE_ID);
+        headlessNames.clear();
+        nextHeadlessId = HEADLESS_BASE_ID;
+    }
+
+    /** True if the item has a non-headless legacy id (vanilla table, block form, or ProxyItem). */
+    private static boolean hasRealLegacyId(Item item) {
+        ensureVanillaItemMapInitialized();
+        if (vanillaItemToLegacyId.containsKey(item)) return true;
+        if (item instanceof net.minecraft.world.item.BlockItem bi && getBlockId(bi.getBlock()) > 0) return true;
+        Integer proxyId = proxyItemToLegacyId.get(item);
+        return proxyId != null && proxyId < HEADLESS_BASE_ID;
+    }
+
+    // Double-checked like ensureVanillaBlockMapInitialized (RE4).
+    private static void ensureVanillaItemMapInitialized() {
+        if (!vanillaItemMapInitialized) {
+            initVanillaItemMapOnce();
+        }
+    }
+
+    private static synchronized void initVanillaItemMapOnce() {
         if (!vanillaItemMapInitialized) {
             initVanillaItemMap();
             vanillaItemMapInitialized = true;
@@ -869,11 +1153,14 @@ public class ProxyRegistry {
         vanillaItemToLegacyId.put(Items.CAULDRON, 380);
         vanillaItemToLegacyId.put(Items.ENDER_EYE, 381);
         vanillaItemToLegacyId.put(Items.GLISTERING_MELON_SLICE, 382);
-        // 383: Spawn Egg — every modern per-mob egg maps to the single 1.5.2
+        // 383: Spawn Egg — every modern egg of a 1.5.2 mob maps to the single 1.5.2
         // monsterPlacer id so EntityAgeable.interact's held.itemID ==
-        // Item.monsterPlacer.itemID (383) baby-spawn check can match.
+        // Item.monsterPlacer.itemID (383) baby-spawn check can match. Eggs of mobs 1.5.2 never had
+        // (fox, axolotl, modded) stay headless: as (383, 0) they had no FC -> MC form
+        // (LegacyVariants.eggFor(0) and getModernItem(383) are null), so one put in an FC
+        // container could never be taken out again.
         for (net.minecraft.world.item.Item eggItem : net.minecraftforge.registries.ForgeRegistries.ITEMS) {
-            if (eggItem instanceof net.minecraft.world.item.SpawnEggItem) {
+            if (eggItem instanceof net.minecraft.world.item.SpawnEggItem egg && isLegacyMobEgg(egg)) {
                 vanillaItemToLegacyId.put(eggItem, 383);
             }
         }
@@ -931,5 +1218,17 @@ public class ProxyRegistry {
 
         LOGGER.info("Initialized vanilla item -> legacy ID mapping ({} entries, {} reverse).",
                 vanillaItemToLegacyId.size(), legacyIdToVanillaItem.size());
+    }
+
+    /** True for a vanilla egg whose mob existed in 1.5.2 (a key of ItemStackHelper.LEGACY_ENTITY_NAMES). */
+    private static boolean isLegacyMobEgg(net.minecraft.world.item.SpawnEggItem egg) {
+        try {
+            net.minecraft.world.entity.EntityType<?> type = egg.getType(null);
+            ResourceLocation key = net.minecraftforge.registries.ForgeRegistries.ENTITY_TYPES.getKey(type);
+            return key != null && "minecraft".equals(key.getNamespace())
+                    && ItemStackHelper.LEGACY_ENTITY_NAMES.containsKey(key.getPath());
+        } catch (Throwable t) {
+            return false;
+        }
     }
 }

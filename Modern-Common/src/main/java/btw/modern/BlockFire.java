@@ -24,6 +24,32 @@ public class BlockFire extends Block {
         return fireIcons[index & 1];
     }
 
+    // 1.5.2 BlockFire.getCollisionBoundingBoxFromPool (vanilla/client BlockFire.java:90-93): fire has no
+    // collision box (FCBlockFire / FCBlockFireStoked do not override it)
+    @Override
+    public AxisAlignedBB getCollisionBoundingBoxFromPool(World world, int x, int y, int z) {
+        return null;
+    }
+
+    // 1.5.2 BlockFire.isOpaqueCube / renderAsNormalBlock (vanilla/client BlockFire.java:99-110).
+    // With the inherited true, World.isBlockNormalCube reported this passable block as solid, so an FC mob's
+    // eye inside the cell counted as being inside an opaque block (Entity.isEntityInsideOpaqueBlock -> inWall).
+    @Override
+    public boolean isOpaqueCube() {
+        return false;
+    }
+
+    @Override
+    public boolean renderAsNormalBlock() {
+        return false;
+    }
+
+    // 1.5.2 BlockFire.isCollidable (vanilla/client BlockFire.java:331-334)
+    @Override
+    public boolean isCollidable() {
+        return false;
+    }
+
     // 1.5.2 BlockFire.canBlockCatchFire — called by FCBlockFire.updateTick (super.canBlockCatchFire)
     // and Block.GetCanBlockBeIncinerated; reads the array populated by Block.SetFireProperties
     public boolean canBlockCatchFire(IBlockAccess blockAccess, int i, int j, int k) {

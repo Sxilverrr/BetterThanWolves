@@ -1897,40 +1897,94 @@ public class BTWLifecycle {
     }
 
     /**
-     * Populate the worldServers array on the btw.modern.MinecraftServer so that
-     * FC code can access worlds via MinecraftServer.getServer().worldServers[].
+     * 1.5.2 MinecraftServer.loadAllWorlds (vanilla/server MinecraftServer.java:217-272) fills
+     * worldServers[3] as [0]=overworld (dim 0), [1]=nether (-1), [2]=end (1); FC indexes it
+     * positionally (FCUtilsWorld time/progress + FCBlockEnderChest global inventory read
+     * worldServers[0]). The slots hold the SAME WorldBridge FC entities/blocks already use
+     * (getOrCreate caches per ServerLevel), so FC sees one coherent world -- previously a
+     * separate ForgeWorldServerWrapper stub with its own default WorldInfo (time 0 forever,
+     * unsaved progress flags) sat here, in getAllLevels() order.
      */
     private static void wireWorlds(MinecraftServer server) {
         LOGGER.info("Wiring world instances for BTW legacy code...");
         try {
             btw.modern.MinecraftServer btwServer = btw.modern.MinecraftServer.getServer();
-
             if (btwServer == null) {
                 LOGGER.warn("btw.modern.MinecraftServer.getServer() returned null, cannot wire worlds.");
                 return;
             }
-
-            // Collect all ServerLevels from the real MC server
-            java.util.List<net.minecraft.server.level.ServerLevel> levelList = new java.util.ArrayList<>();
+            java.util.List<btw.modern.WorldServer> worlds = new java.util.ArrayList<>();
+            worlds.add(bridgeFor(server, net.minecraft.world.level.Level.OVERWORLD));
+            worlds.add(bridgeFor(server, net.minecraft.world.level.Level.NETHER));
+            worlds.add(bridgeFor(server, net.minecraft.world.level.Level.END));
+            if (worlds.get(0) == null) {
+                LOGGER.error("No overworld ServerLevel; cannot wire worlds.");
+                return;
+            }
+            // 1.5.2 always had all three and FC dereferences slots unguarded
+            // (FCUtilsHardcoreSpawn time loop) -- never hand it a null slot.
+            for (int i = 1; i < 3; i++) {
+                if (worlds.get(i) == null) {
+                    LOGGER.warn("  1.5.2 world slot {} has no ServerLevel; aliasing the overworld", i);
+                    worlds.set(i, worlds.get(0));
+                }
+            }
+            // Modded/datapack dimensions after the three 1.5.2 slots.
             for (net.minecraft.server.level.ServerLevel level : server.getAllLevels()) {
-                levelList.add(level);
+                net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> key = level.dimension();
+                if (key.equals(net.minecraft.world.level.Level.OVERWORLD)
+                        || key.equals(net.minecraft.world.level.Level.NETHER)
+                        || key.equals(net.minecraft.world.level.Level.END)) continue;
+                worlds.add(WorldBridge.getOrCreate(level));
             }
-
-            // Create ForgeWorldServerWrapper instances (extend btw.modern.WorldServer)
-            // that delegate to the real MC ServerLevel for world operations.
-            btw.modern.WorldServer[] worldServers = new btw.modern.WorldServer[levelList.size()];
-            for (int i = 0; i < levelList.size(); i++) {
-                worldServers[i] = new ForgeWorldServerWrapper(levelList.get(i));
-                LOGGER.info("  Wrapped world {} -> index {}",
-                    levelList.get(i).dimension().location(), i);
+            btwServer.worldServers = worlds.toArray(new btw.modern.WorldServer[0]);
+            for (int i = 0; i < btwServer.worldServers.length; i++) {
+                WorldBridge wb = (WorldBridge) btwServer.worldServers[i];
+                LOGGER.info("  Wired world {} -> index {} (FC dim {})",
+                        wb.getServerLevel().dimension().location(), i, wb.provider.dimensionId);
             }
+            LOGGER.info("World wiring complete: {} worlds registered (overworld time {}).",
+                    btwServer.worldServers.length, btwServer.worldServers[0].getWorldTime());
+        } catch (Throwable t) {
+            LOGGER.error("Failed to wire world instances", t);
+        }
+    }
 
-            // Set the worldServers array on the btw server instance
-            btwServer.worldServers = worldServers;
+    private static btw.modern.WorldServer bridgeFor(MinecraftServer server,
+            net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> key) {
+        net.minecraft.server.level.ServerLevel level = server.getLevel(key);
+        return level != null ? WorldBridge.getOrCreate(level) : null;
+    }
 
-            LOGGER.info("World wiring complete: {} worlds registered.", levelList.size());
-        } catch (Exception e) {
-            LOGGER.error("Failed to wire world instances", e);
+    /**
+     * Called from ServerStoppedEvent -- after stopServer() has saved and closed every level
+     * (ServerStoppingEvent is too early: it fires before the final save, 1.20.1
+     * MinecraftServer.java:671 vs :689). 1.5.2 builds a fresh MinecraftServer/WorldServer[] per
+     * world and drops them on close; here the static server and the bridge caches outlived the
+     * session, so the next world's prepareLevels saw the previous server (triage RE3) and every
+     * closed world stayed reachable (RE2). Clears the static server instance, its
+     * worldServers[] and the bridge caches (design_world open decision 1, option c). Runs in
+     * runServer's finally block, so it must never throw.
+     */
+    public static void onServerStopped(MinecraftServer server) {
+        try {
+            btw.modern.MinecraftServer btwServer = btw.modern.MinecraftServer.getServer();
+            if (btwServer instanceof ForgeMinecraftServerWrapper wrapper && wrapper.getDelegate() != server) {
+                LOGGER.warn("ServerStoppedEvent for a server BTW did not wire; leaving legacy state alone.");
+                return;
+            }
+            // Instance first: FC null-checks getServer() before touching worldServers[0].
+            btw.modern.MinecraftServer.setInstance(null);
+            if (btwServer != null) {
+                btwServer.worldServers = null;
+            }
+            WorldBridge.clearCache();
+            EntityBridge.clearCache();
+            LivingEntityBridge.clearCache();
+            TileEntityBridge.clearCache();
+            LOGGER.info("Released BTW legacy server state (MinecraftServer instance, worldServers, bridge caches).");
+        } catch (Throwable t) {
+            LOGGER.error("Failed to release BTW legacy server state", t);
         }
     }
 }

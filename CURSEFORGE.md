@@ -1,3 +1,6 @@
+<!-- MAINTAINER: do not publish this page while a "TODO (maintainer)" under Links is still open.
+     Once the BTW wiki link is filled in, the second Installation tip may point players to it. -->
+
 # Better Than Wolves — Forge 1.20.1 Port
 
 A faithful port of **Better Than Wolves** (originally by FlowerChild for Minecraft 1.5.2) to **Forge 1.20.1**.
@@ -41,7 +44,10 @@ If you've never played BTW before, **do not expect vanilla Minecraft + extras**.
 - Hardcore spawn, costly sleep, FC's death penalties
 
 **Integration**
-- Full **JEI** support (optional). Cauldron, stoked cauldron, crucible, stoked crucible, and mill stone recipe categories are browsable in-game.
+- **JEI** support (optional). BTW 4.B itself had no recipe viewer; with JEI installed you can browse:
+  - recipe categories for the cauldron, stoked cauldron, crucible, stoked crucible, mill stone, soulforge (4x4) and campfire spit (the plain crucible list is empty, as in 4.B);
+  - FC's special crafting recipes (log chopping with an axe, knitting, baiting a fishing rod) in the crafting category;
+  - information pages for the processes that have no recipe list: kiln, saw, turntable, hopper filters and souls, hibachi and stoked fire, cauldron/crucible fire rules, and campfire cooking.
 
 ---
 
@@ -59,9 +65,11 @@ If you've never played BTW before, **do not expect vanilla Minecraft + extras**.
 1. Install Forge 1.20.1.
 2. Drop the BTW jar into your `mods/` folder.
 3. (Optional) Drop JEI 15.x into the same folder.
-4. Launch. Create a new world. Read the field manual before your first night.
+4. Launch and create a new world.
 
 > **Tip:** BTW assumes a fresh world. Do not apply it to an existing save.
+
+> **Tip:** BTW 4.B teaches almost nothing in game, by design. Install JEI for the recipes and for notes on the processes that have no recipe list (kiln, saw, turntable, hopper, fire).
 
 ---
 
@@ -74,18 +82,43 @@ This port runs the original FC code through a runtime bridge. Other Forge mods g
 - **Combat overhauls** (that add attack cooldown tuning, dodge mechanics, etc.) may not mesh with FC's pre-1.9 combat.
 - **Tool-durability overhauls** (mending changes, unbreakable tool mods) break FC's repair economy on purpose.
 - **Early-progression mods** (copper/brass tech trees, quest mods, mining mods) typically don't need to conflict but were not explicitly tested.
+- **Multiplayer:** run the same version of this port on the server and on every client. A client whose BTW network protocol differs from the server's is refused when it joins.
 
 If you are bundling BTW in a modpack, keep its progression in mind — many "quality of life" mods trivialise FC's intended difficulty curve.
 
 ---
 
-## Known Limitations (Beta)
+## Known Differences from BTW 4.B
+
+The port aims to play exactly like BTW 4.B0000003, but it is not there yet. If something works differently from BTW 4.B, it is most likely a port bug: please report it (see **Links**) with your `latest.log`.
+
+- Minecraft 1.20.1 blocks, items, mobs and biomes that did not exist in 1.5.2 are still in the game:
+  - BTW's mobs and machines treat the newer blocks as plain solid blocks; seagrass and kelp count as water.
+  - Some 1.20.1 mob types are replaced by BTW mobs: drowned, husks and zombie villagers spawn as BTW zombies, strays and wither skeletons as BTW skeletons, and glow squids as BTW squids. Because drowned spawn in water, BTW zombies also appear in rivers and oceans.
+- Knitting, wicker weaving and bone carving never finish: holding right-click makes no progress, so you cannot weave wicker, knit wool or carve a bone fishing hook yet. The knitting recipe itself works and shows in JEI.
+- BTW mobs do not trigger pressure plates or tripwire, do not travel through nether or end portals, and are not slowed by soul sand. Blocks being moved by a piston are solid to them.
+- Some vanilla 1.20.1 crafting recipes that BTW 4.B removed may still be craftable.
+- BTW's Hardcore Buoy option (`fcEnableHardcoreBuoy`) has no effect yet: dropped items float as in Minecraft 1.20.1.
+- The Obstructed player-names option (`fcEnableHardcorePlayerNames=2`) hides only players' name tags behind walls, not named mobs' tags. The default Hardcore option (no player name tags) works.
+- The vanilla bow fires Minecraft's own arrows, from anywhere in your inventory; 4.B fired BTW arrows from the hotbar only. BTW's arrow handling applies to rotten arrows and the composite bow.
+- Food stacks to 64 in your inventory, as in Minecraft 1.20.1. 4.B capped food stacks at 16, and BTW's own machines still do.
+- Some items that 1.20.1 split into separate items come back as their 1.5.2 equivalent when BTW stores or changes them:
+  - black, brown, blue and white dye become ink sac, cocoa beans, lapis lazuli and bone meal;
+  - smooth sandstone becomes cut sandstone;
+  - stone slabs become smooth stone slabs.
+- BTW's own items can only be used from the main hand; 1.5.2 had no off hand.
+- JEI support and the port's one-time join note are additions; 4.B had neither.
+- Port bugs and their fixes are listed per release in `CHANGELOG.md` in the source repository: https://github.com/ThatSoulyGuy/BetterThanWolves
+
+---
+
+## Known Limitations (Alpha)
 
 This is an ongoing port. The following are in progress:
 
 - Some visual polish (cracked pottery overlay, specific animated textures)
 - A handful of FC tile-entity renderers
-- Certain late-game FC entities still use placeholder models
+- A few mob animations and effects: squid tentacles, the cow's kick, villager and witch particles, the composite bow's draw animation
 - Network sync timing on some multi-player edge cases
 - Full compatibility with every modded dimension is not guaranteed
 
@@ -111,6 +144,6 @@ The port bridge code (the `btw.forge.*` and `btw.modern.*` compatibility layer) 
 
 ## Links
 
-- **Issue tracker:** *add your GitHub/forum link here*
-- **Original BTW:** *add link here*
-- **Wiki / field manual:** *add link here*
+- **Issue tracker:** https://github.com/ThatSoulyGuy/BetterThanWolves/issues
+- **Original BTW:** *TODO (maintainer): add the link to FlowerChild's original Better Than Wolves release. Left blank on purpose rather than guessing a URL.*
+- **BTW wiki:** *TODO (maintainer): add the link to the BTW 4.x wiki players should use. Left blank on purpose rather than guessing a URL.*

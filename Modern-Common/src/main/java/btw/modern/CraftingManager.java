@@ -2,8 +2,10 @@ package btw.modern;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * FC's crafting recipe manager. Stores shaped and shapeless recipes
@@ -23,12 +25,26 @@ public class CraftingManager {
     public static CraftingManager getInstance() { return instance; }
     public List getRecipeList() { return recipes; }
 
+    /** ShapedRecipes subclasses AddShapedRecipeWithCustomClass could not instantiate (logged once each). */
+    private static final Set<Class<?>> CUSTOM_CLASS_FAILURES = new HashSet<>();
+
     /**
      * Adds a shaped recipe. FC format:
      *   addRecipe(output, "AB", "CD", 'A', item1, 'B', item2, ...)
      */
     @SuppressWarnings("unchecked")
     public ShapedRecipes addRecipe(ItemStack output, Object... params) {
+        ShapedRecipes recipe = createShapedRecipe(output, params);
+        recipes.add(recipe);
+        return recipe;
+    }
+
+    /**
+     * Parses FC's shaped-recipe arguments (pattern rows, then character/ingredient pairs) into a ShapedRecipes
+     * without registering it. Shared by addRecipe and AddShapedRecipeWithCustomClass, which parse identically in
+     * 1.5.2 (vanilla/server CraftingManager.java:163-235, 541-608).
+     */
+    private static ShapedRecipes createShapedRecipe(ItemStack output, Object... params) {
         String pattern = "";
         int i = 0;
         int width = 0;
@@ -58,7 +74,7 @@ public class CraftingManager {
             if (params[i] instanceof Character) {
                 char c = (Character) params[i];
                 i++;
-                ItemStack ingredient = toItemStack(params[i]);
+                ItemStack ingredient = toShapedIngredient(params[i]);
                 charMap.put(c, ingredient);
                 i++;
             } else {
@@ -78,9 +94,7 @@ public class CraftingManager {
             }
         }
 
-        ShapedRecipes recipe = new ShapedRecipes(width, height, recipeItems, output);
-        recipes.add(recipe);
-        return recipe;
+        return new ShapedRecipes(width, height, recipeItems, output);
     }
 
     /**
@@ -106,11 +120,35 @@ public class CraftingManager {
         return recipe;
     }
 
+    /**
+     * 1.5.2 (FCMOD) CraftingManager.AddShapedRecipeWithCustomClass (vanilla/server CraftingManager.java:541-624):
+     * parses like addRecipe, then builds the recipe through the given ShapedRecipes subclass's
+     * (int, int, ItemStack[], ItemStack) constructor, so FCRecipesWoolBlock / FCRecipesArmorWool colour their
+     * results (FCRecipes.java:911-939). It used to register a plain ShapedRecipes, which lost the colouring.
+     * 1.5.2 throws when the class can't be built; the port logs once and registers the plain recipe instead.
+     * Exactly one recipe is added, so recipe-list indices (FCCraftingRecipes ids) are unchanged.
+     */
     @SuppressWarnings("unchecked")
     public ShapedRecipes AddShapedRecipeWithCustomClass(Class clazz, ItemStack output, Object... params) {
-        // Parse same as addRecipe, but use a custom class
-        // For now, fall back to standard ShapedRecipes
-        return addRecipe(output, params);
+        ShapedRecipes recipe = createShapedRecipe(output, params);
+
+        if (clazz != null && clazz != ShapedRecipes.class) {
+            try {
+                java.lang.reflect.Constructor<?> ctor = clazz.getDeclaredConstructor(
+                        int.class, int.class, ItemStack[].class, ItemStack.class);
+                recipe = (ShapedRecipes) ctor.newInstance(
+                        recipe.recipeWidth, recipe.recipeHeight, recipe.recipeItems, output);
+            } catch (Throwable t) {
+                if (CUSTOM_CLASS_FAILURES.add(clazz)) {
+                    org.apache.logging.log4j.LogManager.getLogger("BTW-Crafting").warn(
+                            "[CRAFTING] Could not build custom recipe class {} ({}); registering a plain"
+                                    + " ShapedRecipes instead", clazz.getName(), t.toString());
+                }
+            }
+        }
+
+        recipes.add(recipe);
+        return recipe;
     }
 
     public boolean RemoveRecipe(ItemStack output, Object... params) {
@@ -135,6 +173,18 @@ public class CraftingManager {
             }
         }
         return null;
+    }
+
+    /**
+     * A shaped-recipe ingredient: a Block means "any metadata" (damage 32767), as in 1.5.2 CraftingManager.addRecipe
+     * (vanilla/server CraftingManager.java:204-206) and AddShapedRecipeWithCustomClass (:582-585). A shapeless Block
+     * stays damage 0 (:264-269), so AddShapelessRecipe keeps toItemStack.
+     */
+    private static ItemStack toShapedIngredient(Object obj) {
+        if (obj instanceof Block) {
+            return new ItemStack((Block) obj, 1, 32767);
+        }
+        return toItemStack(obj);
     }
 
     /**

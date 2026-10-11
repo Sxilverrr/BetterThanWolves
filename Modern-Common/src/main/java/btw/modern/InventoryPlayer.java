@@ -104,6 +104,13 @@ public class InventoryPlayer implements IInventory {
             }
         }
 
+        // 1.5.2 InventoryPlayer.addItemStackToInventory (vanilla/server InventoryPlayer.java:294-297,
+        // 313-316): a creative player's full inventory swallows the stack instead of refusing it, so
+        // FC give-or-drop paths (FCItemMushroomSoup bowl, FCUtilsItem.GivePlayerStackOrEject) drop nothing.
+        if (player != null && player.capabilities != null && player.capabilities.isCreativeMode) {
+            stack.stackSize = 0;
+            return true;
+        }
         return false;
     }
     public boolean consumeInventoryItem(int itemId) {

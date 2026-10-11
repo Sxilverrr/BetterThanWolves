@@ -67,13 +67,13 @@ public class ContainerBridge {
         // the client can create a matching FCContainerMenu without having
         // the FC container instance.
         try {
-            LOGGER.info("Opening MC screen with {} slots", fcContainer.inventorySlots.size());
+            LOGGER.debug("Opening MC screen with {} slots", fcContainer.inventorySlots.size());
             String containerType = fcContainer.getClass().getSimpleName();
             NetworkHooks.openScreen(serverPlayer, menuProvider, buf -> {
                 buf.writeUtf(containerType);
                 writeSlotLayout(buf, fcContainer);
             });
-            LOGGER.info("NetworkHooks.openScreen completed successfully");
+            LOGGER.debug("NetworkHooks.openScreen completed successfully");
         } catch (Exception e) {
             LOGGER.error("Failed to open FC container screen: {}", e.toString(), e);
         }
@@ -193,11 +193,6 @@ public class ContainerBridge {
                                               btw.modern.Container previousContainer) {
         btw.modern.Container currentContainer = player.openContainer;
 
-        LOGGER.info("checkAndOpenContainer: prev={}, current={}, inventoryContainer={}",
-                previousContainer != null ? previousContainer.getClass().getSimpleName() : "null",
-                currentContainer != null ? currentContainer.getClass().getSimpleName() : "null",
-                player.inventoryContainer != null ? player.inventoryContainer.getClass().getSimpleName() : "null");
-
         // Guard: if an FCContainerMenu is already open, skip duplicate opens.
         // FC may call ServerOpenCustomInterface multiple times during a single
         // block activation, creating duplicate containers.
@@ -212,7 +207,7 @@ public class ContainerBridge {
                 && currentContainer != previousContainer
                 && currentContainer != player.inventoryContainer) {
 
-            LOGGER.info("Container changed! Opening MC menu for {}", currentContainer.getClass().getSimpleName());
+            LOGGER.debug("Container changed! Opening MC menu for {}", currentContainer.getClass().getSimpleName());
 
             ServerPlayer serverPlayer = player.getServerPlayer();
             if (serverPlayer == null) {

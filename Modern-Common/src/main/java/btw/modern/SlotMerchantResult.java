@@ -34,25 +34,13 @@ public class SlotMerchantResult extends Slot {
         field_75231_g = 0;
     }
 
-    private static final org.apache.logging.log4j.Logger TRADE_LOG =
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Trade");
-
     public void onPickupFromSlot(EntityPlayer player, ItemStack stack) {
         onCrafting(stack);
         MerchantRecipe recipe = theMerchantInventory.getCurrentRecipe();
         ItemStack a = theMerchantInventory.getStackInSlot(0);
         ItemStack b = theMerchantInventory.getStackInSlot(1);
-        TRADE_LOG.info("[TRADE] onPickupFromSlot: recipe={} slot0={} slot1={} class={}",
-                recipe != null ? recipe.getItemToBuy().itemID + "->" + recipe.getItemToSell().itemID : "NULL",
-                a != null ? a.itemID + "x" + a.stackSize : "null",
-                b != null ? b.itemID + "x" + b.stackSize : "null",
-                this.getClass().getName());
         if (recipe != null) {
             boolean traded = doTrade(recipe, a, b) || doTrade(recipe, b, a);
-            TRADE_LOG.info("[TRADE] doTrade result={} slot0After={} slot1After={}",
-                    traded,
-                    a != null ? a.itemID + "x" + a.stackSize : "null",
-                    b != null ? b.itemID + "x" + b.stackSize : "null");
             if (traded) {
                 if (a != null && a.stackSize <= 0) a = null;
                 if (b != null && b.stackSize <= 0) b = null;

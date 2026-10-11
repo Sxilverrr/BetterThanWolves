@@ -154,14 +154,25 @@ public class ForgeNBTCompound extends btw.modern.NBTTagCompound {
 
     @Override
     public btw.modern.NBTBase copy() {
-        return new ForgeNBTCompound(tag.copy());
+        // Through toMcTag so the live lists/compounds FC stored with setTag (e.g. an "ench" list
+        // it is still appending to) survive ItemStack.copy()/splitStack; tag.copy() alone holds
+        // only the snapshot setTag took.
+        return new ForgeNBTCompound(ItemStackHelper.toMcTag(this));
+    }
+
+    /** True when FC stored objects with the generic setTag (live lists/compounds in tagMap). */
+    boolean hasLiveTags() {
+        return !super.getTags().isEmpty();
     }
 
     @Override
     public btw.modern.NBTTagList getTagList(String key) {
-        // First check FC's tagMap (for data written during this session)
-        btw.modern.NBTTagList fromMap = super.getTagList(key);
-        if (fromMap != null && fromMap.tagCount() > 0) return fromMap;
+        // FC's tagMap first: 1.5.2 ItemStack.addEnchantment (vanilla/server ItemStack.java:589-605)
+        // does setTag("ench", new NBTTagList()) and then appends to getTagList("ench") -- the
+        // instance it stored. Return it even while it is still empty; a fresh detached copy
+        // swallowed every enchantment added to a tagged (tool/armour) stack.
+        btw.modern.NBTBase live = super.getTag(key);
+        if (live instanceof btw.modern.NBTTagList liveList) return liveList;
         // Fall back to MC CompoundTag (for data loaded from disk)
         if (!tag.contains(key, 9)) return new btw.modern.NBTTagList(); // 9 = list type
         // Auto-detect element type. Vanilla 1.5.2 stores Pos/Motion as
@@ -199,6 +210,15 @@ public class ForgeNBTCompound extends btw.modern.NBTTagCompound {
                 }
             }
         }
+        // 1.5.2 getTagList returns the stored instance (vanilla/server NBTTagCompound.java:353-363) and FC
+        // edits it in place (ItemStack.addEnchantment appends to getTagList("ench")). Keep the converted list
+        // as the live tagMap object so those edits persist: toMcTag/copy() let tagMap lists win. Only for a
+        // compound or empty list, which toMcList writes back unchanged (a compound element is a wrapper over
+        // the stored element); other element types are skipped above, so registering them would replace
+        // the real data on the next toMcTag. Never over a non-list object FC stored under the key itself.
+        if (live == null && (elementType == 10 || mcList.isEmpty())) {
+            super.setTag(key, result);
+        }
         return result;
     }
 
@@ -209,6 +229,11 @@ public class ForgeNBTCompound extends btw.modern.NBTTagCompound {
         // re-attach via setCompoundTag (FCItemArmorMod.func_82813_b:108-115,
         // removeColor:81-83, wool-armor dyeing). Returning null here NPE'd
         // every such FC path fed a converted stack tag.
+        // A compound FC stored with the generic setTag is returned as that same live instance
+        // (1.5.2 semantics, like getTagList): ItemStackHelper.toMcTag lets tagMap containers win,
+        // so writes into the CompoundTag snapshot of it would otherwise be dropped.
+        btw.modern.NBTBase live = super.getTag(key);
+        if (live instanceof btw.modern.NBTTagCompound liveCompound) return liveCompound;
         if (!tag.contains(key, 10)) { // 10 = compound tag type
             return new ForgeNBTCompound(new CompoundTag());
         }
@@ -218,6 +243,8 @@ public class ForgeNBTCompound extends btw.modern.NBTTagCompound {
 
     @Override
     public void setCompoundTag(String key, btw.modern.NBTTagCompound value) {
+        // Drop a stale generic-setTag object under this key: tagMap containers win in toMcTag.
+        super.removeTag(key);
         if (value instanceof ForgeNBTCompound fnbt) {
             tag.put(key, fnbt.getTag());
         } else {

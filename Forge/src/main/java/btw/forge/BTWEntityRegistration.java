@@ -200,6 +200,16 @@ public class BTWEntityRegistration {
         registered += registerPlainEntity("fc_egg", "EntityEgg", MobCategory.MISC, 0.25F, 0.25F);
         registered += registerPlainEntity("fc_fish_hook", "EntityFishHook", MobCategory.MISC, 0.25F, 0.25F);
 
+        // Frozen vanilla 1.5.2 living classes FC instantiates directly and spawns via
+        // World.spawnEntityInWorld: EntityIronGolem (soul-urn golem, Common FCEntityUrn.java:370) and
+        // EntitySilverfish (Client FCBlockSilverfish.java:66, FCEntityCow.java:590,
+        // FCTileEntityBeacon.java:685). Without a type EntityProxyFactory refuses them (it used to
+        // borrow VILLAGER/ZOMBIE, so they rendered and saved as those). Sizes from the 1.5.2
+        // constructors (EntityIronGolem.java:28, EntitySilverfish.java:27); renderers are registered
+        // for exactly these ids by the client render code.
+        registered += registerPathfinderMob("fc_iron_golem", "EntityIronGolem", MobCategory.MISC, 1.4F, 2.9F);
+        registered += registerMob("fc_silverfish", "EntitySilverfish", MobCategory.MONSTER, 0.3F, 0.7F);
+
         // Generic fallback for FC entity classes without a dedicated
         // registration — replaces the MARKER fallback in EntityProxyFactory.
         registerGenericPlainType();

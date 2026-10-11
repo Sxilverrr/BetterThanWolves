@@ -5,16 +5,12 @@ import java.util.Calendar;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Abstract representation of a game world.
  * Mirrors net.minecraft.src.World with identical field/method names.
  */
 public abstract class World implements IBlockAccess {
-
-    /** Debug counter: increments every time getEntityPathToXYZ is called. */
-    public static final AtomicInteger pathfindCallCount = new AtomicInteger(0);
 
     // --- Instance fields ---
 
@@ -449,11 +445,13 @@ public abstract class World implements IBlockAccess {
                 }
             }
 
-            if (j < 0) {
+            // vanilla/server World.java:4759-4768 clamps to the 1.5.2 range [0, 256); use the
+            // level's build range so natural light (crop growth, grass, gloom) works below y=0.
+            if (j < getFcMinBuildHeight()) {
                 return 0;
             } else {
-                if (j >= 256) {
-                    j = 255;
+                if (j >= getFcMaxBuildHeight()) {
+                    j = getFcMaxBuildHeight() - 1;
                 }
 
                 Chunk chunk = this.getChunkFromChunkCoords(i >> 4, k >> 4);
@@ -577,7 +575,6 @@ public abstract class World implements IBlockAccess {
     public PathEntity getEntityPathToXYZ(Entity entity, int x, int y, int z, float range,
                                          boolean canBreakDoors, boolean canEnterDoors,
                                          boolean avoidsWater, boolean canSwim) {
-        pathfindCallCount.incrementAndGet();
         this.theProfiler.startSection("pathfind");
         int ex = MathHelper.floor_double(entity.posX);
         int ey = MathHelper.floor_double(entity.posY);
@@ -593,6 +590,10 @@ public abstract class World implements IBlockAccess {
 
     /**
      * Vanilla 1.5.2 World.getPathEntityToEntity — delegates to getEntityPathToXYZ.
+     * Target y is floored like vanilla's PathFinder.createEntityPathTo(Entity, Entity, float)
+     * (floor of target.boundingBox.minY, vanilla/client PathFinder.java:57 -> :552): an (int)
+     * cast rounds toward zero, i.e. one block too high for a fractional y below 0. posY rather
+     * than boundingBox.minY because Entity/LivingEntityBridge targets do not keep their box in sync.
      */
     public PathEntity getPathEntityToEntity(Entity source, Entity target, float range,
                                              boolean canBreakDoors, boolean canEnterDoors,
@@ -600,7 +601,7 @@ public abstract class World implements IBlockAccess {
         if (target == null) return null;
         return getEntityPathToXYZ(source,
                 MathHelper.floor_double(target.posX),
-                (int)target.posY,
+                MathHelper.floor_double(target.posY),
                 MathHelper.floor_double(target.posZ),
                 range, canBreakDoors, canEnterDoors, avoidsWater, canSwim);
     }
@@ -830,6 +831,25 @@ public abstract class World implements IBlockAccess {
     }
 
     public int getActualHeight() {
+        return 256;
+    }
+
+    /**
+     * Lowest buildable y (inclusive). 1.5.2 worlds start at 0; WorldBridge returns the 1.20.1
+     * level's min build height (-64 in the overworld). Read by ChunkCache's y clip, the
+     * natural-light clamp above, and the frozen PathFinder.getSafePoint drop scan (whose
+     * `while (par3 > 0)` bound, vanilla/client PathFinder.java:242/263, Forge/build.gradle
+     * extendFcPathingBuildRange rewrites to `par3 > entity.worldObj.getFcMinBuildHeight()`).
+     */
+    public int getFcMinBuildHeight() {
+        return 0;
+    }
+
+    /**
+     * Highest buildable y, exclusive (1.5.2: 256). WorldBridge returns the 1.20.1 level's max
+     * build height (320 in the overworld).
+     */
+    public int getFcMaxBuildHeight() {
         return 256;
     }
 

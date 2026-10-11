@@ -1,19 +1,24 @@
 package btw.forge;
 
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ambient.Bat;
 import net.minecraft.world.entity.animal.Squid;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.*;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.entity.npc.VillagerTrades;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.trading.MerchantOffer;
+import net.minecraft.world.level.GameRules;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.EnchantmentTableBlock;
-import net.minecraftforge.event.entity.living.LivingEvent;
+import net.minecraftforge.event.entity.living.LivingDropsEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.village.VillagerTradesEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -27,7 +32,7 @@ import java.util.List;
  * Bridges FC gameplay systems that modify vanilla mechanics:
  * <ul>
  *   <li>Disables the vanilla enchanting table (FC uses the Infernal Enchanter)</li>
- *   <li>Mob scroll drops — each mob type has a per-tick chance to drop
+ *   <li>Mob scroll drops — vanilla (non-FC) mobs roll FC's per-death chance to drop
  *       a specific Arcane Scroll (FC's enchantment carrier items)</li>
  *   <li>Villager scroll trades — max-level villagers sell specific scrolls</li>
  * </ul>
@@ -71,112 +76,159 @@ public class FCGameplayBridge {
         }
     }
 
-    /**
-     * Applies FC's melee damage penalty modifier.
-     * Multiplies attack damage by GetMeleeDamageModifier() (0.25-1.0).
-     */
-    @SubscribeEvent
-    public static void onLivingHurt(net.minecraftforge.event.entity.living.LivingHurtEvent event) {
-        if (event.getSource().getEntity() instanceof net.minecraft.server.level.ServerPlayer sp) {
-            PlayerBridge pb = PlayerBridge.getOrCreate(sp);
-            float modifier = pb.GetMeleeDamageModifier();
-            if (modifier < 1.0F) {
-                event.setAmount(event.getAmount() * modifier);
-            }
-        }
-    }
+    // NO LivingHurtEvent melee penalty. 1.5.2 applies GetMeleeDamageModifier exactly once, to the
+    // base melee damage (vanilla/server EntityPlayer.java:1225-1231); the bridge does that in
+    // PlayerMixin.btw$applyMeleeDamageModifier. A LivingHurtEvent hook applied it a second time and
+    // also hit arrows/thorns/sweep/TNT (any source whose getEntity() is the player). Bow damage is
+    // penalised by FC itself via FCItemBow GetBowPullStrengthModifier.
 
     /**
-     * Applies FC's movement speed penalty modifier.
-     * Reduces walk/sprint speed based on hunger/health/fat/gloom penalties.
+     * Stable id of the FC land-movement penalty modifier (transient: never saved to NBT).
+     * Also read on both sides by FCMovementBonus.getSyncedPenaltyModifier (airborne penalty).
+     */
+    public static final java.util.UUID FC_PENALTY_UUID =
+            java.util.UUID.fromString("b3e3b4a0-fc01-4e3b-8c1a-deadbeef1234");
+    private static long btw$lastPenaltyErrorMs = 0L;
+
+    /**
+     * FC land-movement penalty (hunger/fat/health/gloom) as a MOVEMENT_SPEED modifier.
+     * 1.5.2 recomputes it every tick (vanilla/server EntityLiving.java:1911-1914 +
+     * getSpeedModifier:3235 GetLandMovementModifier), so reconcile the modifier with the CURRENT
+     * value every tick -- including REMOVING it when the modifier is back to 1.0 (it used to
+     * stick forever). Only touch the attribute when the value changes: every add/remove marks it
+     * dirty and resends it to the client (ServerEntity.sendDirtyEntityData), which then rebuilds
+     * all its MOVEMENT_SPEED modifiers. The attribute syncs to the client by vanilla, so the
+     * client-authoritative LocalPlayer.getSpeed() sees the same value.
      */
     @SubscribeEvent
     public static void onPlayerTick(net.minecraftforge.event.TickEvent.PlayerTickEvent event) {
         if (event.phase != net.minecraftforge.event.TickEvent.Phase.START) return;
         if (!(event.player instanceof net.minecraft.server.level.ServerPlayer sp)) return;
 
-        PlayerBridge pb = PlayerBridge.getOrCreate(sp);
-        float moveMod = pb.GetHealthAndExhaustionModifierWithSightlessModifier();
+        var speedAttr = sp.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED);
+        if (speedAttr == null) return;
 
-        if (moveMod < 1.0F) {
-            // Apply movement slowdown via a transient attribute modifier
-            var speedAttr = sp.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED);
-            if (speedAttr != null) {
-                java.util.UUID FC_PENALTY_UUID = java.util.UUID.fromString("b3e3b4a0-fc01-4e3b-8c1a-deadbeef1234");
-                speedAttr.removeModifier(FC_PENALTY_UUID);
-                if (moveMod < 0.99F) {
-                    speedAttr.addTransientModifier(new net.minecraft.world.entity.ai.attributes.AttributeModifier(
-                            FC_PENALTY_UUID, "FC penalty slowdown",
-                            moveMod - 1.0, // negative = slower
-                            net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.MULTIPLY_TOTAL));
-                }
+        float moveMod = 1.0F;
+        try {
+            moveMod = PlayerBridge.getOrCreate(sp).GetLandMovementModifier();
+        } catch (Throwable t) {
+            long now = System.currentTimeMillis();
+            if (now - btw$lastPenaltyErrorMs > 10_000L) {
+                btw$lastPenaltyErrorMs = now;
+                LOGGER.warn("FC GetLandMovementModifier threw: {}: {}", t.getClass().getSimpleName(), t.getMessage());
             }
+        }
+        // MULTIPLY_TOTAL: value *= (1 + amount)  ->  amount = moveMod - 1 (negative = slower)
+        double wanted = moveMod < 0.99F ? (double) moveMod - 1.0D : 0.0D;
+
+        var existing = speedAttr.getModifier(FC_PENALTY_UUID);
+        double current = existing != null ? existing.getAmount() : 0.0D;
+        if (Math.abs(current - wanted) < 1.0E-6D) return; // unchanged: leave the attribute clean
+
+        if (existing != null) speedAttr.removeModifier(FC_PENALTY_UUID);
+        if (wanted != 0.0D) {
+            speedAttr.addTransientModifier(new net.minecraft.world.entity.ai.attributes.AttributeModifier(
+                    FC_PENALTY_UUID, "FC penalty slowdown", wanted,
+                    net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.MULTIPLY_TOTAL));
         }
     }
 
     // ================================================================
-    // Mob Arcane Scroll drops (per-tick chance while alive)
+    // Mob Arcane Scroll drops (one roll at death, vanilla mobs only)
     // ================================================================
 
+    private static long btw$lastScrollErrorMs = 0L;
+
+    /**
+     * FC's per-death Arcane Scroll roll (EntityLiving.CheckForScrollDrop) for mobs that are still
+     * VANILLA 1.20.1 entities. 1.5.2 rolls it exactly once, in EntityLivingOnDeath, server-side,
+     * only for non-child mobs with doMobLoot and only when the world is not creative
+     * (vanilla/server EntityLiving.java:3343-3369); no living mob ever drops a scroll. This used to
+     * run on LivingTickEvent -- FC's per-death odds rolled 20x a second for a mob's whole life
+     * (glow squids/drowned seeding cave lakes and rivers with scrolls, triage D2).
+     * <p>FC mobs (Proxy* puppets) roll it themselves in their own FC death and are never instances
+     * of these vanilla classes, so they never match here; the table is generic so any vanilla mob
+     * that is (still) not replaced by an FC mob uses its FC equivalent's odds.
+     */
     @SubscribeEvent
-    public static void onLivingTick(LivingEvent.LivingTickEvent event) {
+    public static void onLivingDrops(LivingDropsEvent event) {
         LivingEntity entity = event.getEntity();
-        if (entity.level().isClientSide) return;
+        try {
+            if (!(entity.level() instanceof ServerLevel level)) return;
+            if (entity.isBaby()) return;
+            if (!level.getGameRules().getBoolean(GameRules.RULE_DOMOBLOOT)) return;
+            // 1.5.2: worldObj.getWorldInfo().getGameType() != CREATIVE -- the WORLD's game type.
+            if (level.getServer().getDefaultGameType() == GameType.CREATIVE) return;
 
-        int scrollDamage = -1;
-        int chance = 1000;
+            int[] drop = fcScrollDropFor(entity);
+            if (drop == null) return;
+            int enchantId = drop[0];
+            int chance = drop[1];
+            if (chance > 1 && entity.getRandom().nextInt(chance) != 0) return;
 
-        // Each mob type drops a specific scroll enchantment.
-        // Damage value = MC 1.5.2 enchantment ID on the Arcane Scroll.
-        if (entity instanceof Zombie && !(entity instanceof ZombifiedPiglin)) {
-            scrollDamage = 17; // Smite
-        } else if (entity instanceof WitherSkeleton) {
-            scrollDamage = 51; // Infinity
-        } else if (entity instanceof Skeleton) {
-            scrollDamage = 4;  // Projectile Protection
-        } else if (entity instanceof Spider) {
-            scrollDamage = 18; // Bane of Arthropods
-        } else if (entity instanceof Creeper) {
-            scrollDamage = 3;  // Blast Protection
-        } else if (entity instanceof EnderMan) {
-            scrollDamage = 33; // Silk Touch
-        } else if (entity instanceof Ghast) {
-            scrollDamage = 6;  // Aqua Affinity
-            chance = 500;
-        } else if (entity instanceof Witch) {
-            scrollDamage = 34; // Unbreaking
-        } else if (entity instanceof Blaze) {
-            scrollDamage = 20; // Fire Aspect
-            chance = 500;
-        } else if (entity instanceof Bat) {
-            scrollDamage = 2;  // Feather Falling
-            chance = 250;
-        } else if (entity instanceof Squid) {
-            scrollDamage = 5;  // Respiration
-            chance = 250;
-        } else if (entity instanceof MagmaCube mc && mc.getSize() == 1) {
-            scrollDamage = 1;  // Fire Protection
-            chance = 250;
-        } else if (entity instanceof Slime slime
-                && !(entity instanceof MagmaCube)
-                && slime.getSize() == 1) {
-            scrollDamage = 0;  // Protection
-        } else if (entity instanceof ZombifiedPiglin) {
-            scrollDamage = 1;  // Fire Protection
-        } else if (entity instanceof WitherBoss) {
-            scrollDamage = 19; // Knockback
-            chance = 100;      // Frequent but not every tick
+            net.minecraft.world.item.Item scrollItem = ProxyRegistry.getModernItem(SCROLL_ITEM_ID);
+            if (scrollItem == null) return;
+
+            ItemStack scroll = new ItemStack(scrollItem);
+            scroll.setDamageValue(enchantId);
+            // 1.5.2 entityDropItem(stack, 0F) == Entity.spawnAtLocation(stack, 0F), but added to the
+            // event's drop list: captureDrops() is already null here, so spawnAtLocation would bypass
+            // the event (and any handler that cancels or edits the drops).
+            ItemEntity item = new ItemEntity(level, entity.getX(), entity.getY(), entity.getZ(), scroll);
+            item.setDefaultPickUpDelay();
+            event.getDrops().add(item);
+        } catch (Throwable t) {
+            long now = System.currentTimeMillis();
+            if (now - btw$lastScrollErrorMs > 10_000L) {
+                btw$lastScrollErrorMs = now;
+                LOGGER.warn("Arcane scroll drop for {} failed: {}", entity.getType(), t.toString());
+            }
         }
+    }
 
-        if (scrollDamage < 0) return;
-        if (entity.getRandom().nextInt(chance) != 0) return;
-
-        net.minecraft.world.item.Item scrollItem = ProxyRegistry.getModernItem(SCROLL_ITEM_ID);
-        if (scrollItem == null) return;
-
-        ItemStack scroll = new ItemStack(scrollItem);
-        scroll.setDamageValue(scrollDamage);
-        entity.spawnAtLocation(scroll, 0.0F);
+    /**
+     * {enchantment id (= Arcane Scroll damage value), 1-in-N chance} of the FC mob equivalent to this
+     * vanilla mob, from FC's own CheckForScrollDrop overrides; null = FC drops no scroll for it.
+     * Order matters: subclasses first (1.20.1 ZombifiedPiglin/Drowned/Husk/ZombieVillager extend
+     * Zombie, WitherSkeleton/Stray extend AbstractSkeleton, CaveSpider extends Spider, GlowSquid
+     * extends Squid, MagmaCube extends Slime).
+     */
+    private static int[] fcScrollDropFor(LivingEntity entity) {
+        if (entity instanceof ZombifiedPiglin) {
+            return new int[] {1, 1000};    // fire protection: Common FCEntityPigZombie.java:66-74
+        } else if (entity instanceof Zombie) {
+            return new int[] {17, 1000};   // smite: Server FCEntityZombie.java:261-269 (drowned/husk/zombie villager are 1.5.2 zombies)
+        } else if (entity instanceof WitherSkeleton) {
+            return null;                   // FCEntitySkeleton.java:218 rolls only for skeleton type 0, never wither skeletons
+        } else if (entity instanceof AbstractSkeleton) {
+            // infinity in the Nether, else projectile protection: Server FCEntitySkeleton.java:216-232
+            return new int[] {entity.level().dimension() == Level.NETHER ? 51 : 4, 1000};
+        } else if (entity instanceof Spider) {
+            return new int[] {18, 1000};   // bane of arthropods: Server FCEntitySpider.java:228-236 (FCEntityCaveSpider inherits)
+        } else if (entity instanceof Creeper) {
+            return new int[] {3, 1000};    // blast protection: Server FCEntityCreeper.java:194-202
+        } else if (entity instanceof EnderMan) {
+            return new int[] {33, 1000};   // silk touch: Common FCEntityEnderman.java:308-315
+        } else if (entity instanceof Ghast) {
+            return new int[] {49, 500};    // punch: Server FCEntityGhast.java:174-182
+        } else if (entity instanceof Witch) {
+            return new int[] {6, 1000};    // aqua affinity: Common FCEntityWitch.java:74-82
+        } else if (entity instanceof Blaze) {
+            return new int[] {50, 500};    // flame: Common FCEntityBlaze.java:38-46
+        } else if (entity instanceof Bat) {
+            return new int[] {2, 250};     // feather falling: Common FCEntityBat.java:29-37
+        } else if (entity instanceof Squid) {
+            return new int[] {5, 250};     // respiration: Common FCEntitySquid.java:579-586
+        } else if (entity instanceof MagmaCube magmaCube) {
+            // fire aspect, smallest size only: Common FCEntityMagmaCube.java:37-45
+            return magmaCube.getSize() == 1 ? new int[] {20, 250} : null;
+        } else if (entity instanceof Slime slime) {
+            // protection, smallest size only: Common FCEntitySlime.java:189-197
+            return slime.getSize() == 1 ? new int[] {0, 1000} : null;
+        } else if (entity instanceof WitherBoss) {
+            return new int[] {19, 1};      // knockback, every death: Common FCEntityWither.java:33-38
+        }
+        return null;
     }
 
     // ================================================================

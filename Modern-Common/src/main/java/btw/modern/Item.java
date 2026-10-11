@@ -142,6 +142,8 @@ public class Item {
     public static Item cookie;
     public static Item potato;
     public static Item bakedPotato;
+    /** Vanilla 1.5.2 Item.poisonousPotato (id 394), an FCMOD ItemFood (vanilla/server Item.java:370). */
+    public static Item poisonousPotato;
     public static Item carrot;
     public static ItemEnchantedBook enchantedBook;
     /** Vanilla 1.5.2 Item.expBottle — referenced by EntityVillager static init. */
@@ -511,7 +513,29 @@ public class Item {
 
     public boolean IsConsumedInCrafting() { return true; }
     public boolean IsDamagedInCrafting() { return false; }
-    public void OnUsedInCrafting(int iItemDamage, EntityPlayer player, ItemStack outputStack) {}
+    // 1.5.2 Item.OnUsedInCrafting(int, ...) (vanilla/server Item.java:1067-1070) forwards to the 2-arg hook. The frozen
+    // SlotCrafting (FC workbench) calls only this overload, so with an empty body every FC item overriding the 2-arg
+    // form (blood wood, fresh pumpkin, iron chisel, bow, axe, ...) lost its crafting side effects at the table.
+    // FCCraftingRecipes calls exactly one overload (this one only for classes overriding it), so nothing fires twice.
+    // Port guard: SlotCrafting.onPickupFromSlot runs this before consuming each ingredient (vanilla/server
+    // SlotCrafting.java:128-155), so a throwing FC hook would leave the rest of the grid unconsumed; it is logged
+    // once per item class and the craft goes on, as FCCraftingRecipes does for the 2x2 grid.
+    public void OnUsedInCrafting(int iItemDamage, EntityPlayer player, ItemStack outputStack) {
+        try {
+            OnUsedInCrafting(player, outputStack);
+        } catch (Throwable t) {
+            if (CRAFTING_HOOK_FAILURES.add(getClass())) {
+                org.apache.logging.log4j.LogManager.getLogger("BTW-Crafting").warn(
+                        "[CRAFTING] {}.OnUsedInCrafting failed (further failures of this class suppressed): {}",
+                        getClass().getName(), t.toString());
+            }
+        }
+    }
+
+    /** Item classes whose crafting hook threw (logged once each). */
+    private static final java.util.Set<Class<?>> CRAFTING_HOOK_FAILURES =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     public void OnUsedInCrafting(EntityPlayer player, ItemStack outputStack) {}
     public void OnDamagedInCrafting(EntityPlayer player) {}
     public void OnBrokenInCrafting(EntityPlayer player) {}
@@ -676,6 +700,15 @@ public class Item {
      * BEFORE FC code runs. FC code will overwrite many of these with FC subclasses.
      *
      * Raw ID = itemID - 256.  Constructor: new Item(rawId) sets itemID = 256 + rawId.
+     *
+     * <p>Foods: BTW rebalanced the vanilla foods it does not replace with an FC class in place, as plain
+     * (FCMOD) ItemFood in vanilla Item.java (vanilla/server Item.java:53-376; the cooked meats take
+     * FCItemFood.m_i*CookedHungerHealed / m_f*SaturationModifier). Registered as ItemFood with those values,
+     * FC's 1.5.2 ItemFood.onEaten feeds them on FC's 60-point scale (ItemStackMixin.btw$finishUsing) and
+     * applies their 1.5.2 potion effect, and the bridge then skips vanilla's 1.20.1 FoodProperties nutrition
+     * and effects (PlayerBridge.fcFedForEat). As plain Items they restored 1.20.1 nutrition x3 instead
+     * (bread 15 instead of 9, steak 24 instead of 15). Potion ids are literal (regeneration 10, poison 19,
+     * as Potion.java): Potion.initializeVanillaPotions runs after this (BTWLifecycle.initialize).</p>
      */
     public static void initializeVanillaItems() {
         // Tools & weapons
@@ -683,7 +716,8 @@ public class Item {
         pickaxeIron = new Item(1);         // 257
         axeIron = new Item(2);             // 258
         flintAndSteel = new Item(3);       // 259
-        appleRed = new Item(4);            // 260
+        appleRed = new ItemFood(4, 1, 0F, false)                                  // 260, Item.java:53
+                .SetFilterableProperties(m_iFilterable_Small);
         bow = new ItemBow(5);              // 261
         arrow = new Item(6);               // 262
         coal = new Item(7);                // 263
@@ -720,35 +754,39 @@ public class Item {
         hoeGold = new Item(38);            // 294
         seeds = new Item(39);              // 295
         wheat = new Item(40);              // 296
-        bread = new Item(41);              // 297
+        bread = new ItemFood(41, 3, 0.25F, false);                                // 297, Item.java:129
 
-        // Armor — ItemArmor(rawId, renderIndex, armorType)
+        // Armor — ItemArmor(rawId, material, renderIndex, armorType), as vanilla/client Item.java:135-154 (the
+        // FCMOD-replaced originals): the material drives damageReduceAmount, maxDamage, and the RenderBiped/getColor
+        // CLOTH branch. The 3-arg ctor left material null, so leather never took its tint or _b overlay pass.
+        // BTWLifecycle later swaps these for FCItemArmorLeather/Chain/Iron/Diamond/Gold (same materials).
         // armorType: 0=helmet, 1=plate, 2=legs, 3=boots
-        helmetLeather = new ItemArmor(42, 0, 0);   // 298
-        plateLeather = new ItemArmor(43, 0, 1);     // 299
-        legsLeather = new ItemArmor(44, 0, 2);      // 300
-        bootsLeather = new ItemArmor(45, 0, 3);      // 301
-        helmetChain = new ItemArmor(46, 1, 0);       // 302
-        plateChain = new ItemArmor(47, 1, 1);        // 303
-        legsChain = new ItemArmor(48, 1, 2);         // 304
-        bootsChain = new ItemArmor(49, 1, 3);        // 305
-        helmetIron = new ItemArmor(50, 2, 0);        // 306
-        plateIron = new ItemArmor(51, 2, 1);         // 307
-        legsIron = new ItemArmor(52, 2, 2);          // 308
-        bootsIron = new ItemArmor(53, 2, 3);         // 309
-        helmetDiamond = new ItemArmor(54, 3, 0);     // 310
-        plateDiamond = new ItemArmor(55, 3, 1);      // 311
-        legsDiamond = new ItemArmor(56, 3, 2);       // 312
-        bootsDiamond = new ItemArmor(57, 3, 3);      // 313
-        helmetGold = new ItemArmor(58, 4, 0);        // 314
-        plateGold = new ItemArmor(59, 4, 1);         // 315
-        legsGold = new ItemArmor(60, 4, 2);          // 316
-        bootsGold = new ItemArmor(61, 4, 3);         // 317
+        helmetLeather = new ItemArmor(42, EnumArmorMaterial.CLOTH, 0, 0);     // 298
+        plateLeather = new ItemArmor(43, EnumArmorMaterial.CLOTH, 0, 1);      // 299
+        legsLeather = new ItemArmor(44, EnumArmorMaterial.CLOTH, 0, 2);       // 300
+        bootsLeather = new ItemArmor(45, EnumArmorMaterial.CLOTH, 0, 3);      // 301
+        helmetChain = new ItemArmor(46, EnumArmorMaterial.CHAIN, 1, 0);       // 302
+        plateChain = new ItemArmor(47, EnumArmorMaterial.CHAIN, 1, 1);        // 303
+        legsChain = new ItemArmor(48, EnumArmorMaterial.CHAIN, 1, 2);         // 304
+        bootsChain = new ItemArmor(49, EnumArmorMaterial.CHAIN, 1, 3);        // 305
+        helmetIron = new ItemArmor(50, EnumArmorMaterial.IRON, 2, 0);         // 306
+        plateIron = new ItemArmor(51, EnumArmorMaterial.IRON, 2, 1);          // 307
+        legsIron = new ItemArmor(52, EnumArmorMaterial.IRON, 2, 2);           // 308
+        bootsIron = new ItemArmor(53, EnumArmorMaterial.IRON, 2, 3);          // 309
+        helmetDiamond = new ItemArmor(54, EnumArmorMaterial.DIAMOND, 3, 0);   // 310
+        plateDiamond = new ItemArmor(55, EnumArmorMaterial.DIAMOND, 3, 1);    // 311
+        legsDiamond = new ItemArmor(56, EnumArmorMaterial.DIAMOND, 3, 2);     // 312
+        bootsDiamond = new ItemArmor(57, EnumArmorMaterial.DIAMOND, 3, 3);    // 313
+        helmetGold = new ItemArmor(58, EnumArmorMaterial.GOLD, 4, 0);         // 314
+        plateGold = new ItemArmor(59, EnumArmorMaterial.GOLD, 4, 1);          // 315
+        legsGold = new ItemArmor(60, EnumArmorMaterial.GOLD, 4, 2);           // 316
+        bootsGold = new ItemArmor(61, EnumArmorMaterial.GOLD, 4, 3);          // 317
 
         // Materials & food
         flint = new Item(62);              // 318
         porkRaw = new Item(63);            // 319
-        porkCooked = new Item(64);         // 320
+        // FCItemFood.m_iPorkChopCookedHungerHealed 5, m_fPorkChopSaturationModifier 0.25F, wolf meat
+        porkCooked = new ItemFood(64, 5, 0.25F, true);                            // 320, Item.java:190
         painting = new Item(65);           // 321
         sign = new Item(67);               // 323
         doorWood = new Item(68);           // 324
@@ -777,23 +815,27 @@ public class Item {
         pocketSundial = new Item(91);      // 347
         lightStoneDust = new Item(92);     // 348
         fishRaw = new Item(93);            // 349
-        fishCooked = new Item(94);         // 350
+        // FCItemFood.m_iFishCookedHungerHealed 4, m_fFishSaturationModifier 0.25F
+        fishCooked = new ItemFood(94, 4, 0.25F, false);                           // 350, Item.java:277
         dyePowder = new Item(95);          // 351
         bone = new Item(96);               // 352
         sugar = new Item(97);              // 353
         cake = new Item(98);               // 354
         bed = new Item(99);                // 355
         redstoneRepeater = new Item(100);  // 356
-        cookie = new Item(101);            // 357
+        cookie = new ItemFood(101, 1, 1F, false).setAlwaysEdible()               // 357, Item.java:284
+                .SetFilterableProperties(m_iFilterable_Small);
         map = new ConcreteItemMap(102);    // 358
         shears = new ItemShears(103);      // 359
         melon = new Item(104);             // 360
         pumpkinSeeds = new Item(105);      // 361
         melonSeeds = new Item(106);        // 362
         beefRaw = new Item(107);           // 363
-        beefCooked = new Item(108);        // 364
+        // FCItemFood.m_iBeefCookedHungerHealed 5, m_fBeefSaturationModifier 0.25F, wolf meat
+        beefCooked = new ItemFood(108, 5, 0.25F, true);                           // 364, Item.java:291
         chickenRaw = new Item(109);        // 365
-        chickenCooked = new Item(110);     // 366
+        // FCItemFood.m_iChickenCookedHungerHealed 4, m_fChickenSaturationModifier 0.25F, wolf meat
+        chickenCooked = new ItemFood(110, 4, 0.25F, true);                        // 366, Item.java:293
         rottenFlesh = new Item(111);       // 367
         enderPearl = new Item(112);        // 368
         blazeRod = new Item(113);          // 369
@@ -802,7 +844,9 @@ public class Item {
         netherStalkSeeds = new Item(116);  // 372
         potion = new ItemPotion(117);      // 373
         glassBottle = new Item(118);       // 374
-        spiderEye = new Item(119);         // 375
+        // poison (19) 5 s, always. 1.5.2 also sets a brewing tag, setPotionEffect(String): a no-op in this Item.
+        spiderEye = new ItemFood(119, 2, 0.8F, false).setPotionEffect(19, 5, 0, 1F) // 375, Item.java:317
+                .SetNeutralBuoyant().SetFilterableProperties(m_iFilterable_Small);
         fermentedSpiderEye = new Item(120); // 376
         blazePowder = new Item(121);       // 377
         magmaCream = new Item(122);        // 378
@@ -817,13 +861,18 @@ public class Item {
         flowerPot = new Item(134);         // 390
         carrot = new Item(135);            // 391
         potato = new Item(136);            // 392
-        bakedPotato = new Item(137);       // 393
+        bakedPotato = new ItemFood(137, 2, 0F, false)                             // 393, Item.java:369
+                .SetFilterableProperties(m_iFilterable_Small).SetAsBasicPigFood();
+        // poison (19) 5 s, 60% chance
+        poisonousPotato = new ItemFood(138, 1, 0F, false).setPotionEffect(19, 5, 0, 0.6F) // 394, Item.java:370
+                .SetFilterableProperties(m_iFilterable_Small);
         emptyMap = new ConcreteItemEmptyMap(139); // 395
-        goldenCarrot = new Item(140);      // 396
+        goldenCarrot = new ItemFood(140, 1, 0F, false)                            // 396, Item.java:372
+                .SetNonBuoyant().SetFilterableProperties(m_iFilterable_Small);
         skull = new Item(141);             // 397
         carrotOnAStick = new Item(142);    // 398
         netherStar = new Item(143);        // 399
-        pumpkinPie = new Item(144);        // 400
+        pumpkinPie = new ItemFood(144, 2, 2.5F, false).setAlwaysEdible();        // 400, Item.java:376
         enchantedBook = new ItemEnchantedBook(147); // 403
         expBottle = new Item(128);                  // 384 (vanilla XP bottle id)
         // 1.5.2 Item.monsterPlacer = new ItemMonsterPlacer(127) → id 383 (vanilla/server/.../Item.java:332);
@@ -838,7 +887,40 @@ public class Item {
         // real disc. Only the two range endpoints are referenced by FC code.
         record13 = new Item(2000);         // 2256 (music_disc_13)
         recordWait = new Item(2011);       // 2267 (music_disc_wait)
-        appleGold = new Item(66);          // 322 (golden_apple), mapped by ProxyRegistry
+        // 322 (golden_apple; 322:1 enchanted_golden_apple via LegacyVariants), Item.java:192: regeneration (10)
+        // 5 s, always edible.
+        appleGold = new ItemAppleGold(66, 1, 0F, false).setAlwaysEdible().setPotionEffect(10, 5, 0, 1F)
+                .SetNonBuoyant().SetNotIncineratedInCrucible().SetFilterableProperties(m_iFilterable_Small);
+    }
+
+    /**
+     * 1.5.2 ItemAppleGold (vanilla/client ItemAppleGold.java): subtype 1 is the enchanted apple, whose
+     * onFoodEaten applies regeneration IV 30 s, resistance and fire resistance 5 min instead of the item's
+     * regeneration effect.
+     */
+    private static class ItemAppleGold extends ItemFood {
+        ItemAppleGold(int id, int healAmount, float saturation, boolean wolfFood) {
+            super(id, healAmount, saturation, wolfFood);
+            setHasSubtypes(true);
+        }
+
+        @Override
+        public boolean hasEffect(ItemStack stack) {
+            return stack != null && stack.getItemDamage() > 0;
+        }
+
+        @Override
+        public void onFoodEaten(ItemStack stack, World world, EntityPlayer player) {
+            if (stack.getItemDamage() > 0) {
+                if (!world.isRemote) {
+                    player.addPotionEffect(new PotionEffect(Potion.regeneration.id, 600, 3));
+                    player.addPotionEffect(new PotionEffect(Potion.resistance.id, 6000, 0));
+                    player.addPotionEffect(new PotionEffect(Potion.fireResistance.id, 6000, 0));
+                }
+            } else {
+                super.onFoodEaten(stack, world, player);
+            }
+        }
     }
 
     // Concrete subclass for ItemMap (protected constructor)

@@ -1,5 +1,38 @@
 package btw.modern;
+
+/**
+ * 1.5.2 RenderGhast (vanilla/client RenderGhast.java): the 4.5x body scale and the squash
+ * while charging a fireball.
+ */
 public class RenderGhast extends RenderLiving {
-    public RenderGhast() { super(new ModelGhast(), 0.5F); }
-    public RenderGhast(ModelBase model, float shadow) { super(model, shadow); }
+
+    public RenderGhast() {
+        super(new ModelGhast(), 0.5F);
+    }
+
+    /**
+     * Pre-Renders the Ghast (1.5.2 RenderGhast.java:29-43).
+     */
+    public void preRenderGhast(EntityGhast par1EntityGhast, float par2) {
+        float var4 = ((float) par1EntityGhast.prevAttackCounter + (float) (par1EntityGhast.attackCounter - par1EntityGhast.prevAttackCounter) * par2) / 20.0F;
+
+        if (var4 < 0.0F) {
+            var4 = 0.0F;
+        }
+
+        var4 = 1.0F / (var4 * var4 * var4 * var4 * var4 * 2.0F + 1.0F);
+        float var5 = (8.0F + var4) / 2.0F;
+        float var6 = (8.0F + 1.0F / var4) / 2.0F;
+        GL11.glScalef(var6, var5, var6);
+        GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+    }
+
+    /**
+     * Allows the render to do any OpenGL state modifications necessary before the model is
+     * rendered. Args: entityLiving, partialTickTime
+     */
+    @Override
+    public void preRenderCallback(EntityLiving par1EntityLiving, float par2) {
+        this.preRenderGhast((EntityGhast) par1EntityLiving, par2);
+    }
 }

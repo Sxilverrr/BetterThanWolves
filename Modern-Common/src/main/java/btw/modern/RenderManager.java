@@ -27,6 +27,10 @@ public class RenderManager {
     public static double renderPosY;
     public static double renderPosZ;
     public RenderEngine renderEngine;
+    // 1.5.2 RenderManager.itemRenderer (RenderManager.java:36), assigned there from
+    // cacheActiveRenderInfo; the bridge never calls that, so it is built here. Used by the
+    // held-item paths of RenderBiped/RenderWitch/RenderSnowMan via ItemRenderer.renderItem.
+    public ItemRenderer itemRenderer = new ItemRenderer();
     public World worldObj;
     public EntityLiving livingPlayer;
     public EntityLiving field_96451_i;
@@ -38,7 +42,15 @@ public class RenderManager {
     public double viewerPosZ;
     public static boolean field_85095_o = false;
 
-    protected RenderManager() {}
+    // 1.5.2 RenderManager.cacheActiveRenderInfo assigned the client's GameSettings every frame; the
+    // capture bridge never calls it, so options stayed null and FC tile renderers reading
+    // RenderManager.instance.options.fancyGraphics (FCTileEntityCampfireRenderer:50,
+    // FCTileEntityFurnaceBrickRenderer:83, FCTileEntityBasketWickerRenderer:60) NPE'd. Use a
+    // GameSettings with 1.5.2's default fancyGraphics = true (vanilla/client GameSettings.java:51).
+    protected RenderManager() {
+        this.options = new GameSettings();
+        this.options.fancyGraphics = true;
+    }
 
     // 1.5.2 RenderManager.getEntityClassRenderObject — walks the class hierarchy to find the
     // registered renderer. Unlike 1.5.2 we do not cache null lookups: FCEntityRenderer copies

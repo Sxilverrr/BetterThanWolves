@@ -402,47 +402,14 @@ public abstract class EntityLiving extends Entity {
      * FC entities override this and call super first, then add custom
      * movement logic.
      */
-    private static final org.apache.logging.log4j.Logger AI_TRACE_LOG =
-        org.apache.logging.log4j.LogManager.getLogger("BTW-AI-TRACE");
-    private int aiDiagTick = 0;
-
     public void updateEntityActionState() {
-        boolean willLog = (aiDiagTick++ % 60 == 0);
-        if (willLog) {
-            AI_TRACE_LOG.info("updateEntityActionState ENTRY {} worldObj={} isRemote={} tasks={}",
-                getClass().getSimpleName(),
-                worldObj != null ? worldObj.getClass().getSimpleName() : "null",
-                worldObj != null ? worldObj.isRemote : "n/a",
-                tasks != null ? tasks.taskEntries().size() : -1);
-        }
-
-        boolean tasksHasWork = tasks != null && !tasks.taskEntries().isEmpty();
         targetTasks.onUpdateTasks();
-        float mfAfterTargetTasks = moveForward;
-
         tasks.onUpdateTasks();
-        float mfAfterTasks = moveForward;
-        boolean navHasPath = !getNavigator().noPath();
-
         getNavigator().onUpdateNavigation();
-        float mfAfterNav = moveForward;
-        boolean mhUpdating = getMoveHelper().isUpdating();
-        float mhSpeed = getMoveHelper().getSpeed();
-
         updateAITick();
         getMoveHelper().onUpdateMoveHelper();
-        float mfAfterMH = moveForward;
-
         getLookHelper().onUpdateLook();
         getJumpHelper().doJump();
-
-        if (willLog) {
-            AI_TRACE_LOG.info("{} pos=({},{},{}) tasksReg={} tasksAct={} navHasPath={} mhUpd={} mhSpeed={} | mf: targetTasks={} tasks={} nav={} moveHelper={}",
-                getClass().getSimpleName(),
-                (int)posX, (int)posY, (int)posZ,
-                tasksHasWork, tasks.areTasksExecuting(), navHasPath, mhUpdating, mhSpeed,
-                mfAfterTargetTasks, mfAfterTasks, mfAfterNav, mfAfterMH);
-        }
     }
 
     public void setAIMoveSpeed(float speed) {
@@ -886,14 +853,7 @@ public abstract class EntityLiving extends Entity {
      * here. The net effect is that moveForward/moveStrafing are set by FC
      * AI, then syncFromFc copies them to MC's zza/xxa, then MC applies physics.
      */
-    private int olDiagTick = 0;
     public void EntityLivingOnLivingUpdate() {
-        if (olDiagTick++ % 60 == 0) {
-            AI_TRACE_LOG.info("EntityLivingOnLivingUpdate ENTRY {} worldObj={} isRemote={}",
-                getClass().getSimpleName(),
-                worldObj != null ? worldObj.getClass().getSimpleName() : "null",
-                worldObj != null ? worldObj.isRemote : "n/a");
-        }
         // Tick active potion effects and remove expired ones
         Iterator<Map.Entry<Integer, PotionEffect>> it = this.activePotionsMap.entrySet().iterator();
         while (it.hasNext()) {

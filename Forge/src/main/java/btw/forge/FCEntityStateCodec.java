@@ -117,6 +117,18 @@ public final class FCEntityStateCodec {
      * from the buffer so reader position stays correct.
      */
     public static void applyState(FriendlyByteBuf buf, btw.modern.Entity fc) {
+        applyState(buf, fc, false);
+    }
+
+    /**
+     * As {@link #applyState(FriendlyByteBuf, btw.modern.Entity)}. {@code live} marks the periodic
+     * sync of a living puppet that the client already animates itself
+     * ({@link FCPuppetSupport#clientAnimTick} plus forwarded entity events, as the 1.5.2 client
+     * did). Then the snapshot's animation floats are skipped (overwriting them every 2 ticks
+     * replayed the same server pair twice, R8), and the NBT apply keeps the client's hurtTime and
+     * deathTime and a client-side death. The spawn packet (readSpawnData) applies everything.
+     */
+    public static void applyState(FriendlyByteBuf buf, btw.modern.Entity fc, boolean live) {
         boolean hasState = buf.readBoolean();
         if (!hasState) return;
 
@@ -134,7 +146,7 @@ public final class FCEntityStateCodec {
             float limbSwing = buf.readFloat();
             float limbYaw = buf.readFloat();
             float prevLimbYaw = buf.readFloat();
-            if (fc instanceof btw.modern.EntityLiving el) {
+            if (!live && fc instanceof btw.modern.EntityLiving el) {
                 el.renderYawOffset = renderYawOffset;
                 el.prevRenderYawOffset = prevRenderYawOffset;
                 el.rotationYawHead = rotationYawHead;
@@ -153,10 +165,21 @@ public final class FCEntityStateCodec {
         CompoundTag tag = buf.readNbt();
         if (tag != null && fc != null) {
             ForgeNBTCompound wrapper = new ForgeNBTCompound(tag);
+            // 1.5.2 EntityLiving.readEntityFromNBT (vanilla/client EntityLiving.java:1760-1768)
+            // also restores Health/HurtTime/DeathTime, which the live client drives itself.
+            btw.modern.EntityLiving keep = live && fc instanceof btw.modern.EntityLiving el ? el : null;
+            int hurtTime = keep != null ? keep.hurtTime : 0;
+            int deathTime = keep != null ? keep.deathTime : 0;
+            int health = keep != null ? keep.health : 0;
             try {
                 fc.readEntityFromNBT(wrapper);
             } catch (Throwable e) {
                 LOGGER.debug("readEntityFromNBT threw for {}: {}", fc.getClass().getSimpleName(), e.getMessage());
+            }
+            if (keep != null) {
+                keep.hurtTime = hurtTime;
+                keep.deathTime = deathTime;
+                if (health <= 0) keep.health = health; // never revive a client-side death
             }
         }
 

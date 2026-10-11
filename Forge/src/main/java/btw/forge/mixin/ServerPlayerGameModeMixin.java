@@ -2,7 +2,9 @@ package btw.forge.mixin;
 
 import btw.forge.InventoryBridge;
 import btw.forge.ItemStackHelper;
+import btw.forge.LegacyProxyItem;
 import btw.forge.PlayerBridge;
+import btw.forge.ProxyItem;
 import btw.forge.ProxyRegistry;
 import btw.forge.WorldBridge;
 import net.minecraft.core.BlockPos;
@@ -43,15 +45,10 @@ public abstract class ServerPlayerGameModeMixin {
     @Shadow protected ServerLevel level;
     @Shadow protected ServerPlayer player;
 
-    private static final org.apache.logging.log4j.Logger LOGGER =
-            org.apache.logging.log4j.LogManager.getLogger("BTW-GameMode");
-
     @Inject(method = "destroyBlock", at = @At("HEAD"), cancellable = true)
     private void btw$destroyBlock(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
         BlockState state = level.getBlockState(pos);
-        LOGGER.info("[BTW-DEBUG] destroyBlock at {} state={}", pos, state);
         btw.modern.Block fcBlock = ProxyRegistry.getFcBlock(state.getBlock());
-        LOGGER.info("[BTW-DEBUG] fcBlock={}", fcBlock != null ? fcBlock.getClass().getSimpleName() : "null");
         if (fcBlock == null) return; // Not an FC block — let vanilla handle it
 
         PlayerBridge fcPlayer = PlayerBridge.getOrCreate(player);
@@ -62,17 +59,28 @@ public abstract class ServerPlayerGameModeMixin {
                 WorldBridge.getOrCreate(level));
         mgr.thisPlayerMP = fcPlayer;
 
-        mgr.tryHarvestBlock(pos.getX(), pos.getY(), pos.getZ(), 1);
+        boolean handled = true;
+        try {
+            mgr.tryHarvestBlock(pos.getX(), pos.getY(), pos.getZ(), 1);
+        } catch (Throwable t) {
+            // Packet handler: PacketUtils rethrows, which crashes the integrated server. FC may already
+            // have removed/converted the block, dropped items or worn the tool, so vanilla must not run
+            // its own removal/drops on top: still write back and cancel. Report success only if the block
+            // changed; false makes destroyAndAck resend the block, undoing the client's predicted break.
+            ProxyItem.logFcFailureOnce("tryHarvestBlock (legacy block id)", fcBlock.blockID, t);
+            handled = level.getBlockState(pos) != state;
+        }
 
         // Sync FC item state (damage, stackSize) back to MC inventory.
         // mgr.lastHeldStack is the FC ItemStack that was modified inside
-        // tryHarvestBlock (damageItem, stackSize changes).
+        // tryHarvestBlock (damageItem, stackSize changes); null after a throw, which writes the
+        // held slot's own FC state.
         if (fcPlayer.inventory instanceof InventoryBridge invBridge) {
             invBridge.writeBackCurrentItem(mgr.lastHeldStack);
         }
 
         // Tell vanilla we handled it — don't let vanilla do its own removal/drops
-        cir.setReturnValue(true);
+        cir.setReturnValue(handled);
     }
 
     // ================================================================
@@ -88,6 +96,13 @@ public abstract class ServerPlayerGameModeMixin {
                                 net.minecraft.world.phys.BlockHitResult hitResult,
                                 CallbackInfoReturnable<InteractionResult> cir) {
         if (mcStack.isEmpty() || !(world instanceof net.minecraft.server.level.ServerLevel sl)) return;
+
+        // The FC player exposes only the main hand (InventoryBridge.getCurrentItem; 1.5.2 has no off
+        // hand). The 1.20.1 client retries with the OFF hand whenever the main hand did not consume
+        // (Minecraft.startUseItem tries each hand in turn); running the off-hand item's FC onItemUse
+        // there acted on, and wrote back, the main-hand snapshot (an off-hand FC seed planted by
+        // decrementing the main-hand tool's stack). The off hand stays vanilla.
+        if (hand != InteractionHand.MAIN_HAND) return;
 
         // BlockItems: let MC handle placement, we fix facing in the TAIL injection
         if (mcStack.getItem() instanceof net.minecraft.world.item.BlockItem) return;
@@ -121,9 +136,29 @@ public abstract class ServerPlayerGameModeMixin {
         float hitY = (float)(hitLoc.y - pos.getY());
         float hitZ = (float)(hitLoc.z - pos.getZ());
 
-        boolean result = fcItem.onItemUse(fcStack, fcPlayer,
-                WorldBridge.getOrCreate(sl),
-                pos.getX(), pos.getY(), pos.getZ(), side, hitX, hitY, hitZ);
+        // 1.5.2 ItemInWorldManager.activateBlockOrUseItem (vanilla/server ItemInWorldManager.java:394-402)
+        // restores a creative player's held stack (damage and size) around tryPlaceItemIntoWorld. 1.20.1
+        // restores only the count, around ItemStack.useOn (ServerPlayerGameMode.java:353-356), which this
+        // HEAD inject pre-empts by returning CONSUME -- so FC seeds, hoes and flint and steel used in
+        // creative were decremented/damaged and the write-back below committed it. Same restore as
+        // ProxyBlock.tryPlaceHeldItem.
+        boolean creative = serverPlayer.isCreative();
+        int damageBefore = fcStack.getItemDamage();
+        int sizeBefore = fcStack.stackSize;
+        boolean result = false;
+        try {
+            result = fcItem.onItemUse(fcStack, fcPlayer,
+                    WorldBridge.getOrCreate(sl),
+                    pos.getX(), pos.getY(), pos.getZ(), side, hitX, hitY, hitZ);
+        } catch (Throwable t) {
+            // Packet handler: PacketUtils rethrows, which crashes the integrated server. No return:
+            // FC may already have edited the world and the held stack, so the write-back still runs.
+            ProxyItem.logFcFailureOnce("onItemUse", fcItem.itemID, t);
+        }
+        if (creative) {
+            fcStack.setItemDamage(damageBefore);
+            fcStack.stackSize = sizeBefore;
+        }
 
         if (fcPlayer.inventory instanceof InventoryBridge invBridge) {
             invBridge.writeBackCurrentItem(fcStack);
@@ -182,19 +217,26 @@ public abstract class ServerPlayerGameModeMixin {
                               CallbackInfoReturnable<InteractionResult> cir) {
         if (mcStack.isEmpty()) return;
 
-        // Look up the FC item for whatever the player is holding
-        int legacyId;
-        if (mcStack.getItem() instanceof net.minecraft.world.item.BlockItem bi) {
-            legacyId = ProxyRegistry.getBlockId(bi.getBlock());
-        } else {
-            legacyId = ProxyRegistry.getItemId(mcStack.getItem());
-        }
+        // ProxyItems dispatch FC onItemRightClick themselves: useItem goes on to ItemStack.use ->
+        // ProxyItem.use (ServerPlayerGameMode.java:286), which runs it main-hand only, applies FC's
+        // returned stack (1.5.2 ItemInWorldManager.tryUseItem) and writes the inventory back. Running
+        // it here as well ran FC twice per click: soul urns, dynamite and soul-sand piles threw two
+        // entities for one consumed item, FC buckets and the baited fishing rod acted twice.
+        // ProxyArmorItems lose nothing: Modern-Common ItemArmor has no onItemRightClick (MC
+        // ArmorItem.use equips).
+        if (mcStack.getItem() instanceof LegacyProxyItem) return;
+        // The FC player exposes only the main hand (1.5.2 has no off hand): an off-hand use ran the
+        // off-hand item's FC code on the main-hand snapshot (getCurrentEquippedItem below).
+        if (hand != InteractionHand.MAIN_HAND) return;
 
-        btw.modern.Item fcItem = null;
-        if (legacyId > 0 && legacyId < btw.modern.Item.itemsList.length) {
-            fcItem = btw.modern.Item.itemsList[legacyId];
-        }
+        // Look up the FC item for whatever the player is holding (the 1.5.2 item id first: carrots,
+        // seeds, string, ... are BlockItems in 1.20.1, see ProxyItem.fcItemFor)
+        btw.modern.Item fcItem = ProxyItem.fcItemFor(mcStack.getItem());
         if (fcItem == null) return; // No FC item — let vanilla handle it
+        // Creative: FC's ItemFood.onItemRightClick refuses (EntityPlayer.canEat is false while
+        // disableDamage) and plays OnCantConsume, but 1.20.1 Player.canEat lets an invulnerable
+        // player eat and vanilla Item.use starts it anyway. Leave creative eating to vanilla, silently.
+        if (fcItem instanceof btw.modern.ItemFood && serverPlayer.getAbilities().invulnerable) return;
 
         PlayerBridge fcPlayer = PlayerBridge.getOrCreate(serverPlayer);
         fcPlayer.syncFromReal();
@@ -204,7 +246,14 @@ public abstract class ServerPlayerGameModeMixin {
         if (fcStack == null) return;
 
         // Call FC's onItemRightClick — FC decides what happens
-        btw.modern.ItemStack result = fcItem.onItemRightClick(fcStack, fcWorld, fcPlayer);
+        btw.modern.ItemStack result;
+        try {
+            result = fcItem.onItemRightClick(fcStack, fcWorld, fcPlayer);
+        } catch (Throwable t) {
+            // Packet handler: PacketUtils rethrows, which crashes the integrated server.
+            ProxyItem.logFcFailureOnce("onItemRightClick", fcItem.itemID, t);
+            return;
+        }
 
         // If FC returned a different stack (consumed item, created new item), update
         if (result != fcStack && result != null) {

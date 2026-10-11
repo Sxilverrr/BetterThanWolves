@@ -77,21 +77,24 @@ public class BulkRecipeCategory implements IRecipeCategory<BulkRecipeWrapper> {
 
     @Override
     public void setRecipe(IRecipeLayoutBuilder builder, BulkRecipeWrapper recipe, IFocusGroup focuses) {
+        List<List<ItemStack>> outputs = new java.util.ArrayList<>();
+        for (ItemStack out : recipe.outputs()) outputs.add(List.of(out));
         placeStacks(builder, RecipeIngredientRole.INPUT, recipe.inputs(), INPUTS_X, INPUTS_Y);
-        placeStacks(builder, RecipeIngredientRole.OUTPUT, recipe.outputs(), OUTPUTS_X, OUTPUTS_Y);
+        placeStacks(builder, RecipeIngredientRole.OUTPUT, outputs, OUTPUTS_X, OUTPUTS_Y);
     }
 
+    /** One slot per entry; an entry with several stacks cycles through them (wildcard inputs). */
     private static void placeStacks(IRecipeLayoutBuilder builder, RecipeIngredientRole role,
-                                    List<ItemStack> stacks, int originX, int originY) {
+                                    List<List<ItemStack>> slots, int originX, int originY) {
         int maxSlots = GRID_COLS * GRID_ROWS;
-        int n = Math.min(stacks.size(), maxSlots);
+        int n = Math.min(slots.size(), maxSlots);
         for (int i = 0; i < n; i++) {
             int col = i % GRID_COLS;
             int row = i / GRID_COLS;
             int x = originX + col * SLOT_SIZE;
             int y = originY + row * SLOT_SIZE;
             builder.addSlot(role, x + 1, y + 1)
-                    .addIngredient(VanillaTypes.ITEM_STACK, stacks.get(i));
+                    .addIngredients(VanillaTypes.ITEM_STACK, slots.get(i));
         }
     }
 }

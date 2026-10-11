@@ -1,6 +1,7 @@
 package btw.forge.mixin;
 
 import btw.forge.EntityBridge;
+import btw.forge.ItemEntityBridge;
 import btw.forge.PlayerBridge;
 import btw.forge.ProxyAnimal;
 import btw.forge.ProxyBlock;
@@ -16,6 +17,7 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
@@ -92,6 +94,14 @@ public abstract class BlockBehaviorMixin {
         if (entity instanceof ProxyEntity proxy) {
             return proxy.getFcEntity();
         }
+        // ItemEntity → its FC EntityItem view (design_items U3b), so `instanceof EntityItem` callbacks work
+        // (FCBlockCampfire:442, FCBlockFarmlandBase:153, FCBlockPlanterBase:61, FCBlockNetherGrowth:276) and
+        // EntityItem.CanEntityTriggerTripwire() == false applies: 1.5.2 EntityItem passes itself to the block.
+        // Null (never the generic EntityBridge) when the item has no view: consumed by an FC block earlier in
+        // the same checkInsideBlocks pass, empty, or failed to sync -- the caller skips the FC callback.
+        if (entity instanceof ItemEntity item) {
+            return ItemEntityBridge.wrap(item);
+        }
         // Vanilla entities without FC proxy → use generic EntityBridge
         EntityBridge bridge = EntityBridge.getOrCreate(entity);
         bridge.syncFromReal();
@@ -99,27 +109,25 @@ public abstract class BlockBehaviorMixin {
     }
 
     // ================================================================
-    // getDestroyProgress -> FC hardness
+    // getDestroyProgress -> FC getPlayerRelativeBlockHardness
     // ================================================================
 
+    // FC's getPlayerRelativeBlockHardness (vanilla/server Block.java:2340-2361) folds in block hardness,
+    // tool effectiveness/speed, potions, water/airborne and FC penalties with the 30/200 divisor. Routed
+    // through FCMiningSpeed so the client predicts with its own LocalPlayer bridge and client world (which
+    // derives the same legacy metadata as the server, e.g. the log stump bit) and the server uses the
+    // ServerPlayer bridge + WorldBridge - never the server bridge from the render thread.
     @Inject(method = "getDestroyProgress", at = @At("HEAD"), cancellable = true)
     private void btw$getDestroyProgress(BlockState state, Player player, BlockGetter level, BlockPos pos,
                                          CallbackInfoReturnable<Float> cir) {
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
-        // Get the FC player — works for BOTH ServerPlayer and client LocalPlayer.
-        // FC's getPlayerRelativeBlockHardness handles EVERYTHING:
-        // block hardness, tool effectiveness, tool speed, penalties, 30/200 divisor.
-        btw.forge.PlayerBridge fcPlayer = btw.forge.PlayerBridge.getOrCreate(player);
-        fcPlayer.syncFromReal();
-
-        // FC method needs a World — may be null on client, but
-        // getPlayerRelativeBlockHardness handles null world gracefully
-        // (getBlockHardness falls back to blockHardness field)
-        float result = fcBlock.getPlayerRelativeBlockHardness(
-                fcPlayer, fcPlayer.worldObj, pos.getX(), pos.getY(), pos.getZ());
-        cir.setReturnValue(result);
+        float result = btw.forge.FCMiningSpeed.relativeHardness(fcBlock, player, level, pos);
+        if (!Float.isNaN(result)) {
+            cir.setReturnValue(result);
+        }
+        // NaN: FC threw (logged by FCMiningSpeed) -> vanilla formula instead of failing the dig.
     }
 
     // ================================================================
@@ -242,16 +250,20 @@ public abstract class BlockBehaviorMixin {
             if (!result) {
                 // Stage 2: FC item use on block (e.g., flint & steel igniting campfire)
                 // This mirrors FC's ItemInWorldManager.activateBlockOrUseItem pipeline
+                // (creative: damage/stackSize restored like ItemInWorldManager.java:394-402, see tryPlaceHeldItem)
                 btw.modern.ItemStack fcHeld = fcPlayer.getCurrentEquippedItem();
-                if (fcHeld != null) {
-                    result = fcHeld.tryPlaceItemIntoWorld(
-                            fcPlayer, world, pos.getX(), pos.getY(), pos.getZ(),
-                            side, hitX, hitY, hitZ);
-                }
+                result = ProxyBlock.tryPlaceHeldItem(fcHeld, player, fcPlayer, world, pos,
+                        side, hitX, hitY, hitZ);
             }
 
             // Check if FC opened a container GUI and open the MC menu
             btw.forge.ContainerBridge.checkAndOpenContainer(fcPlayer, prevContainer);
+
+            // FC edits the held FC stack in place (e.g. --stackSize when planting/feeding, flint & steel
+            // damage) and nothing applies that natively on this path - land it in the real MC inventory, as
+            // ProxyBlock.use does. Selective write-back: only slots FC changed are written (InventoryBridge);
+            // a creative Stage 2 was already undone above, so it writes nothing.
+            fcPlayer.syncInventoryToReal();
 
             if (result) {
                 cir.setReturnValue(InteractionResult.SUCCESS);
@@ -272,7 +284,9 @@ public abstract class BlockBehaviorMixin {
         if (level instanceof ServerLevel sl) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
             btw.modern.Entity fcEntity = btw$wrapEntity(entity);
-            fcBlock.onEntityCollidedWithBlock(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+            if (fcEntity != null) {
+                fcBlock.onEntityCollidedWithBlock(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+            }
             ci.cancel();
         }
     }

@@ -8,6 +8,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.lang.ref.WeakReference;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -40,10 +41,14 @@ public class TileEntityBridge extends TileEntity {
      */
     private static final Map<BlockEntity, TileEntityBridge> cache = new WeakHashMap<>();
 
-    private final BlockEntity blockEntity;
+    // Weak: a strong reference from the cached value pinned its own weak key, so no wrapper was
+    // ever evicted and every unloaded BlockEntity (and through its level, the server) stayed
+    // reachable (triage RE2). While the BlockEntity is loaded its chunk keeps it alive; a bridge
+    // that outlives it reports itself invalid.
+    private final WeakReference<BlockEntity> blockEntityRef;
 
     private TileEntityBridge(BlockEntity blockEntity, World world) {
-        this.blockEntity = blockEntity;
+        this.blockEntityRef = new WeakReference<>(blockEntity);
         BlockPos pos = blockEntity.getBlockPos();
         this.xCoord = pos.getX();
         this.yCoord = pos.getY();
@@ -71,11 +76,16 @@ public class TileEntityBridge extends TileEntity {
         }
     }
 
+    /** Drops every cached bridge; called once the server has stopped (BTWLifecycle.onServerStopped). */
+    static void clearCache() {
+        cache.clear();
+    }
+
     /**
-     * Returns the underlying MC BlockEntity.
+     * Returns the underlying MC BlockEntity, or null once it has been unloaded and collected.
      */
     public BlockEntity getBlockEntity() {
-        return blockEntity;
+        return blockEntityRef.get();
     }
 
     // ------------------------------------------------------------------
@@ -84,14 +94,16 @@ public class TileEntityBridge extends TileEntity {
 
     @Override
     public void readFromNBT(NBTTagCompound compound) {
-        if (compound instanceof ForgeNBTCompound fnbt) {
+        BlockEntity blockEntity = getBlockEntity();
+        if (blockEntity != null && compound instanceof ForgeNBTCompound fnbt) {
             blockEntity.load(fnbt.getTag());
         }
     }
 
     @Override
     public void writeToNBT(NBTTagCompound compound) {
-        if (compound instanceof ForgeNBTCompound fnbt) {
+        BlockEntity blockEntity = getBlockEntity();
+        if (blockEntity != null && compound instanceof ForgeNBTCompound fnbt) {
             // saveWithoutMetadata() is public and saves tile entity data without pos/id
             net.minecraft.nbt.CompoundTag saved = blockEntity.saveWithoutMetadata();
             // Merge into the target tag
@@ -125,18 +137,25 @@ public class TileEntityBridge extends TileEntity {
     @Override
     public boolean isInvalid() {
         // Reflect the real state from the MC BlockEntity
-        return blockEntity.isRemoved() || super.isInvalid();
+        BlockEntity blockEntity = getBlockEntity();
+        return blockEntity == null || blockEntity.isRemoved() || super.isInvalid();
     }
 
     @Override
     public void markDirty() {
         super.markDirty();
-        blockEntity.setChanged();
+        BlockEntity blockEntity = getBlockEntity();
+        if (blockEntity != null) {
+            blockEntity.setChanged();
+        }
     }
 
     @Override
     public void onInventoryChanged() {
-        blockEntity.setChanged();
+        BlockEntity blockEntity = getBlockEntity();
+        if (blockEntity != null) {
+            blockEntity.setChanged();
+        }
     }
 
     // ------------------------------------------------------------------

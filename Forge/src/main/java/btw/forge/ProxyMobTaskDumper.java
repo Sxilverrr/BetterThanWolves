@@ -11,12 +11,13 @@ import org.apache.logging.log4j.Logger;
 final class ProxyMobTaskDumper {
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-AI-DUMP");
-    private static final java.util.Set<String> DUMPED = new java.util.HashSet<>();
+    // Concurrent: proxies build FC entities on the client render thread and the server thread.
+    private static final java.util.Set<String> DUMPED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private ProxyMobTaskDumper() {}
 
     static void dumpFcTasks(btw.modern.EntityLiving fc) {
-        if (fc == null) return;
+        if (fc == null || !LOGGER.isDebugEnabled()) return;
         String key = fc.getClass().getName();
         if (!DUMPED.add(key)) return;
         StringBuilder sb = new StringBuilder("[AI-DUMP] ").append(key);
@@ -26,9 +27,9 @@ final class ProxyMobTaskDumper {
             sb.append("] targetTasks=[");
             appendTaskList(sb, fc.targetTasks);
             sb.append("]");
-            LOGGER.info(sb.toString());
+            LOGGER.debug(sb.toString());
         } catch (Throwable t) {
-            LOGGER.warn("[AI-DUMP] failed to dump tasks for {}: {}", key, t.getMessage());
+            LOGGER.debug("[AI-DUMP] failed to dump tasks for {}: {}", key, t.getMessage());
         }
     }
 

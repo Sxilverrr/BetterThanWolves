@@ -60,4 +60,16 @@ public class WorldServer extends World {
         }
         return theEntityTracker;
     }
+
+    // 1.5.2 WorldServer.getMinecraftServer (vanilla/server WorldServer.java:1142-1145). Live caller:
+    // frozen Entity.onEntityUpdate / EntityMinecart.onUpdate portal block (vanilla/client
+    // Entity.java:456-459, EntityMinecart.java:260-263), reached every server tick now that
+    // btw.forge.WorldBridge is a WorldServer. remapFcCode relocates the frozen
+    // net.minecraft.server.MinecraftServer refs here, so the descriptor is ()Lbtw/modern/MinecraftServer;.
+    // 1.5.2 returns the server that owns this world; there is only ever one, so the static
+    // instance is equivalent (null outside a running server -- the portal block only
+    // dereferences it while inPortal).
+    public MinecraftServer getMinecraftServer() {
+        return MinecraftServer.getServer();
+    }
 }

@@ -3,6 +3,8 @@ package btw.forge;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.network.simple.SimpleChannel;
@@ -16,7 +18,9 @@ import java.util.function.Supplier;
  *
  * <p>Handles two concerns:</p>
  * <ul>
- *   <li>Legacy BTW packets (FCPacket166StartBlockHarvest, etc.)</li>
+ *   <li>Legacy BTW packets: FC's login handshake payloads (FC|VC version check,
+ *       FC|OP hardcore options; {@link FCPayload}). FCPacket166StartBlockHarvest
+ *       needs no packet (see register()).</li>
  *   <li>Penalty level sync: sends FC penalty levels (gloom, fat, hunger,
  *       health) and the FC food level from server to client each tick,
  *       so the client-side HUD overlay can display them.</li>
@@ -30,7 +34,17 @@ import java.util.function.Supplier;
 public class BTWNetwork {
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-Network");
-    private static final String PROTOCOL_VERSION = "1";
+    // "2": FCAnimSync added (message ids are positional, so a mismatched peer must be refused).
+    // "3": FCPayload added (FC login handshake payloads).
+    private static final String PROTOCOL_VERSION = "3";
+
+    /** FCBetterThanWolves.fcCustomPacketChannelVersionCheck (Client FCBetterThanWolves.java:666). */
+    public static final String FC_CHANNEL_VERSION_CHECK = "FC|VC";
+    /** FCBetterThanWolves.fcCustomPacketChannelBTWOptions (Client FCBetterThanWolves.java:667). */
+    public static final String FC_CHANNEL_OPTIONS = "FC|OP";
+    /** 1.5.2 Packet250CustomPayload limits: channel <= 20 chars, data <= 32767 bytes (Packet250CustomPayload.java:42,54). */
+    private static final int FC_CHANNEL_MAX_LENGTH = 20;
+    private static final int FC_PAYLOAD_MAX_BYTES = 32767;
 
     public static SimpleChannel CHANNEL;
 
@@ -80,20 +94,55 @@ public class BTWNetwork {
         // StartBlockHarvest packet (FC's Packet166):
         // In legacy FC, the client sends FCPacket166StartBlockHarvest to the server
         // when beginning to mine a block. It carries the block position, hit face,
-        // and the client's computed mining speed modifier (penalties applied).
-        // In the Forge 1.20.1 port, mining speed modifiers are applied server-side
-        // via PlayerEvent.BreakSpeed (see BTWLifecycle), so this packet is not
-        // currently needed. If client-authoritative mining speed is required later,
-        // register a StartBlockHarvest message here:
-        // CHANNEL.registerMessage(nextMessageId++, StartBlockHarvestPacket.class,
-        //         StartBlockHarvestPacket::encode, StartBlockHarvestPacket::decode,
-        //         StartBlockHarvestPacket::handle);
+        // and the client's computed mining speed modifier (penalties applied;
+        // PlayerControllerMP.java:229-234 -> NetServerHandler.java:1363).
+        // In the Forge 1.20.1 port, FC mining penalties are applied per dig tick on
+        // both sides by btw.forge.FCMiningSpeed from the PenaltySync levels; no packet needed.
 
         // Merchant recipe list sync: server -> client
         CHANNEL.registerMessage(nextMessageId++, MerchantRecipesSync.class,
                 MerchantRecipesSync::encode, MerchantRecipesSync::decode, MerchantRecipesSync::handle);
 
+        // FC mob per-tick animation (body/head yaw, arm swing): server -> client only
+        // (the handler touches client classes, so a client-sent copy must never reach it).
+        CHANNEL.registerMessage(nextMessageId++, FCAnimSync.class,
+                FCAnimSync::encode, FCAnimSync::decode, FCAnimSync::handle,
+                java.util.Optional.of(net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT));
+
+        // FC login handshake payloads (FC|VC, FC|OP): server -> client only (client-side FC handling).
+        // Id 4 here; EntityTrackerBridge registers FCCustomEntityEvent at the explicit id 100.
+        CHANNEL.registerMessage(nextMessageId++, FCPayload.class,
+                FCPayload::encode, FCPayload::decode, FCPayload::handle,
+                java.util.Optional.of(net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT));
+
         LOGGER.info("BTW network channel registered.");
+    }
+
+    /**
+     * True for the FC Packet250CustomPayload channels whose client half is bridged by
+     * {@link FCPayload}: the two payloads FCBetterThanWolves.ServerPlayerConnectionInitialized
+     * sends at login (Client FCBetterThanWolves.java:2213-2280).
+     */
+    public static boolean isForwardedFcChannel(String channel) {
+        return FC_CHANNEL_VERSION_CHECK.equals(channel) || FC_CHANNEL_OPTIONS.equals(channel);
+    }
+
+    /**
+     * Sends one of FC's login payloads (channel + raw bytes, as FC built them) to the player's
+     * client, where FCClientPayloadHandler hands it to FC's client dispatcher the way 1.5.2
+     * NetClientHandler.handleCustomPayload did (NetClientHandler.java:1578-1582). Never throws.
+     */
+    public static void sendFcPayload(ServerPlayer player, String channel, byte[] data) {
+        if (CHANNEL == null || player == null || !isForwardedFcChannel(channel)) return;
+        try {
+            CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                    new FCPayload(channel, data != null ? data : new byte[0]));
+        } catch (Throwable t) {
+            if (FCPuppetSupport.firstFailure("fcPayload|" + channel + "|" + t.getClass().getName())) {
+                LOGGER.warn("Sending FC payload '{}' to {} failed: {}",
+                        channel, player.getGameProfile().getName(), t.toString());
+            }
+        }
     }
 
     /**
@@ -239,14 +288,83 @@ public class BTWNetwork {
             if (mc.level == null) return;
             net.minecraft.world.entity.Entity e = mc.level.getEntity(msg.entityId);
             btw.modern.Entity fc = null;
-            if (e instanceof ProxyEntity pe) fc = pe.getFcEntity();
+            // Living puppets animate client-side (FCPuppetSupport.clientAnimTick): live apply.
+            boolean live = true;
+            if (e instanceof ProxyEntity pe) { fc = pe.getFcEntity(); live = false; }
             else if (e instanceof ProxyMob pm) fc = pm.getFcEntity();
             else if (e instanceof ProxyAnimal pa) fc = pa.getFcEntity();
             else if (e instanceof ProxyPathfinderMob pp) fc = pp.getFcEntity();
             else return;
             if (fc == null) return;
             FriendlyByteBuf buf = new FriendlyByteBuf(io.netty.buffer.Unpooled.wrappedBuffer(msg.payload));
-            FCEntityStateCodec.applyState(buf, fc);
+            try {
+                FCEntityStateCodec.applyState(buf, fc, live);
+            } catch (Throwable t) {
+                if (FCPuppetSupport.firstFailure("stateSync|" + fc.getClass().getName() + "|" + t.getClass().getName())) {
+                    LOGGER.warn("Applying FC state to {} failed: {}", fc.getClass().getSimpleName(), t.toString());
+                }
+            }
+        }
+    }
+
+    /**
+     * Encodes the server FC mob's animation state that the client can't derive from MC's
+     * interpolated position: body yaw (FC EntityBodyHelper), head yaw and arm swing progress.
+     * Sent every tick it changes ({@link FCPuppetSupport.AnimSender}); MC tracks head yaw only every
+     * 3rd tick, and the 2-tick FCEntityStateSync made the client replay each pair twice (R8).
+     */
+    public static void broadcastFCAnim(net.minecraft.world.entity.Entity mcEntity,
+                                       float body, float head, float swing) {
+        if (CHANNEL == null || !(mcEntity.level() instanceof net.minecraft.server.level.ServerLevel)) return;
+        CHANNEL.send(PacketDistributor.TRACKING_ENTITY.with(() -> mcEntity),
+                new FCAnimSync(mcEntity.getId(), body, head, swing));
+    }
+
+    // =================================================================
+    // Packet: FCAnimSync (server -> client)
+    // =================================================================
+
+    public static class FCAnimSync {
+        final int entityId;
+        final float body;
+        final float head;
+        final float swing;
+
+        public FCAnimSync(int entityId, float body, float head, float swing) {
+            this.entityId = entityId;
+            this.body = body;
+            this.head = head;
+            this.swing = swing;
+        }
+
+        public static void encode(FCAnimSync msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entityId);
+            buf.writeFloat(msg.body);
+            buf.writeFloat(msg.head);
+            buf.writeFloat(msg.swing);
+        }
+
+        public static FCAnimSync decode(FriendlyByteBuf buf) {
+            return new FCAnimSync(buf.readVarInt(), buf.readFloat(), buf.readFloat(), buf.readFloat());
+        }
+
+        public static void handle(FCAnimSync msg,
+                Supplier<net.minecraftforge.network.NetworkEvent.Context> ctxSupplier) {
+            net.minecraftforge.network.NetworkEvent.Context ctx = ctxSupplier.get();
+            ctx.enqueueWork(() -> applyOnClient(msg));
+            ctx.setPacketHandled(true);
+        }
+
+        private static void applyOnClient(FCAnimSync msg) {
+            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+            if (mc.level == null) return;
+            net.minecraft.world.entity.Entity e = mc.level.getEntity(msg.entityId);
+            FCPuppetSupport.ClientAnim anim;
+            if (e instanceof ProxyMob pm) anim = pm.getClientAnim();
+            else if (e instanceof ProxyAnimal pa) anim = pa.getClientAnim();
+            else if (e instanceof ProxyPathfinderMob pp) anim = pp.getClientAnim();
+            else return;
+            anim.accept(msg.body, msg.head, msg.swing);
         }
     }
 
@@ -297,6 +415,49 @@ public class BTWNetwork {
                     fcm.setMerchantRecipes(msg.recipesTag);
                 }
             });
+            ctx.setPacketHandled(true);
+        }
+    }
+
+    // =================================================================
+    // Packet: FCPayload (server -> client) - FC Packet250CustomPayload
+    // =================================================================
+
+    /**
+     * A raw FC Packet250CustomPayload (channel + data) for the client. 1.5.2 sent these as vanilla
+     * custom payloads and NetClientHandler passed every unknown channel to
+     * FCAddOnHandler.ClientCustomPacketReceived; only the login channels
+     * ({@link BTWNetwork#isForwardedFcChannel}) are bridged. Registered PLAY_TO_CLIENT, and the handler
+     * reaches the client-only {@code btw.forge.client.FCClientPayloadHandler} through
+     * DistExecutor, so a dedicated server never loads it.
+     */
+    public static class FCPayload {
+        final String channel;
+        final byte[] data;
+
+        public FCPayload(String channel, byte[] data) {
+            this.channel = channel;
+            this.data = data;
+        }
+
+        public static void encode(FCPayload msg, FriendlyByteBuf buf) {
+            buf.writeUtf(msg.channel, FC_CHANNEL_MAX_LENGTH);
+            buf.writeByteArray(msg.data);
+        }
+
+        public static FCPayload decode(FriendlyByteBuf buf) {
+            String channel = buf.readUtf(FC_CHANNEL_MAX_LENGTH);
+            byte[] data = buf.readByteArray(FC_PAYLOAD_MAX_BYTES);
+            return new FCPayload(channel, data);
+        }
+
+        public static void handle(FCPayload msg,
+                Supplier<net.minecraftforge.network.NetworkEvent.Context> ctxSupplier) {
+            net.minecraftforge.network.NetworkEvent.Context ctx = ctxSupplier.get();
+            if (isForwardedFcChannel(msg.channel)) {
+                ctx.enqueueWork(() -> DistExecutor.unsafeRunWhenOn(Dist.CLIENT,
+                        () -> () -> btw.forge.client.FCClientPayloadHandler.handle(msg.channel, msg.data)));
+            }
             ctx.setPacketHandled(true);
         }
     }

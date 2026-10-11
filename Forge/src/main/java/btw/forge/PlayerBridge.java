@@ -5,8 +5,6 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.entity.player.Player;
 
-import java.util.WeakHashMap;
-
 /**
  * Bridges {@link Player} to {@link btw.modern.EntityPlayer}.
  * FC code interacts with players through btw.modern.EntityPlayer fields
@@ -15,11 +13,42 @@ import java.util.WeakHashMap;
  * Works for BOTH ServerPlayer (server-side) and LocalPlayer (client-side)
  * so that FC's mining speed calculations are consistent on both sides.
  *
- * Instances are cached per-Player via {@link #getOrCreate(Player)}.
+ * Instances are bound to their Player OBJECT via {@link #getOrCreate(Player)} — see
+ * {@link Holder} for why this is not a map keyed by the player.
  */
 public class PlayerBridge extends btw.modern.EntityPlayerMP {
     private final Player realPlayer;
-    private static final WeakHashMap<Player, PlayerBridge> cache = new WeakHashMap<>();
+
+    /**
+     * Implemented on {@link Player} by {@code PlayerMixin}: each Player object carries its own
+     * bridge in a field. This replaces a static {@code WeakHashMap<Player, PlayerBridge>}, which
+     * was wrong three ways:
+     * <ul>
+     *   <li>MC {@code Entity.equals/hashCode} compare the entity id (Entity.java:341-351), and
+     *       1.20.1 {@code PlayerList.respawn} (PlayerList.java:440-443: new ServerPlayer,
+     *       restoreFrom, setId(old id)) gives the respawned player the dead one's id. After the
+     *       first death (or End-exit credits, ServerGamePacketListenerImpl -> respawn(player, true))
+     *       every lookup returned the DEAD/removed player's bridge: health 0, death position, max
+     *       health penalty, mobs never targeting the live player (triage HAI-1 / reentry M1).
+     *       In singleplayer the LocalPlayer shares its ServerPlayer's id, so client-side lookups
+     *       got the SERVER bridge and mutated it from the render thread (design_mining B3-CLIENT).</li>
+     *   <li>Each value strongly referenced its key ({@link #realPlayer}), so no entry was ever
+     *       evicted and every closed world's player/level graph stayed reachable (triage RE2).</li>
+     *   <li>WeakHashMap is not thread-safe, but the render thread and the integrated-server
+     *       thread both call {@link #getOrCreate(Player)}.</li>
+     * </ul>
+     * A field on the player is identity-bound by construction, needs no eviction (bridge and
+     * player become unreachable together) and gives a respawned/cloned ServerPlayer its own
+     * bridge (ServerPlayerMixin.btw$restoreFrom copies the FC state across).
+     */
+    public interface Holder {
+        PlayerBridge btw$getPlayerBridge();
+
+        void btw$setPlayerBridge(PlayerBridge bridge);
+    }
+
+    /** Guards bridge creation (double-checked against the volatile Holder field). */
+    private static final Object CREATE_LOCK = new Object();
 
     private final CapabilitiesBridge capBridge;
     private final InventoryBridge invBridge;
@@ -34,11 +63,65 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
     public float pendingMeleeDamageModifier = 1.0F;
 
     /**
-     * Returns (or creates) the PlayerBridge for the given Player.
-     * Works for both ServerPlayer and client-side LocalPlayer.
+     * The FC ItemFood whose 1.5.2 onEaten last fed this player (FoodStats.addStats(ItemFood)) and the
+     * player tick it did so in; read by {@link #fcFedForEat}. Server thread only.
+     */
+    private btw.modern.ItemFood lastFcFedFood;
+    private int lastFcFedTick;
+
+    /** Set once fcFedForEat failed, so the failure is logged a single time. */
+    private static volatile boolean fcFedForEatFailureLogged;
+
+    /**
+     * True when FC's own food code already fed {@code eater} for this eat of {@code item}: the FC ItemFood
+     * that fed the player in the current tick is {@code item}'s FC item ({@link ProxyItem#fcItemFor}).
+     * ItemStackMixin.btw$finishUsing runs that 1.5.2 ItemFood.onEaten at ItemStack.finishUsingItem HEAD, i.e.
+     * the nutrition (vanilla/server ItemFood.java:70, FoodStats.addStats with FC's x3 GetHungerRestored) and
+     * the onFoodEaten potion effect (:72, :76-82), BEFORE Item.finishUsingItem -> LivingEntity/Player.eat
+     * applies vanilla's FoodProperties nutrition (FoodDataMixin) and effects (LivingEntityMixin.btw$addEatEffect)
+     * in the same call. Exactly then those must be skipped, so every food restores once: FC's 1.5.2 values
+     * for an FC ItemFood (raw meat, melon, carrot, potato, stew, and since FD-R1 the 1.5.2 vanilla ItemFoods:
+     * bread, apples, cooked meats, cookie, golden apple ...), vanilla's for everything FC did not feed
+     * (modern-only foods, non-player eaters, the client, an eat the FC hook skipped). Recorded at the feed itself rather than predicted from
+     * the item, so it cannot disagree with the hook that fed. Never throws.
+     */
+    public static boolean fcFedForEat(net.minecraft.world.item.Item item,
+                                      net.minecraft.world.entity.LivingEntity eater) {
+        if (item == null || !(eater instanceof Player player)) return false;
+        try {
+            PlayerBridge bridge = ((Holder) player).btw$getPlayerBridge();
+            return bridge != null && bridge.lastFcFedFood != null
+                    && bridge.lastFcFedTick == player.tickCount
+                    && ProxyItem.fcItemFor(item) == bridge.lastFcFedFood;
+        } catch (Throwable t) {
+            if (!fcFedForEatFailureLogged) {
+                fcFedForEatFailureLogged = true;
+                LOGGER.warn("FC food check failed for {}; vanilla nutrition applies (logged once): {}",
+                        item, t.toString(), t);
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Returns (or creates) the PlayerBridge bound to this exact Player object (identity, never
+     * the entity id — see {@link Holder}). Works for ServerPlayer and for client-side
+     * LocalPlayer/RemotePlayer; a client player always gets its OWN bridge (never the integrated
+     * server's), whose {@code worldObj} is a read-only view of its client level.
+     * Thread-safe: the render thread and the server thread may both call this.
      */
     public static PlayerBridge getOrCreate(Player player) {
-        PlayerBridge bridge = cache.computeIfAbsent(player, PlayerBridge::new);
+        Holder holder = (Holder) player;
+        PlayerBridge bridge = holder.btw$getPlayerBridge();
+        if (bridge == null) {
+            synchronized (CREATE_LOCK) {
+                bridge = holder.btw$getPlayerBridge();
+                if (bridge == null) {
+                    bridge = new PlayerBridge(player);
+                    holder.btw$setPlayerBridge(bridge);
+                }
+            }
+        }
         bridge.syncFromReal();
         return bridge;
     }
@@ -50,6 +133,14 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
         return getOrCreate((Player) player);
     }
 
+    /**
+     * NEW, uncached bridge for read-only client-side FC queries (FCMiningSpeed dig prediction).
+     * Bypasses {@link #getOrCreate(Player)}: MC Entity.equals/hashCode compare ids (Entity.java:341-351)
+     * and the singleplayer LocalPlayer shares its ServerPlayer's id, so the old id-keyed cache
+     * returned the SERVER bridge and the render thread would syncFromReal() server state.
+     */
+    public static PlayerBridge createDetached(Player player) { return new PlayerBridge(player); }
+
     private PlayerBridge(Player player) {
         super(null); // btw.modern.EntityPlayer(World) constructor
         this.realPlayer = player;
@@ -58,12 +149,41 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
         this.capabilities = this.capBridge;
         this.inventory = this.invBridge;
         this.inventory.player = this; // InventoryBridge passes null to super(); fix the backref
-        this.foodStats = new btw.modern.FoodStats();
+        // Records which FC ItemFood fed the player in which tick, for fcFedForEat: 1.5.2 ItemFood.onEaten
+        // feeds through exactly this call (vanilla/server ItemFood.java:70 getFoodStats().addStats(this)).
+        this.foodStats = new btw.modern.FoodStats() {
+            @Override
+            public void addStats(btw.modern.ItemFood food) {
+                lastFcFedFood = food;
+                lastFcFedTick = realPlayer.tickCount;
+                super.addStats(food);
+            }
+        };
+        // 1.5.2 EntityPlayer.username is always the login name (vanilla/server EntityPlayerMP.java:117,
+        // set at construction). FC reads it directly, e.g. FCEntityWolf.java:310 owner check
+        // (username.equalsIgnoreCase -> NPE on null) and :704 setOwner. Set it for every bridge (server,
+        // client, detached, respawned); FCLoginHandler.bindUsername only fills a null, so it stays a no-op.
+        this.username = player.getGameProfile().getName();
         // NetServerHandler bridge — translates FC packets to MC 1.20.1 packets
         this.playerNetServerHandler = new ForgeNetServerHandler(player);
-        // World bridge — use ServerLevel if available, otherwise null (client uses it read-only)
+        // World bridge — the WorldBridge for a ServerLevel. A client player gets a read-only view
+        // of ITS client level (isRemote = true, block id/META reads, no writes — the same world FC
+        // client entities use), never null: FC block code dereferences the world (e.g.
+        // FCBlockStone.getBlockHardness -> GetStrata -> getBlockMetadata) and used to NPE on
+        // dedicated-server clients; in singleplayer it only "worked" because client lookups
+        // aliased the server bridge. syncFromReal() never replaces it for a client level.
+        // Parity: createDummyClientWorld derives vanilla-id legacy metadata with the server's own
+        // WorldBridge.deriveVanillaMetadata (log stump bit, axis, ...), so client dig prediction
+        // (FCMiningSpeed; FCBlockLog.getBlockHardness x3 for a stump) matches the server. Only the
+        // server-side vanillaMetaOverrides map is invisible here.
         if (player.level() instanceof ServerLevel sl) {
             this.worldObj = WorldBridge.getOrCreate(sl);
+        } else if (player.level() != null && player.level().isClientSide()) {
+            try {
+                this.worldObj = ProxyEntity.createDummyClientWorld(player.level());
+            } catch (Throwable t) {
+                LOGGER.warn("Could not create client FC world for {}: {}", player.getName().getString(), t.toString());
+            }
         }
         syncFromReal();
     }
@@ -208,14 +328,25 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
     }
 
     /**
-     * FC calls this for starvation damage, fire damage, etc.
-     * Delegates to the real MC player's hurt() method.
+     * FC calls this for starvation damage, fire damage, FC mob melee, FC projectiles, etc.
+     * Delegates to the real MC player's hurt() method. The source goes through
+     * {@link WorldBridge#toMcDamageSource}: an FC arrow / thrown item / fireball becomes the 1.20.1
+     * projectile type with the shooter as the causing entity, so the kill is credited to the shooter
+     * ("shot by" death message), shields and projectile protection apply, and PvP rules see the shooter.
+     * 1.5.2 never difficulty-scaled such indirect damage -- EntityDamageSource.isDifficultyScaled tests the
+     * DIRECT entity, the projectile (vanilla/server EntityDamageSource.java:45-48, EntityPlayer.java:942-958)
+     * -- while 1.20.1 Player.hurt scales any source whose CAUSING entity is a non-player LivingEntity
+     * (DamageSource.scalesWithDifficulty), so an FC skeleton's arrow would hit x1.5 on Hard; see
+     * {@link DamageSourceMapping#withoutDifficultyScaling}. Melee ("mob") stays scaled, as in 1.5.2.
      */
     @Override
     public boolean attackEntityFrom(btw.modern.DamageSource source, int amount) {
         if (realPlayer instanceof net.minecraft.server.level.ServerPlayer sp) {
             net.minecraft.world.damagesource.DamageSource mcSource =
-                    DamageSourceMapping.getModern(source, sp.serverLevel());
+                    WorldBridge.toMcDamageSource(source, sp.serverLevel());
+            if (source instanceof btw.modern.EntityDamageSourceIndirect) {
+                mcSource = DamageSourceMapping.withoutDifficultyScaling(mcSource);
+            }
             boolean result = realPlayer.hurt(mcSource, (float) amount);
             this.health = (int) realPlayer.getHealth();
             return result;

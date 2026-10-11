@@ -29,19 +29,21 @@ public class ProxyMob extends Mob
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /**
-     * Catches every removal path so we can diagnose disappearing entities.
+     * Catches every removal path so we can diagnose disappearing entities (debug level only).
      */
     @Override
     public void remove(net.minecraft.world.entity.Entity.RemovalReason reason) {
-        String key = (fcEntity != null ? fcEntity.getClass().getSimpleName() : "null") + "|" + reason;
-        if (LOGGED_REMOVALS.add(key)) {
-            LOGGER.warn("ProxyMob.remove({}) — fc={}, id={}, pos={},{},{}",
-                    reason,
-                    fcEntity != null ? fcEntity.getClass().getSimpleName() : "null",
-                    getId(), getX(), getY(), getZ());
-            StackTraceElement[] st = new Throwable().getStackTrace();
-            for (int i = 1; i < Math.min(12, st.length); i++) {
-                LOGGER.warn("    at {}", st[i]);
+        if (LOGGER.isDebugEnabled()) {
+            String key = (fcEntity != null ? fcEntity.getClass().getSimpleName() : "null") + "|" + reason;
+            if (LOGGED_REMOVALS.add(key)) {
+                LOGGER.debug("ProxyMob.remove({}) — fc={}, id={}, pos={},{},{}",
+                        reason,
+                        fcEntity != null ? fcEntity.getClass().getSimpleName() : "null",
+                        getId(), getX(), getY(), getZ());
+                StackTraceElement[] st = new Throwable().getStackTrace();
+                for (int i = 1; i < Math.min(12, st.length); i++) {
+                    LOGGER.debug("    at {}", st[i]);
+                }
             }
         }
         super.remove(reason);
@@ -61,6 +63,13 @@ public class ProxyMob extends Mob
     // from NaN motionX/Z), the NaN guard restores from here instead of
     // the per-tick snapshot (which would also be NaN).
     private double lastGoodPosX, lastGoodPosY, lastGoodPosZ;
+    /** D6: MC/FC health agreement (server). */
+    private final FCPuppetSupport.HealthLink healthLink = new FCPuppetSupport.HealthLink();
+    /** R8: client animation targets fed by BTWNetwork.FCAnimSync. */
+    private final FCPuppetSupport.ClientAnim clientAnim = new FCPuppetSupport.ClientAnim();
+    private final FCPuppetSupport.AnimSender animSender = new FCPuppetSupport.AnimSender();
+    /** RE7: set while readAdditionalSaveData runs, so ensureFcEntity keeps the loaded Health. */
+    private boolean loadingSaveData = false;
 
     public ProxyMob(EntityType<? extends Mob> type, Level level) {
         super(type, level);
@@ -75,8 +84,16 @@ public class ProxyMob extends Mob
         this.fcClassName = fc.getClass().getName();
         if (level() instanceof ServerLevel sl) {
             fc.worldObj = WorldBridge.getOrCreate(sl);
+            // FC-spawned (EntityProxyFactory): FC's max and current health are authoritative,
+            // otherwise MC keeps this type's default MAX_HEALTH and the pools disagree from birth.
+            FCPuppetSupport.seedHealthFromFc(this, fc, true);
+            healthLink.mark(this, fc);
         }
         syncToFc();
+    }
+
+    FCPuppetSupport.ClientAnim getClientAnim() {
+        return clientAnim;
     }
 
     public btw.modern.EntityLiving getFcEntity() {
@@ -133,15 +150,26 @@ public class ProxyMob extends Mob
                 // MC's hurt() pipeline kills the entity at the right time.
                 int fcMaxHp = fcEntity.getMaxHealth();
                 if (fcMaxHp > 0) {
-                    var attr = getAttribute(Attributes.MAX_HEALTH);
-                    if (attr != null) attr.setBaseValue(fcMaxHp);
-                    setHealth(fcMaxHp);
-                    fcEntity.health = fcMaxHp;
+                    // RE7: only a fresh spawn takes the new FC entity's max and starts at full
+                    // health. On the NBT-load path LivingEntity.readAdditionalSaveData has already
+                    // restored the saved Attributes and Health, and this FC entity's max may still
+                    // be a default (EntitySlime re-rolls its size in the constructor, vanilla/server
+                    // EntitySlime.java:29-36); readAdditionalSaveData re-seeds MAX_HEALTH once FC's
+                    // own NBT is read.
+                    if (!loadingSaveData) {
+                        var attr = getAttribute(Attributes.MAX_HEALTH);
+                        if (attr != null) attr.setBaseValue(fcMaxHp);
+                        setHealth(fcMaxHp);
+                    }
+                    fcEntity.health = FCPuppetSupport.mcHpToFc(getHealth());
                 }
+                if (!level().isClientSide) healthLink.mark(this, fcEntity);
                 ProxyMobTaskDumper.dumpFcTasks(fcEntity);
             }
         } catch (Throwable e) {
-            LOGGER.info("Could not create FC entity {}: {}", className, e.getMessage(), e);
+            if (FCPuppetSupport.firstFailure("create|" + className)) {
+                LOGGER.warn("Could not create FC entity {}: {}", className, e.getMessage(), e);
+            }
         }
     }
 
@@ -262,18 +290,13 @@ public class ProxyMob extends Mob
         // client FC entity would stay at its spawn position (no real
         // WorldBridge) and overwrite the server-synced position every tick.
         if (level().isClientSide) {
-            // Animation/rotation data arrives via FCEntityStateSync packet
-            // (bridged from server FC entity's actual computed values).
-            // Keep FC entity position in sync for renderer origin.
-            if (fcEntity != null) {
-                fcEntity.prevPosX = fcEntity.posX;
-                fcEntity.prevPosY = fcEntity.posY;
-                fcEntity.prevPosZ = fcEntity.posZ;
-                fcEntity.posX = getX();
-                fcEntity.posY = getY();
-                fcEntity.posZ = getZ();
-            }
+            // R8: MC interpolates the position first (super.tick -> aiStep lerp); then the
+            // render-only FC animation tick advances prev*/limbs/body/head/swing/hurt/death
+            // timers from it, once per tick, without running FC physics.
             super.tick();
+            if (fcEntity != null) {
+                FCPuppetSupport.clientAnimTick(this, fcEntity, clientAnim);
+            }
             return;
         }
 
@@ -346,72 +369,30 @@ public class ProxyMob extends Mob
             float snapYaw = fcEntity.rotationYaw, snapPitch = fcEntity.rotationPitch;
             double snapMotX = fcEntity.motionX, snapMotY = fcEntity.motionY, snapMotZ = fcEntity.motionZ;
 
-            double preMotY = fcEntity.motionY;
+            // D6: carry HP changes made since the last tick (another FC mob's melee during its
+            // update, MC-side heals) across before FC simulates.
+            reconcileHealth();
             try {
                 FCEnvHurtGuard.runOnUpdate(fcEntity, this);
                 PossessionDiagnostics.poll(this, fcEntity);
             } catch (Throwable e) {
-                if (tickCount % 100 == 0) {
-                    LOGGER.warn("FC entity {} onUpdate() threw {}: {}",
-                        fcEntity.getClass().getSimpleName(),
-                        e.getClass().getName(), e.getMessage());
-                }
+                // HAI-10: one stack trace per distinct throw site, not a 1-in-100-ticks sample.
+                FCPuppetSupport.logUpdateFailureOnce(LOGGER, fcEntity, e);
             }
+            // D6: FC's own damage this update (fall, drowning, fire/lava, cactus) -> MC health;
+            // an FC-side death becomes an MC death (event 3 to clients).
+            reconcileHealth();
 
-            // Compute onGround directly: check if the block below the entity's
-            // feet is solid. FC's moveEntity misses ground detection when
-            // entity-collision pushes produce large horizontal motion, and
-            // MC's onGround is also false because travel() is a no-op.
-            {
-                int bx = net.minecraft.util.Mth.floor(fcEntity.posX);
-                int by = net.minecraft.util.Mth.floor(fcEntity.boundingBox.minY - 0.01);
-                int bz = net.minecraft.util.Mth.floor(fcEntity.posZ);
-                net.minecraft.core.BlockPos belowPos = new net.minecraft.core.BlockPos(bx, by, bz);
-                boolean solidBelow = !level().getBlockState(belowPos).isAir();
-                if (solidBelow) {
+            // Compute onGround directly: FC's moveEntity misses ground detection when
+            // entity-collision pushes produce large horizontal motion, and MC's onGround
+            // is also false because travel() is a no-op. SW4: only a block with a real
+            // collision shape under the feet counts (never water, lava or plants).
+            try {
+                if (FCPuppetSupport.hasGroundBelow(level(), fcEntity)) {
                     fcEntity.onGround = true;
                 }
-            }
-
-            // --- Debug: periodic AI/movement diagnostics (every 60 ticks / 3s) ---
-            if (!level().isClientSide && (tickCount % 60) == 0) {
-                btw.modern.PathNavigate nav = fcEntity.getNavigator();
-                boolean navNoPath = nav.noPath();
-                btw.modern.PathEntity navPath = nav.getPath();
-                int pathLen = (navPath != null) ? navPath.getCurrentPathLength() : 0;
-                int pathIdx = (navPath != null) ? navPath.getCurrentPathIndex() : -1;
-
-                btw.modern.EntityLiving atkTarget = fcEntity.getAttackTarget();
-                btw.modern.EntityLiving aiTarget = fcEntity.getAITarget();
-
-                LOGGER.info("[AI-DBG] {} | onGround={} mF={} aiSpd={} mot=({},{},{}) | nav: noPath={} pathLen={} pathIdx={} | atkTarget={} aiTarget={} | pathfindCalls={}",
-                    fcEntity.getClass().getSimpleName(),
-                    fcEntity.onGround,
-                    String.format("%.3f", fcEntity.moveForward),
-                    String.format("%.3f", fcEntity.getAIMoveSpeed()),
-                    String.format("%.4f", fcEntity.motionX),
-                    String.format("%.4f", fcEntity.motionY),
-                    String.format("%.4f", fcEntity.motionZ),
-                    navNoPath, pathLen, pathIdx,
-                    atkTarget != null ? atkTarget.getClass().getSimpleName() : "none",
-                    aiTarget != null ? aiTarget.getClass().getSimpleName() : "none",
-                    btw.modern.World.pathfindCallCount.get());
-            }
-
-            // --- Debug: flame particle at next path waypoint (every 20 ticks) ---
-            if (!level().isClientSide && (tickCount % 20) == 0
-                    && level() instanceof ServerLevel sl) {
-                btw.modern.PathNavigate nav2 = fcEntity.getNavigator();
-                if (!nav2.noPath()) {
-                    btw.modern.PathEntity path = nav2.getPath();
-                    if (path != null && path.getCurrentPathIndex() < path.getCurrentPathLength()) {
-                        btw.modern.PathPoint wp = path.getPathPointFromIndex(path.getCurrentPathIndex());
-                        sl.sendParticles(
-                            net.minecraft.core.particles.ParticleTypes.FLAME,
-                            wp.xCoord + 0.5, wp.yCoord + 0.5, wp.zCoord + 0.5,
-                            1, 0.0, 0.0, 0.0, 0.0);
-                    }
-                }
+            } catch (Throwable t) {
+                FCPuppetSupport.logFailureOnce(LOGGER, "Ground check", fcEntity, t);
             }
 
             // Defensive NaN/Infinity guard — fix ONLY the fields that are
@@ -472,6 +453,9 @@ public class ProxyMob extends Mob
         //    its internal xp/yp/zp and broadcasts on change.
         // Save xo/yo/zo BEFORE super.tick() overwrites them, then restore.
         double savedXo = this.xo, savedYo = this.yo, savedZo = this.zo;
+        // D1: FC's own air logic (EntityLiving.onEntityUpdate:618-647, EntityWaterMob) is the
+        // only one; MC's air stays full so ForgeHooks.onLivingBreathe never drowns a puppet.
+        if (getAirSupply() < getMaxAirSupply()) setAirSupply(getMaxAirSupply());
         super.tick();
 
         // 5. Re-pin position and restore interpolation origin.
@@ -483,9 +467,180 @@ public class ProxyMob extends Mob
             this.zo = savedZo;
         }
 
-        if (!level().isClientSide && fcEntity != null && (tickCount % 2) == 0) {
-            BTWNetwork.broadcastFCEntityState(this, fcEntity);
+        if (!level().isClientSide && fcEntity != null) {
+            if ((tickCount % 2) == 0) {
+                BTWNetwork.broadcastFCEntityState(this, fcEntity);
+            }
+            animSender.send(this, fcEntity);
+            // WitherBoss.customServerAiStep: the bar follows health (FC heals during the summon
+            // charge reach MC through the health link).
+            if (bossEvent != null) {
+                bossEvent.setProgress(net.minecraft.util.Mth.clamp(getHealth() / getMaxHealth(), 0.0F, 1.0F));
+            }
         }
+    }
+
+    /** D6: see {@link FCPuppetSupport.HealthLink}. Never throws (tick path). */
+    private void reconcileHealth() {
+        if (fcEntity == null) return;
+        try {
+            healthLink.reconcile(this, fcEntity, amount -> {
+                // What MC's own hurt() would have recorded (LivingEntity.hurt invulnerability
+                // window), so MC-side lava/fire damage in the same window doesn't stack on top.
+                if (invulnerableTime <= 10) {
+                    invulnerableTime = 20;
+                    lastHurt = amount;
+                } else {
+                    lastHurt += amount;
+                }
+            });
+        } catch (Throwable t) {
+            // HAI-10: one stack trace per distinct throw site (tick path).
+            FCPuppetSupport.logFailureOnce(LOGGER, "Health reconcile", fcEntity, t);
+        }
+    }
+
+    /**
+     * FC's onDeathUpdate (vanilla/client EntityLiving.java:720-760) owns a puppet's death: it
+     * spawns the XP orbs at deathTime 20 and setDead()s, which tick() turns into discard(). MC's
+     * own counter starts whenever MC learns of the death and could remove(KILLED) the puppet a
+     * tick before FC's orb spawn; while the FC entity is still finishing its death, only count
+     * (falling back to MC removal if FC stalls).
+     */
+    @Override
+    protected void tickDeath() {
+        if (!level().isClientSide && fcEntity != null && !fcEntity.isDead && deathTime < 40) {
+            ++deathTime;
+            return;
+        }
+        super.tickDeath();
+    }
+
+    /** R8: hand FC-relevant entity events (hurt, death, ...) to the client FC entity. */
+    @Override
+    public void handleEntityEvent(byte id) {
+        if (level().isClientSide && fcEntity != null) {
+            FCPuppetSupport.forwardEntityEvent(fcEntity, id);
+        }
+        super.handleEntityEvent(id);
+    }
+
+    /** R8: 1.20.1 announces a hurt with a damage event, 1.5.2 with entity event 2. */
+    @Override
+    public void handleDamageEvent(DamageSource source) {
+        super.handleDamageEvent(source);
+        if (level().isClientSide && fcEntity != null) {
+            FCPuppetSupport.forwardEntityEvent(fcEntity, (byte) 2);
+        }
+    }
+
+    /** D-M1: FC plays its own hurt/death sounds; MC's GENERIC_HURT/GENERIC_DEATH are not 1.5.2's. */
+    @Override
+    protected net.minecraft.sounds.SoundEvent getHurtSound(DamageSource source) { return null; }
+
+    @Override
+    protected net.minecraft.sounds.SoundEvent getDeathSound() { return null; }
+
+    /**
+     * D1: MC must not drown a puppet. FC's EntityLiving.onEntityUpdate (vanilla/client
+     * EntityLiving.java:618-647) and EntityWaterMob run their own air logic and damage, which
+     * reaches MC health through the health link; MC's drowning on top was a second air pool
+     * (fc_squid drowned in water on the MC side).
+     */
+    @Override
+    @SuppressWarnings("deprecation")
+    public boolean canBreatheUnderwater() { return true; }
+
+    /**
+     * D8: FC's handleLavaMovement -> setOnFireFromLava (vanilla/server Entity.java:489-493, 521-528)
+     * is the puppet's only lava damage and ignition, and skips fire-immune FC mobs.
+     */
+    @Override
+    public void lavaHurt() {
+        if (fcEntity == null) super.lavaHurt();
+    }
+
+    /**
+     * Mob.checkDespawn (Mob.java:707-735) also runs on the puppet; FC's own despawnEntity
+     * (vanilla/server EntityLiving.java:3583-3611) never removes a persistent or !canDespawn() mob
+     * (e.g. one that picked up loot), so MC must not either. Withers keep canDespawn() == true but
+     * override despawnEntity to never despawn (vanilla/server EntityWither.java:551-554).
+     */
+    @Override
+    public boolean removeWhenFarAway(double distanceSq) {
+        if (isFcBoss()) return false;
+        if (fcEntity != null && !FCPuppetSupport.fcCanDespawn(fcEntity)) return false;
+        return super.removeWhenFarAway(distanceSq);
+    }
+
+    // ------------------------------------------------------------------
+    // Wither boss bar
+    // ------------------------------------------------------------------
+
+    /**
+     * 1.5.2 drew the wither's health bar from the renderer (RenderWither.func_82418_a ->
+     * BossStatus.func_82824_a, vanilla/client RenderWither.java:31); 1.20.1 drives it from the server
+     * (WitherBoss.bossEvent). Created for FC withers only; no screen darkening (1.5.2 had none).
+     */
+    private net.minecraft.server.level.ServerBossEvent bossEvent;
+    private Boolean fcBoss;
+
+    private boolean isFcBoss() {
+        if (fcBoss == null) {
+            if (fcEntity != null) {
+                fcBoss = fcEntity instanceof btw.modern.EntityWither;
+            } else {
+                String name = getFcClassName();
+                if (name == null || name.isEmpty()) return false;
+                try {
+                    fcBoss = btw.modern.EntityWither.class.isAssignableFrom(Class.forName(name));
+                } catch (Throwable t) {
+                    fcBoss = false;
+                }
+            }
+        }
+        return fcBoss;
+    }
+
+    private net.minecraft.server.level.ServerBossEvent bossEvent() {
+        if (bossEvent == null && !level().isClientSide && isFcBoss()) {
+            bossEvent = new net.minecraft.server.level.ServerBossEvent(bossName(),
+                    net.minecraft.world.BossEvent.BossBarColor.PURPLE,
+                    net.minecraft.world.BossEvent.BossBarOverlay.PROGRESS);
+            bossEvent.setProgress(net.minecraft.util.Mth.clamp(getHealth() / getMaxHealth(), 0.0F, 1.0F));
+        }
+        return bossEvent;
+    }
+
+    /** 1.5.2 EntityWither.getEntityName -> "Wither" unless named. */
+    private net.minecraft.network.chat.Component bossName() {
+        return hasCustomName() ? getCustomName()
+                : net.minecraft.network.chat.Component.translatable("entity.minecraft.wither");
+    }
+
+    @Override
+    public void startSeenByPlayer(net.minecraft.server.level.ServerPlayer player) {
+        super.startSeenByPlayer(player);
+        try {
+            var bar = bossEvent();
+            if (bar != null) bar.addPlayer(player);
+        } catch (Throwable t) {
+            if (FCPuppetSupport.firstFailure("bossbar|" + t.getClass().getName())) {
+                LOGGER.warn("Wither boss bar failed: {}", t.toString());
+            }
+        }
+    }
+
+    @Override
+    public void stopSeenByPlayer(net.minecraft.server.level.ServerPlayer player) {
+        super.stopSeenByPlayer(player);
+        if (bossEvent != null) bossEvent.removePlayer(player);
+    }
+
+    @Override
+    public void setCustomName(net.minecraft.network.chat.Component name) {
+        super.setCustomName(name);
+        if (bossEvent != null) bossEvent.setName(bossName());
     }
 
     /** Delegate to FC's interact() for villager trading, etc. */
@@ -497,14 +652,17 @@ public class ProxyMob extends Mob
                 && player instanceof net.minecraft.server.level.ServerPlayer sp) {
             btw.forge.PlayerBridge pb = btw.forge.PlayerBridge.getOrCreate(sp);
             try {
-                if (fcEntity.interact(pb)) {
+                boolean handled = fcEntity.interact(pb);
+                // FC edits the held stack in place (feeding --stackSize, bucket swaps); write those
+                // slots back to the MC inventory (selective per-slot diff, no-op when unchanged).
+                pb.syncInventoryToReal();
+                if (handled) {
                     return net.minecraft.world.InteractionResult.SUCCESS;
                 }
             } catch (Throwable t) {
                 // Errors from FC interact (e.g. villager trade generation hitting
                 // a bridge gap) must not crash the interaction packet handler.
-                LOGGER.warn("FC entity interact() threw: {}: {}",
-                        t.getClass().getSimpleName(), t.getMessage());
+                FCPuppetSupport.logFailureOnce(LOGGER, "FC interact()", fcEntity, t);
             }
         }
         return super.mobInteract(player, hand);
@@ -530,13 +688,10 @@ public class ProxyMob extends Mob
     private boolean forwardingHurtToFc = false;
 
     public boolean hurt(DamageSource source, float amount) {
-        // [DIAG] capture what is damaging puppet mobs (red-flash + random-death bug).
-        // Only real damage (amount > 0), to skip MC's amount=0 client-side probes. With the
-        // isInWall()->false fix, suffocation no longer fires, so this should now be quiet
-        // unless some OTHER source is still killing mobs.
-        if (amount > 0) {
-            LOGGER.warn("[MOB-DMG] fc={} src={} amt={} hpBefore={} y={}",
-                    fcClassName, source.type().msgId(), amount, getHealth(), getY());
+        // D8: FC's own update applies burning, lava and fire-block damage (honouring FC fire
+        // immunity) and the health link mirrors it; MC's baseTick copy would be a second application.
+        if (fcEntity != null && !level().isClientSide && FCPuppetSupport.isFcSimulatedFireDamage(source)) {
+            return false;
         }
         // Let MC's full hurt() pipeline run: hurt sound, red flash,
         // knockback, hit particles, hurt animation, AI revenge target,
@@ -550,6 +705,9 @@ public class ProxyMob extends Mob
         // custom death drops (CheckForScrollDrop, etc.) are triggered
         // separately via die() — see ProxyMob.die() override.
         if (result && fcEntity != null) {
+            // R2: 1.5.2 attackEntityFrom credits every landed hit (recentlyHit/attackingPlayer)
+            // even when FC itself never sees it (inside FC's hurt-resistance window).
+            FCPuppetSupport.creditAttacker(fcEntity, source);
             // 1.5.2: all damage funnels through EntityLiving.attackEntityFrom,
             // so FC overrides must see MC-side hits too — FCEntityPigZombie
             // group anger (Common FCEntityPigZombie.java:32), FCEntityEnderman
@@ -565,8 +723,8 @@ public class ProxyMob extends Mob
                 try {
                     fcEntity.attackEntityFrom(translateDamageSource(source), (int) amount);
                 } catch (Throwable t) {
-                    LOGGER.warn("FC entity attackEntityFrom() threw: {}: {}",
-                            t.getClass().getSimpleName(), t.getMessage());
+                    // HAI-10: once per throw site with its stack, not a line per hit.
+                    FCPuppetSupport.logFailureOnce(LOGGER, "FC attackEntityFrom()", fcEntity, t);
                 } finally {
                     forwardingHurtToFc = false;
                 }
@@ -575,7 +733,12 @@ public class ProxyMob extends Mob
             // fire sync, FC can die internally (health 0) while MC health is still >0 this
             // tick — re-raising it would resurrect the FC entity and re-run its death path.
             if (fcEntity.health > 0) {
-                fcEntity.health = (int) Math.max(0, getHealth());
+                fcEntity.health = FCPuppetSupport.mcHpToFc(getHealth());
+            }
+            // Agreed state for the health link. If the forwarded hit killed FC while MC lives,
+            // leave it unmarked so the next reconcile turns that FC death into an MC death.
+            if (!(fcEntity.health <= 0 && getHealth() > 0)) {
+                healthLink.mark(this, fcEntity);
             }
             btw.modern.EntityLiving fcAttacker = wrapAttacker(source);
             if (fcAttacker != null) {
@@ -588,12 +751,20 @@ public class ProxyMob extends Mob
 
     @Override
     public void die(DamageSource source) {
-        if (fcEntity != null) {
+        // Server only: on the client the FC death runs through the forwarded entity event 3
+        // (1.5.2 handleHealthUpdate(3), see handleEntityEvent).
+        if (fcEntity != null && !level().isClientSide) {
             try {
                 // Only run FC's death path if FC hasn't already died internally (e.g. from
                 // fire damage in its own onUpdate) — otherwise onDeath and its drops fire
                 // twice. Suppress vanilla loot either way since FC owns drops.
                 if (fcEntity.health > 0) {
+                    // 1.5.2 attackEntityFrom order (vanilla/client EntityLiving.java:1090-1159):
+                    // health drops, the hit is credited (R2: a one-hit player kill now yields
+                    // player XP orbs, not the unowned dragon orb), death sound, then onDeath.
+                    FCPuppetSupport.creditAttacker(fcEntity, source);
+                    fcEntity.health = 0;
+                    FCPuppetSupport.playFcDeathSound(fcEntity);
                     btw.modern.DamageSource fcSource = translateDamageSource(source);
                     fcEntity.onDeath(fcSource);
                     syncFromFc();
@@ -605,12 +776,12 @@ public class ProxyMob extends Mob
             } catch (Throwable t) {
                 // If FC's death path hit a bridge gap, fall back to vanilla loot
                 // (suppressVanillaLoot stays false) instead of crashing the server.
-                LOGGER.warn("FC entity onDeath() threw: {}: {}",
-                        t.getClass().getSimpleName(), t.getMessage());
+                FCPuppetSupport.logFailureOnce(LOGGER, "FC onDeath()", fcEntity, t);
             }
         }
         super.die(source);
         suppressVanillaLoot = false;
+        if (fcEntity != null && !level().isClientSide) healthLink.mark(this, fcEntity);
     }
 
     private boolean suppressVanillaLoot = false;
@@ -638,7 +809,13 @@ public class ProxyMob extends Mob
         if (tag.contains("FCClassName")) {
             fcClassName = tag.getString("FCClassName");
             if (fcEntity == null && !fcClassName.isEmpty()) {
-                ensureFcEntity(); // recreate on server side too
+                // RE7: keep the Health MC just restored (no reset to max).
+                loadingSaveData = tag.contains("Health", net.minecraft.nbt.Tag.TAG_ANY_NUMERIC);
+                try {
+                    ensureFcEntity(); // recreate on server side too
+                } finally {
+                    loadingSaveData = false;
+                }
             }
         }
         if (fcEntity != null && tag.contains("FCData")) {
@@ -648,16 +825,22 @@ public class ProxyMob extends Mob
                 fcEntity.readFromNBT(wrapper);
                 fcEntity.readEntityFromNBT(wrapper);
             } catch (Throwable e) {
-                // Vanilla 1.5.2 Entity.readFromNBT wraps everything in a
-                // ReportedException("Loading entity NBT"); the actual error
-                // lives in the cause chain. Walk it so the log is useful.
-                Throwable root = e;
-                while (root.getCause() != null && root.getCause() != root) {
-                    root = root.getCause();
-                }
-                LOGGER.warn("Failed to read FC entity NBT data for {}: {}: {}",
-                        fcClassName, root.getClass().getSimpleName(), root.getMessage());
+                // ML-1: frozen Entity.readFromNBT wraps the real error in a ReportedException
+                // ("Loading entity NBT", vanilla/server Entity.java:2970-2975).
+                FCPuppetSupport.logNbtFailure(LOGGER, "Reading FC entity NBT", fcEntity, e);
             }
+        }
+        // MC owns puppet HP: FC's saved Health (1.5.2 readEntityFromNBT) yields to MC's.
+        if (fcEntity != null && !level().isClientSide) {
+            // RE7: MAX_HEALTH from the restored FC state (slime size: EntitySlime.readEntityFromNBT
+            // -> setSlimeSize, getMaxHealth = size*size, vanilla/server EntitySlime.java:54-84),
+            // then the loaded Health clamped to it (setBaseValue does not clamp).
+            FCPuppetSupport.seedHealthFromFc(this, fcEntity, false);
+            setHealth(Math.min(getHealth(), getMaxHealth()));
+            if (fcEntity.health > 0 && getHealth() > 0) {
+                fcEntity.health = FCPuppetSupport.mcHpToFc(getHealth());
+            }
+            healthLink.mark(this, fcEntity);
         }
     }
 
@@ -672,7 +855,9 @@ public class ProxyMob extends Mob
                 fcEntity.writeToNBT(wrapper);
                 fcEntity.writeEntityToNBT(wrapper);
             } catch (Throwable e) {
-                LOGGER.warn("Failed to write FC entity NBT data: {}", e.getMessage());
+                // ML-1: frozen Entity.writeToNBT wraps the real error in a ReportedException
+                // ("Saving entity NBT", vanilla/server Entity.java:1468-1473).
+                FCPuppetSupport.logNbtFailure(LOGGER, "Writing FC entity NBT", fcEntity, e);
             }
             tag.put("FCData", fcCompound);
         }

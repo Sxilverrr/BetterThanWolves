@@ -34,11 +34,61 @@ public class FCContainerMenu extends AbstractContainerMenu {
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-FCContainerMenu");
 
+    /**
+     * FC hook failures seen so far, keyed by hook + exception + throw site (triage HAI-10). The first
+     * failure at a site logs one WARN with its stack trace; repeats are only counted, with a one-line
+     * WARN at 10, 100, 1000, ... occurrences. A hook failing every broadcastChanges tick therefore
+     * neither spams the log nor hides how often it fails, and no site is masked by another's limit.
+     */
+    private static final java.util.Map<String, java.util.concurrent.atomic.AtomicLong> FC_FAILURES =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void warnFcFailure(String what, Throwable t) {
+        // Key and log the real failure, not a wrapper: frozen 1.5.2 Entity/EntityLiving wrap theirs in a
+        // btw.modern.ReportedException (FCPuppetSupport.unwrap, triage ML-1), whose own site and stack would
+        // hide it; its getCause() reaches the real failure only as the last "Caused by".
+        Throwable root = FCPuppetSupport.unwrap(t);
+        String site = throwSite(root);
+        long n = FC_FAILURES.computeIfAbsent(what + '|' + root.getClass().getName() + '|' + site,
+                k -> new java.util.concurrent.atomic.AtomicLong()).incrementAndGet();
+        if (n == 1) {
+            String wrapped = root != t ? " (wrapped in " + t.getClass().getName() + ": " + t.getMessage() + ")" : "";
+            LOGGER.warn("{} failed at {}{} (stack trace logged once per throw site): {}",
+                    what, site, wrapped, root.toString(), root);
+        } else if (isPowerOfTen(n)) {
+            LOGGER.warn("{} failed at {} {} times so far (last: {})", what, site, n, root.toString());
+        }
+    }
+
+    /**
+     * First stack frame outside the JDK of {@code t} (the unwrapped failure, see warnFcFailure), so FC
+     * failures surfacing through e.g. ArrayList get distinct sites.
+     */
+    private static String throwSite(Throwable t) {
+        StackTraceElement[] trace = t.getStackTrace();
+        for (StackTraceElement e : trace) {
+            String c = e.getClassName();
+            if (!c.startsWith("java.") && !c.startsWith("jdk.") && !c.startsWith("sun.")) {
+                return c + "." + e.getMethodName() + ":" + e.getLineNumber();
+            }
+        }
+        return trace.length > 0 ? trace[0].getClassName() + "." + trace[0].getMethodName() : "<no stack>";
+    }
+
+    private static boolean isPowerOfTen(long n) {
+        long p = 10;
+        while (p < n) p *= 10;
+        return p == n;
+    }
+
     /** Number of data slots reserved for FC progress bars + computed data. */
     private static final int FC_DATA_SLOT_COUNT = 16;
 
     private final btw.modern.Container fcContainer;
     private final PlayerBridge fcPlayer;
+
+    /** Server side: the live FC-inventory views behind the ContainerMappedSlots (empty on the client). */
+    private final java.util.List<InventoryAdapter> adapters = new java.util.ArrayList<>();
 
     /**
      * FC container data array. Slots 0+ are used by FC's progress bar system
@@ -201,7 +251,7 @@ public class FCContainerMenu extends AbstractContainerMenu {
      * Reads the FC container's slot list and creates MC Slot wrappers.
      */
     private void mirrorFcSlots() {
-        java.util.Map<btw.modern.IInventory, InventoryAdapter> adapters = new java.util.IdentityHashMap<>();
+        java.util.Map<btw.modern.IInventory, InventoryAdapter> byInv = new java.util.IdentityHashMap<>();
 
         for (int i = 0; i < fcContainer.inventorySlots.size(); i++) {
             btw.modern.Slot fcSlot = fcContainer.inventorySlots.get(i);
@@ -211,12 +261,12 @@ public class FCContainerMenu extends AbstractContainerMenu {
                 Inventory realInv = fcPlayer.getRealPlayer().getInventory();
                 this.addSlot(new PlayerMappedSlot(realInv, fcSlot));
             } else {
-                InventoryAdapter adapter = adapters.computeIfAbsent(fcInv, InventoryAdapter::new);
+                InventoryAdapter adapter = byInv.computeIfAbsent(fcInv, inv -> {
+                    InventoryAdapter created = new InventoryAdapter(inv);
+                    adapters.add(created);
+                    return created;
+                });
                 this.addSlot(new ContainerMappedSlot(adapter, fcSlot));
-                if (i < 3) {
-                    LOGGER.info("mirrorFcSlots: slot {} fcInv={} adapter={} slotIndex={}",
-                            i, System.identityHashCode(fcInv), System.identityHashCode(adapter), fcSlot.slotIndex);
-                }
             }
         }
     }
@@ -230,7 +280,8 @@ public class FCContainerMenu extends AbstractContainerMenu {
         if (fcContainer != null && fcPlayer != null) {
             try {
                 return fcContainer.canInteractWith(fcPlayer);
-            } catch (Exception e) {
+            } catch (Throwable t) {
+                warnFcFailure("FC canInteractWith", t); // ServerPlayer.tick asks every tick: was silent
                 return true;
             }
         }
@@ -241,33 +292,21 @@ public class FCContainerMenu extends AbstractContainerMenu {
     public ItemStack quickMoveStack(Player player, int index) {
         // Use MC's native moveItemStackTo instead of FC's mergeItemStack.
         // FC's version operates on FC slots disconnected from MC's InventoryAdapter.
+        if (index < 0 || index >= this.slots.size()) return ItemStack.EMPTY;
         Slot slot = this.slots.get(index);
         if (slot == null || !slot.hasItem()) return ItemStack.EMPTY;
 
+        // Live stack: the InventoryAdapter mirror or the real Inventory stack. moveItemStackTo
+        // edits it in place; setChanged() then persists that through the adapter.
         ItemStack slotStack = slot.getItem();
         ItemStack originalStack = slotStack.copy();
 
-        // Determine slot ranges: container slots vs player inventory slots
-        int containerSlotCount = fcContainer != null ? 0 : 0;
-        for (int i = 0; i < this.slots.size(); i++) {
-            if (this.slots.get(i) instanceof ContainerMappedSlot) {
-                containerSlotCount++;
-            }
-        }
-        // Container slots are first, player slots follow
-        int playerStart = containerSlotCount;
-        int playerEnd = this.slots.size();
-
-        if (index < containerSlotCount) {
-            // Shift-click from container → player inventory
-            if (!this.moveItemStackTo(slotStack, playerStart, playerEnd, true)) {
-                return ItemStack.EMPTY;
-            }
-        } else {
-            // Shift-click from player → container
-            if (!this.moveItemStackTo(slotStack, 0, containerSlotCount, false)) {
-                return ItemStack.EMPTY;
-            }
+        // Container -> player inventory (hotbar end first), player -> every container slot
+        // that accepts the stack. Result/output slots (SlotCrafting, SlotFurnace, ...) reject it
+        // in mayPlace, so they are never merge targets; contiguity is not assumed.
+        boolean fromContainer = slot instanceof ContainerMappedSlot;
+        if (!moveToOtherSide(slotStack, !fromContainer, fromContainer)) {
+            return ItemStack.EMPTY;
         }
 
         if (slotStack.isEmpty()) {
@@ -280,8 +319,44 @@ public class FCContainerMenu extends AbstractContainerMenu {
             return ItemStack.EMPTY;
         }
 
-        slot.onTake(player, slotStack);
+        if (slot instanceof ContainerMappedSlot cms) {
+            cms.onQuickMoved(player, originalStack, slotStack.getCount());
+        } else {
+            slot.onTake(player, slotStack);
+        }
         return originalStack;
+    }
+
+    /**
+     * moveItemStackTo over each contiguous run of target slots: container slots whose mayPlace
+     * accepts the stack (toContainer), or the player-inventory slots. moveItemStackTo's merge pass
+     * does not check mayPlace (AbstractContainerMenu.java:602-636), so filtering the runs here is
+     * what keeps output slots out.
+     */
+    private boolean moveToOtherSide(ItemStack stack, boolean toContainer, boolean reverse) {
+        java.util.List<int[]> runs = new java.util.ArrayList<>();
+        int start = -1;
+        for (int i = 0; i <= this.slots.size(); i++) {
+            boolean ok = false;
+            if (i < this.slots.size()) {
+                Slot s = this.slots.get(i);
+                ok = toContainer ? (s instanceof ContainerMappedSlot && s.mayPlace(stack))
+                        : !(s instanceof ContainerMappedSlot);
+            }
+            if (ok && start < 0) {
+                start = i;
+            } else if (!ok && start >= 0) {
+                runs.add(new int[]{start, i});
+                start = -1;
+            }
+        }
+        if (reverse) java.util.Collections.reverse(runs);
+        boolean moved = false;
+        for (int[] run : runs) {
+            if (stack.isEmpty()) break;
+            moved |= this.moveItemStackTo(stack, run[0], run[1], reverse);
+        }
+        return moved;
     }
 
     /**
@@ -331,8 +406,8 @@ public class FCContainerMenu extends AbstractContainerMenu {
                 // Flush inventory changes (XP cost, scroll consumed, etc.)
                 ((InventoryBridge) fcPlayer.inventory).writeBackAll();
                 return result;
-            } catch (Exception e) {
-                LOGGER.debug("FC clickMenuButton failed for button {}: {}", buttonId, e.getMessage());
+            } catch (Throwable t) {
+                warnFcFailure("FC clickMenuButton", t);
             }
         }
         return false;
@@ -352,13 +427,18 @@ public class FCContainerMenu extends AbstractContainerMenu {
 
     @Override
     public void broadcastChanges() {
+        // Fold pending in-place MC edits into FC and drop the slot mirrors, so the sync below
+        // re-reads FC (and sees FC's own in-place changes). No-op on the client (no adapters).
+        flushAdapters();
         if (fcContainer != null && fcPlayer != null) {
             try {
                 fcContainer.detectAndSendChanges();
                 pushFcComputedData();
                 syncMerchantRecipes();
-            } catch (Exception e) {
-                LOGGER.debug("FC detectAndSendChanges failed: {}", e.getMessage());
+            } catch (Throwable t) {
+                // Throwable, not Exception: ServerPlayer.tick calls broadcastChanges unguarded, so a
+                // LinkageError from FC would otherwise crash the server as a 'Ticking entity'.
+                warnFcFailure("FC detectAndSendChanges", t);
             }
         }
         super.broadcastChanges();
@@ -417,14 +497,8 @@ public class FCContainerMenu extends AbstractContainerMenu {
             java.lang.reflect.Field levelsField = findField(fcContainer.getClass(), "m_CurrentEnchantmentLevels");
             if (levelsField != null) {
                 int[] levels = (int[]) levelsField.get(fcContainer);
-                boolean anyNonZero = false;
                 for (int i = 0; i < Math.min(levels.length, 5); i++) {
                     fcData[i + 1] = levels[i];
-                    if (levels[i] != 0) anyNonZero = true;
-                }
-                if (anyNonZero) {
-                    LOGGER.info("Enchanter levels: [{},{},{},{},{}]",
-                            levels[0], levels[1], levels[2], levels[3], levels[4]);
                 }
             } else {
                 LOGGER.warn("m_CurrentEnchantmentLevels field not found on {}",
@@ -438,32 +512,12 @@ public class FCContainerMenu extends AbstractContainerMenu {
                 fcData[7] = (int) ((seed >>> 32) & 0xFFFFFFFFL);
             }
 
-            // Log slot contents for diagnostics
-            java.lang.reflect.Field tableField = findField(fcContainer.getClass(), "m_tableInventory");
-            if (tableField != null) {
-                btw.modern.IInventory table = (btw.modern.IInventory) tableField.get(fcContainer);
-                if (table != null) {
-                    btw.modern.ItemStack s0 = table.getStackInSlot(0);
-                    btw.modern.ItemStack s1 = table.getStackInSlot(1);
-                    if (s0 != null || s1 != null) {
-                        LOGGER.info("Enchanter slots: [0]={} [1]={}",
-                                s0 != null ? "id=" + s0.itemID + " dmg=" + s0.getItemDamage() : "empty",
-                                s1 != null ? "id=" + s1.itemID + " dmg=" + s1.getItemDamage() : "empty");
-                    }
-                }
-            }
-
-            // Log bookshelf level for diagnostics
             java.lang.reflect.Field bsField = findField(fcContainer.getClass(), "m_iMaxSurroundingBookshelfLevel");
             if (bsField != null) {
-                int bsLevel = bsField.getInt(fcContainer);
-                if (bsLevel != fcData[0]) {
-                    LOGGER.info("Enchanter bookshelf level: {}", bsLevel);
-                    fcData[0] = bsLevel; // Also push via data slot (in case crafter registration didn't fire)
-                }
+                fcData[0] = bsField.getInt(fcContainer); // also push via data slot in case crafter registration didn't fire
             }
-        } catch (Exception e) {
-            LOGGER.debug("pushFcComputedData failed: {}", e.getMessage());
+        } catch (Throwable t) {
+            warnFcFailure("pushFcComputedData", t);
         }
     }
 
@@ -479,14 +533,25 @@ public class FCContainerMenu extends AbstractContainerMenu {
         return null;
     }
 
+    private void flushAdapters() {
+        for (InventoryAdapter adapter : adapters) {
+            try {
+                adapter.flushAndForget();
+            } catch (Throwable t) {
+                warnFcFailure("InventoryAdapter flush", t);
+            }
+        }
+    }
+
     @Override
     public void removed(Player player) {
         super.removed(player);
+        flushAdapters();
         if (fcContainer != null && fcPlayer != null) {
             try {
                 fcContainer.onCraftGuiClosed(fcPlayer);
-            } catch (Exception e) {
-                LOGGER.debug("FC onCraftGuiClosed failed: {}", e.getMessage());
+            } catch (Throwable t) {
+                warnFcFailure("FC onCraftGuiClosed", t);
             }
             // 1.5.2 EntityPlayer.closeScreen resets openContainer to inventoryContainer on
             // every close; now load-bearing since TileEntityChest.updateEntity checks
@@ -525,8 +590,16 @@ public class FCContainerMenu extends AbstractContainerMenu {
 
         @Override
         public boolean mayPlace(ItemStack stack) {
-            btw.modern.ItemStack fcStack = ItemStackHelper.toFcStack(stack);
-            return fcSlot.isItemValid(fcStack);
+            try {
+                // FC holds an item MC cannot show (getItem() is EMPTY): placing would overwrite it
+                btw.modern.ItemStack held = fcSlot.getStack();
+                if (held != null && held.stackSize > 0 && getItem().isEmpty()) return false;
+                btw.modern.ItemStack fcStack = ItemStackHelper.toFcStack(stack);
+                return fcSlot.isItemValid(fcStack);
+            } catch (Throwable t) {
+                warnFc("isItemValid", t);
+                return false;
+            }
         }
 
         @Override
@@ -536,20 +609,59 @@ public class FCContainerMenu extends AbstractContainerMenu {
 
         @Override
         public boolean mayPickup(Player player) {
-            PlayerBridge pb = player instanceof net.minecraft.server.level.ServerPlayer sp
-                    ? PlayerBridge.getOrCreate(sp) : null;
-            return fcSlot.canTakeStack(pb);
+            try {
+                // FC holds an item MC cannot show (getItem() is EMPTY): a Q-throw would delete it,
+                // since safeTake -> remove -> FC decrStackSize runs before Slot.tryRemove sees the
+                // EMPTY result (Slot.java:128-146). Inert both ways, like mayPlace.
+                btw.modern.ItemStack held = fcSlot.getStack();
+                if (held != null && held.stackSize > 0 && getItem().isEmpty()) return false;
+                PlayerBridge pb = player instanceof net.minecraft.server.level.ServerPlayer sp
+                        ? PlayerBridge.getOrCreate(sp) : null;
+                return fcSlot.canTakeStack(pb);
+            } catch (Throwable t) {
+                warnFc("canTakeStack", t);
+                return false;
+            }
         }
 
         @Override
         public void onTake(Player player, ItemStack stack) {
             // Bridge FC's onPickupFromSlot — critical for crafting
             // (consumes ingredients when result is taken)
-            PlayerBridge pb = player instanceof net.minecraft.server.level.ServerPlayer sp
-                    ? PlayerBridge.getOrCreate(sp) : null;
-            btw.modern.ItemStack fcStack = ItemStackHelper.toFcStack(stack);
-            fcSlot.onPickupFromSlot(pb, fcStack);
+            pickupFc(player, ItemStackHelper.toFcStack(stack));
             super.onTake(player, stack);
+        }
+
+        /**
+         * Shift-click take. 1.5.2 transferStackInSlot hands onPickupFromSlot the slot's own stack,
+         * possibly at stackSize 0 (FCContainerWorkbench.java:94-108). MC's drained stack is
+         * EMPTY/AIR and converts to null, and the frozen 1.5.2 SlotCrafting.onCrafting dereferences
+         * it (vanilla/server SlotCrafting.java:71-73,118-120) before consuming the grid: a free
+         * craft per shift-click. Pass a copy of the original at the remaining size instead.
+         */
+        void onQuickMoved(Player player, ItemStack original, int remaining) {
+            btw.modern.ItemStack fc = ItemStackHelper.toFcStack(original);
+            if (fc != null) fc.stackSize = remaining;
+            pickupFc(player, fc);
+            super.onTake(player, ItemStack.EMPTY); // Slot.onTake -> setChanged
+        }
+
+        private void pickupFc(Player player, btw.modern.ItemStack fcStack) {
+            if (!(player instanceof net.minecraft.server.level.ServerPlayer sp)) return;
+            PlayerBridge pb = PlayerBridge.getOrCreate(sp);
+            try {
+                fcSlot.onPickupFromSlot(pb, fcStack);
+                // SlotCrafting returns container items (buckets) through
+                // thePlayer.inventory.addItemStackToInventory, which only edits the FC snapshot
+                // (vanilla/server SlotCrafting.java:156-179): flush the slots FC changed.
+                pb.syncInventoryToReal();
+            } catch (Throwable t) {
+                warnFc("onPickupFromSlot", t);
+            }
+        }
+
+        private void warnFc(String what, Throwable t) {
+            warnFcFailure("[FC-TAKE] FC " + what + " on " + fcSlot.getClass().getSimpleName(), t);
         }
 
         @Override

@@ -1,13 +1,10 @@
 package btw.forge.mixin;
 
 import btw.forge.PlayerBridge;
-import btw.forge.ProxyRegistry;
 import btw.forge.WorldBridge;
-import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -20,8 +17,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * Intercepts {@link LivingEntity} movement calculations to apply FC overrides:
  * <ul>
- *   <li>Block speed factor (movement modifiers)</li>
- *   <li>Movement penalty modifier</li>
+ *   <li>Vanilla food effect suppression for foods FC itself fed (FC ItemFood)</li>
  *   <li>Jump gating (too hungry/weak to jump)</li>
  *   <li>Jump exhaustion (custom FC values)</li>
  *   <li>Ladder gating (extreme health penalty)</li>
@@ -35,60 +31,33 @@ public abstract class LivingEntityMixin {
 
     @Shadow protected boolean jumping;
 
-    // NO getBlockSpeedFactor hook here — DELIBERATELY removed. Vanilla
-    // Entity.getBlockSpeedFactor already calls Block.getSpeedFactor() on the feet/below
-    // blocks, which BlockMixin (vanilla-with-FC-counterpart) and ProxyBlock (FC blocks)
-    // already multiply by FC's GetMovementModifier. Applying GetMovementModifier AGAIN at
-    // the LivingEntity level double-counted it — ×1.44 on hard surfaces (the "moving super
-    // fast" bug). The block-level hook is the single, correct application point; the
-    // old "safety net" here was wrong (vanilla does NOT bypass Block.getSpeedFactor).
+    // NO getBlockSpeedFactor hook: FC GetMovementModifier is applied ONLY to the on-ground input
+    // speed by PlayerMixin.btw$applyBlockMovementModifier (Player.getSpeed); Block.getSpeedFactor
+    // must stay vanilla (see BlockMixin/ProxyBlock) -- it scales carried momentum every tick, so
+    // applying the modifier there (or here as well) compounds into the sprint-jump "flying" bug.
 
-    // Suppress vanilla FoodProperties effect application for any food with an FC counterpart:
-    // FC's ItemFood.onFoodEaten already applies the FC effect via ItemStackMixin.finishUsingItem,
-    // so without this the modern effect (rotten flesh hunger, pufferfish poison, spider eye
-    // poison, ...) would apply a SECOND time. Pattern-E foods (no FC counterpart) fall through.
+    // Suppress vanilla FoodProperties effects exactly when FC fed this eat (PlayerBridge.fcFedForEat, the same
+    // test FoodDataMixin.btw$eatItem uses for the nutrition): the FC ItemFood's onEaten already ran its 1.5.2
+    // onFoodEaten effect (vanilla/server ItemFood.java:72-82: FC food poisoning on raw meat, ...) via
+    // ItemStackMixin.btw$finishUsing, so the modern effect (raw chicken hunger, rotten flesh hunger, ...) would
+    // apply a SECOND time. Everything FC did not feed keeps its vanilla effects -- modern-only foods such as
+    // pufferfish, and any non-player eater. Golden apple, spider eye and poisonous potato are 1.5.2 ItemFoods
+    // since FD-R1, so FC applies their 1.5.2 effect once. The old test (any FC item at the legacy id) also
+    // cancelled vanilla effects for foods FC never fed.
     @Inject(method = "addEatEffect", at = @At("HEAD"), cancellable = true)
     private void btw$addEatEffect(net.minecraft.world.item.ItemStack stack,
                                   net.minecraft.world.level.Level level,
                                   LivingEntity entity, CallbackInfo ci) {
-        int legacyId;
-        if (stack.getItem() instanceof net.minecraft.world.item.BlockItem bi) {
-            legacyId = ProxyRegistry.getBlockId(bi.getBlock());
-        } else {
-            legacyId = ProxyRegistry.getItemId(stack.getItem());
-        }
-        if (legacyId > 0 && legacyId < btw.modern.Item.itemsList.length
-                && btw.modern.Item.itemsList[legacyId] != null) {
+        if (PlayerBridge.fcFedForEat(stack.getItem(), entity)) {
             ci.cancel();
         }
     }
 
-    // ================================================================
-    // FC movement penalty modifier — applies to ALL movement
-    // ================================================================
-
-    @Inject(method = "getSpeed", at = @At("RETURN"), cancellable = true)
-    private void btw$applyMovementPenalty(CallbackInfoReturnable<Float> cir) {
-        LivingEntity self = (LivingEntity) (Object) this;
-        if (self instanceof ServerPlayer sp) {
-            PlayerBridge pb = PlayerBridge.getOrCreate(sp);
-            float original = cir.getReturnValue();
-            float value = original;
-            // FC health/hunger/fat/gloom penalty (always <= 1.0).
-            float penalty = pb.GetLandMovementModifier();
-            if (penalty < 1.0F) {
-                value *= penalty;
-            }
-            // FC hard-surface +20% bonus, applied to the INPUT speed (bounded, airborne-safe),
-            // exactly as FC's moveEntityWithHeading. NOT via getSpeedFactor, which multiplies
-            // carried momentum every tick and compounds to unbounded speed when airborne over a
-            // hard block (the sprint-jump "flying" bug). Must match ClientPlayerSpeedMixin.
-            value *= btw.forge.FCMovementBonus.getBlockBelowSpeedBonus(self);
-            if (value != original) {
-                cir.setReturnValue(value);
-            }
-        }
-    }
+    // NO getSpeed hook here: Player overrides LivingEntity.getSpeed without calling super
+    // (Player.java:1442-1444), so an injection here never ran for players, and FC puppets don't use
+    // MC travel (Proxy*.travel are no-ops; FC applies its own getSpeedModifier in fc.onUpdate()).
+    // FC land penalty = MOVEMENT_SPEED attribute (FCGameplayBridge.onPlayerTick); FC block movement
+    // modifier = PlayerMixin.btw$applyBlockMovementModifier.
 
     // ================================================================
     // FC jump gating — cannot jump when too hungry/weak
@@ -271,33 +240,6 @@ public abstract class LivingEntityMixin {
             int newAir = currentAir + 9;
             if (newAir > maxAir) newAir = maxAir;
             sp.setAirSupply(newAir);
-        }
-    }
-
-    // ================================================================
-    // DEBUG: Instrument causeFallDamage to diagnose missing fall damage
-    // ================================================================
-
-    @Inject(method = "causeFallDamage", at = @At("HEAD"))
-    private void btw$debugFallDamage(float fallDistance, float multiplier,
-            net.minecraft.world.damagesource.DamageSource source,
-            CallbackInfoReturnable<Boolean> cir) {
-        LivingEntity self = (LivingEntity) (Object) this;
-        if (self instanceof net.minecraft.server.level.ServerPlayer sp) {
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Fall").info(
-                    "LivingEntity.causeFallDamage: dist={} mult={} health={} mayfly={}",
-                    fallDistance, multiplier, self.getHealth(), sp.getAbilities().mayfly);
-        }
-    }
-
-    @Inject(method = "checkFallDamage", at = @At("HEAD"))
-    private void btw$debugCheckFall(double y, boolean onGround,
-            BlockState state, BlockPos pos, CallbackInfo ci) {
-        LivingEntity self = (LivingEntity) (Object) this;
-        if (self instanceof net.minecraft.server.level.ServerPlayer && self.fallDistance > 3.0F && onGround) {
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Fall").info(
-                    "checkFallDamage: onGround={} fallDist={} y={} block={}",
-                    onGround, self.fallDistance, y, state.getBlock());
         }
     }
 }

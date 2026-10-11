@@ -3,6 +3,7 @@ package btw.forge;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.EntityAttributeCreationEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
+import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -111,6 +112,17 @@ public class BTWForgeMod {
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
         LOGGER.info("Better Than Wolves: Server stopping...");
+    }
+
+    /**
+     * Fires after stopServer() has saved and closed every level (STOPPING is too early -- the
+     * final save comes after it). Releases the static legacy server and the bridge caches so
+     * the next world never sees this one (triage RE2/RE3).
+     */
+    @SubscribeEvent
+    public void onServerStopped(ServerStoppedEvent event) {
+        LOGGER.info("Better Than Wolves: Server stopped, releasing legacy server state...");
+        BTWLifecycle.onServerStopped(event.getServer());
     }
 
     /**

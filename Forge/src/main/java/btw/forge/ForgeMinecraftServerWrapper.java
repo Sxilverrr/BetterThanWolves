@@ -38,14 +38,31 @@ public class ForgeMinecraftServerWrapper extends btw.modern.MinecraftServer {
         return configManager;
     }
 
+    // 1.5.2 MinecraftServer.worldServerForDimension (vanilla/server MinecraftServer.java:843-846):
+    // -1 -> worldServers[1] (nether), 1 -> worldServers[2] (end), anything else -> [0].
+    // BTWLifecycle.wireWorlds fills the slots in that 1.5.2 order.
+    @Override
     public WorldServer worldServerForDimension(int dimension) {
-        if (worldServers != null && dimension >= 0 && dimension < worldServers.length) {
-            return worldServers[dimension];
-        }
-        if (worldServers != null && worldServers.length > 0) {
-            return worldServers[0];
-        }
-        return null;
+        WorldServer[] worlds = worldServers;
+        if (worlds == null || worlds.length == 0) return null;
+        int index = dimension == -1 ? 1 : (dimension == 1 ? 2 : 0);
+        WorldServer world = index < worlds.length ? worlds[index] : null;
+        return world != null ? world : worlds[0];
+    }
+
+    // 1.5.2 reads allow-nether here (vanilla/server MinecraftServer.java:681-684,
+    // DedicatedServer.java:264-267). Its ONLY readers are the frozen Entity / EntityMinecart
+    // portal blocks (vanilla/client Entity.java:462-485, EntityMinecart.java:268), which became
+    // live once WorldBridge is a WorldServer. If this returned true, an FC puppet with inPortal
+    // set -- frozen EntityThrowable.onUpdate sets it when an FC urn / spider-web projectile hits
+    // a portal block (vanilla/client EntityThrowable.java:230-233; nether_portal maps to legacy 90)
+    // -- would run the 1.5.2 travelToDimension: WorldBridge.removeEntity discards its proxy, then
+    // the missing ServerConfigurationManager.transferEntityToWorld throws. Dimension travel of
+    // puppets belongs to the 1.20.1 engine, so the 1.5.2 path is kept inert exactly as it was
+    // while WorldBridge was not a WorldServer.
+    @Override
+    public boolean getAllowNether() {
+        return false;
     }
 
     public ILogAgent getLogAgent() {

@@ -13,14 +13,18 @@ public abstract class BlockFluid extends Block {
     }
 
     /**
-     * Returns the percentage of the block that is filled with fluid for rendering.
-     * Meta 0 = full source block, meta 1-7 = decreasing levels, meta >= 8 = falling.
+     * 1.5.2 BlockFluid.getFluidHeightPercent (vanilla/client BlockFluid.java:79-87): the fraction of the
+     * block that is AIR above the fluid surface, (meta + 1) / 9, so a source block (meta 0) is 1/9 air.
+     * Meta 1-7 = decreasing levels, meta >= 8 = falling (treated as full). All callers expect this
+     * formula: frozen Entity.isInsideOfMaterial (vanilla Entity.java:1198, the drowning check),
+     * World.handleMaterialAcceleration and RenderBlocks.getFluidHeight. It used to return the filled
+     * fraction (8 - meta) / 9, which put a source block's surface at y + 2/9 for drowning.
      */
     public static float getFluidHeightPercent(int meta) {
         if (meta >= 8) {
             meta = 0;
         }
-        return (float)(8 - meta) / 9.0F;
+        return (float)(meta + 1) / 9.0F;
     }
 
     /**
@@ -132,6 +136,14 @@ public abstract class BlockFluid extends Block {
     @Override
     public boolean isCollidable() {
         return false;
+    }
+
+    // 1.5.2 BlockFluid.getCollisionBoundingBoxFromPool (vanilla/client BlockFluid.java:182-185): fluids have
+    // no collision box. Without it water and lava inherited Block's full cube, so FC mobs walked on the
+    // surface and Entity.handleWaterMovement never set inWater.
+    @Override
+    public AxisAlignedBB getCollisionBoundingBoxFromPool(World world, int x, int y, int z) {
+        return null;
     }
 
     @Override

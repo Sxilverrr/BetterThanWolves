@@ -13,6 +13,78 @@ public class ItemBlock extends Item {
         return this.blockID;
     }
 
+    /** 1.5.2 ItemBlock.field_94588_b: the item icon registered from Block.getItemIconName (null for nearly all). */
+    private Icon itemBlockIcon;
+
+    /** Block classes whose getIcon threw for the item icon; only the log is once per class (see getIconFromDamage). */
+    private static final java.util.Set<Class<?>> LOGGED_ICON_FAILURES =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private Block getBlockForItem() {
+        return this.blockID >= 0 && this.blockID < Block.blocksList.length ? Block.blocksList[this.blockID] : null;
+    }
+
+    // 1.5.2 ItemBlock.getSpriteNumber (vanilla/client ItemBlock.java:42-48): 0 (/terrain.png) unless the block names
+    // an item icon. ItemStack.getItemSpriteNumber reads it for ItemRenderer.renderItem (mob-held and head-slot
+    // items), RenderItem.doRenderItem (items FC tile renderers embed) and FCTileEntityBasketWickerRenderer, which
+    // take their 3D-block branch only for 0; with Item's inherited 1 every block item was drawn as a flat icon.
+    // The capture resolves sprites by icon name, so the number only picks the branch and the sheet bind.
+    @Override
+    public int getItemSpriteNumber() {
+        Block block = this.getBlockForItem();
+        if (block == null) {
+            return super.getItemSpriteNumber();
+        }
+        return block.getItemIconName() != null ? 1 : 0;
+    }
+
+    // 1.5.2 ItemBlock.getIconFromDamage (vanilla/client ItemBlock.java:50-56): the registered item icon, else the
+    // block's top texture at metadata 0 (the flat icon of a held torch, flower or rail). Item's inherited body
+    // returned the NamedIcon of the unlocalized name, which names no texture for most blocks. Subclasses with
+    // per-damage icons (FCItemBlockLeaves, FCItemBlockLegacySiding, ...) still override this.
+    // Port: block icons are registered lazily (FCBakedModel's global registerIcons pass runs on the first FC block
+    // capture), so the top icon can still be null here; 1.5.2 registers every block icon before anything draws.
+    // Rather than return null (ItemRenderer.renderItem would then draw nothing), fall back to Item's registered
+    // itemIcon, the icon these items drew before this override.
+    @Override
+    public Icon getIconFromDamage(int damage) {
+        if (this.itemBlockIcon != null) {
+            return this.itemBlockIcon;
+        }
+        Block block = this.getBlockForItem();
+        if (block == null) {
+            return super.getIconFromDamage(damage);
+        }
+        Icon icon;
+        try {
+            icon = block.getBlockTextureFromSide(1);
+        } catch (Throwable t) {
+            // An FC getIcon override that throws (e.g. before its icons are registered) must not abort the
+            // entity / tile-entity capture drawing this item. The failure may be transient, so every call
+            // retries; only the log is once per class.
+            if (LOGGED_ICON_FAILURES.add(block.getClass())) {
+                org.apache.logging.log4j.LogManager.getLogger("BTW-ItemBlock").warn(
+                        "{}.getIcon failed for its item icon; using the item's own icon while it fails: {}",
+                        block.getClass().getSimpleName(), t.toString());
+            }
+            icon = null;
+        }
+        return icon != null ? icon : super.getIconFromDamage(damage);
+    }
+
+    // 1.5.2 ItemBlock.registerIcons (vanilla/client ItemBlock.java:229-237) registers the block's item icon name,
+    // if any. Port: Item.registerIcons still runs first, so itemIcon keeps the value it had before this override
+    // (Item.GetHopperFilterIcon and func_94597_g read it).
+    @Override
+    public void registerIcons(IconRegister register) {
+        super.registerIcons(register);
+        Block block = this.getBlockForItem();
+        String iconName = block != null ? block.getItemIconName() : null;
+        if (iconName != null) {
+            this.itemBlockIcon = register.registerIcon(iconName);
+        }
+    }
+
     /**
      * Returns the block ID to place. Subclasses like FCItemBlockLegacySubstitution
      * override this to place a different block than the one this item represents.

@@ -216,6 +216,11 @@ public abstract class Block {
     public RenderBlocks m_currentBlockRenderer;
 
     protected Block(int blockID, Material material) {
+        // 1.5.2 Block ctor (vanilla/client Block.java:474) defaults every block's step sound; blocks
+        // that never call setStepSound (the initializeVanillaBlocks placeholders, many FC classes)
+        // relied on it. Without it, EntityLiving fall-landing (EntityLiving.java:1466-1471)
+        // dereferenced a null stepSound and aborted the mob's tick (triage HAI-10).
+        this.stepSound = soundPowderFootstep;
         this.blockID = blockID;
         this.blockMaterial = material;
         // Self-register in the global blocksList
@@ -358,7 +363,9 @@ public abstract class Block {
     public boolean hasTileEntity() { return this.isBlockContainer; }
     public boolean isBlockSolid(IBlockAccess blockAccess, int x, int y, int z, int side) { return true; }
     public boolean isOpaqueCube() { return true; }
-    public boolean canCollideCheck(int metadata, boolean hitIfLiquid) { return true; }
+    // 1.5.2 Block.canCollideCheck (vanilla/client Block.java:762-765): delegates to isCollidable(), so
+    // BlockFire's isCollidable() == false keeps fire out of FC ray traces (FCUtilsWorld rayTraceBlocks clones)
+    public boolean canCollideCheck(int metadata, boolean hitIfLiquid) { return this.isCollidable(); }
     public boolean isCollidable() { return true; }
     public boolean canProvidePower() { return false; }
     public boolean canSilkHarvest() { return false; }
@@ -486,13 +493,83 @@ public abstract class Block {
         }
     }
 
+    // 1.5.2 (FCMOD) Block.getCollisionBoundingBoxFromPool (vanilla/client Block.java:3373-3376): the
+    // per-position state bounds offset into the world. This used to read the shared minX..maxZ fields, i.e.
+    // the constructor bounds or whatever setBlockBoundsBasedOnState last wrote for ANY position of the block,
+    // so FC blocks that define their shape only through GetBlockBoundsFromPoolBasedOnState (ladders, chests,
+    // FC slabs, siding, mouldings, axles, ...) collided as a full cube or as their last-traced neighbour.
+    // Blocks that don't override GetBlockBoundsFromPoolBasedOnState are unchanged: the default returns the
+    // fields box (GetFixedBlockBoundsFromPool).
     public AxisAlignedBB getCollisionBoundingBoxFromPool(World world, int x, int y, int z) {
-        return AxisAlignedBB.getBoundingBox(
-            (double)x + this.minX, (double)y + this.minY, (double)z + this.minZ,
-            (double)x + this.maxX, (double)y + this.maxY, (double)z + this.maxZ);
+        return getStateBoundsInWorld(world, x, y, z);
     }
 
+    /** Block classes whose GetBlockBoundsFromPoolBasedOnState threw or returned null (logged once each). */
+    private static final java.util.Set<Class<?>> STATE_BOUNDS_FAILURES =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * GetBlockBoundsFromPoolBasedOnState(blockAccess, x, y, z).offset(x, y, z): the shared body of the 1.5.2
+     * collision and selection boxes (vanilla/client Block.java:3373-3376, 3769-3772). Port guard: the state
+     * bounds run FC code against the bridge world on the entity-movement path, so a throw or a null falls back
+     * to the fields box (the previous behaviour) with one log line per block class instead of escaping into
+     * the entity tick.
+     */
+    private AxisAlignedBB getStateBoundsInWorld(IBlockAccess blockAccess, int x, int y, int z) {
+        AxisAlignedBB bounds = null;
+        Throwable failure = null;
+
+        try {
+            bounds = GetBlockBoundsFromPoolBasedOnState(blockAccess, x, y, z);
+        } catch (Throwable t) {
+            failure = t;
+        }
+
+        if (bounds == null) {
+            if (STATE_BOUNDS_FAILURES.add(getClass())) {
+                org.apache.logging.log4j.LogManager.getLogger("BTW-Block").warn(
+                        "[BLOCK-BOUNDS] {}.GetBlockBoundsFromPoolBasedOnState at {},{},{} {}; using the field bounds"
+                                + " (further failures of this class suppressed)",
+                        getClass().getName(), x, y, z, failure != null ? "threw " + failure : "returned null");
+            }
+            return AxisAlignedBB.getBoundingBox(
+                (double)x + this.minX, (double)y + this.minY, (double)z + this.minZ,
+                (double)x + this.maxX, (double)y + this.maxY, (double)z + this.maxZ);
+        }
+
+        return bounds.offset((double)x, (double)y, (double)z);
+    }
+
+    /**
+     * Whether a block class overrides GetBlockBoundsFromPoolBasedOnState (see collisionRayTrace); getMethod
+     * resolves the most-derived public declaration, so a declaring class other than Block means an override.
+     */
+    private static final ClassValue<Boolean> OVERRIDES_STATE_BOUNDS = new ClassValue<Boolean>() {
+        @Override
+        protected Boolean computeValue(Class<?> type) {
+            try {
+                return type.getMethod("GetBlockBoundsFromPoolBasedOnState",
+                        IBlockAccess.class, int.class, int.class, int.class).getDeclaringClass() != Block.class;
+            } catch (Throwable t) {
+                return Boolean.FALSE;
+            }
+        }
+    };
+
+    // 1.5.2 (FCMOD) Block.collisionRayTrace (vanilla/client Block.java:3384-3388) returns
+    // CollisionRayTraceVsBlockBounds, i.e. it traces the per-position state bounds instead of calling
+    // setBlockBoundsBasedOnState and tracing the shared minX..maxZ fields. Blocks that override
+    // GetBlockBoundsFromPoolBasedOnState take that FCMOD path, so FC ray traces (FCUtilsWorld rayTraceBlocks
+    // clones) agree with the collision/selection boxes, including FC blocks that make setBlockBoundsBasedOnState
+    // a no-op (FCBlockFenceGate, FCBlockChest, FCBlockLever, FCBlockButton, FCBlockSign, ...), and no longer
+    // write the shared fields. Other blocks keep the vanilla form below: the Modern-Common vanilla-style classes
+    // (BlockChest, BlockFence) keep their per-position shape only in setBlockBoundsBasedOnState, and for every
+    // remaining block the two forms trace the same box (the default state bounds are the fields box).
     public MovingObjectPosition collisionRayTrace(World world, int x, int y, int z, Vec3 startVec, Vec3 endVec) {
+        if (OVERRIDES_STATE_BOUNDS.get(getClass())) {
+            return CollisionRayTraceVsBlockBounds(world, x, y, z, startVec, endVec);
+        }
+
         this.setBlockBoundsBasedOnState(world, x, y, z);
 
         Vec3 adjustedStart = startVec.addVector((double)(-x), (double)(-y), (double)(-z));
@@ -660,20 +737,14 @@ public abstract class Block {
     // --- BTW-added: Turntable methods ---
 
     public boolean CanRotateOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return blockAccess.isBlockNormalCube(i, j, k); }
-    public boolean CanTransmitRotationHorizontallyOnTurntable(IBlockAccess blockAccess, int i, int j, int k) {
-        boolean result = blockAccess.isBlockNormalCube(i, j, k);
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Block").info("[TRANSMIT-H] block={} at {},{},{} isNormalCube={}", getClass().getSimpleName(), i, j, k, result);
-        return result;
-    }
+    public boolean CanTransmitRotationHorizontallyOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return blockAccess.isBlockNormalCube(i, j, k); }
     public boolean CanTransmitRotationVerticallyOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return blockAccess.isBlockNormalCube(i, j, k); }
+    // 1.5.2 Block.RotateOnTurntable (vanilla/client Block.java:3134-3147)
     public int RotateOnTurntable(World world, int i, int j, int k, boolean bReverse, int iCraftingCounter) {
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Block").info("[ROTATE] RotateOnTurntable at {},{},{} block={} id={}", i, j, k, getClass().getSimpleName(), blockID);
         OnRotatedOnTurntable(world, i, j, k);
         if (!RotateAroundJAxis(world, i, j, k, bReverse)) {
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Block").info("[ROTATE] RotateAroundJAxis returned false — no metadata change");
+            // notify the surrounding blocks of a change if no facing change actually takes place, so that buddy can pick up on it
             world.notifyBlocksOfNeighborChange(i, j, k, blockID);
-        } else {
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Block").info("[ROTATE] RotateAroundJAxis returned true — metadata changed");
         }
         return iCraftingCounter;
     }
@@ -689,7 +760,6 @@ public abstract class Block {
     public boolean RotateAroundJAxis(World world, int i, int j, int k, boolean bReverse) {
         int oldMeta = world.getBlockMetadata(i, j, k);
         int newMeta = RotateMetadataAroundJAxis(oldMeta, bReverse);
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Block").info("[ROTATE] RotateAroundJAxis: block={} oldMeta={} newMeta={} class={}", getClass().getSimpleName(), oldMeta, newMeta, getClass().getName());
         if (newMeta != oldMeta) {
             world.setBlockMetadataWithClient(i, j, k, newMeta);
             return true;
@@ -723,13 +793,7 @@ public abstract class Block {
         }
         return iCraftingCounter;
     }
-    public boolean CanRotateAroundBlockOnTurntableToFacing(World world, int i, int j, int k, int iFacing) {
-        // Log the ACTUAL MC block at this position for debugging ID mapping
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Block").info("[ATTACHED] block={} id={} at {},{},{} facing={} → false. world={}",
-                getClass().getSimpleName(), blockID, i, j, k, iFacing,
-                world != null ? world.getClass().getSimpleName() : "null");
-        return false;
-    }
+    public boolean CanRotateAroundBlockOnTurntableToFacing(World world, int i, int j, int k, int iFacing) { return false; }
     public boolean OnRotatedAroundBlockOnTurntableToFacing(World world, int i, int j, int k, int iFacing) { return true; }
     public int GetNewMetadataRotatedAroundBlockOnTurntableToFacing(World world, int i, int j, int k, int iInitialFacing, int iRotatedFacing) { return 0; }
     public int ConvertFacingToTopTextureRotation(int iFacing) { return 0; }
@@ -776,9 +840,26 @@ public abstract class Block {
 
     public AxisAlignedBB GetBlockBoundsFromPoolBasedOnState(IBlockAccess blockAccess, int i, int j, int k) { return GetFixedBlockBoundsFromPool(); }
 
-    public MovingObjectPosition MouseOverRayTrace(World world, int i, int j, int k, Vec3 startVec, Vec3 endVec) { return null; }
+    // 1.5.2 (FCMOD) Block.MouseOverRayTrace (vanilla/client Block.java:3390-3394)
+    public MovingObjectPosition MouseOverRayTrace(World world, int i, int j, int k, Vec3 startVec, Vec3 endVec) {
+        return collisionRayTrace(world, i, j, k, startVec, endVec);
+    }
 
-    public MovingObjectPosition CollisionRayTraceVsBlockBounds(World world, int i, int j, int k, Vec3 startVec, Vec3 endVec) { return null; }
+    // 1.5.2 (FCMOD) Block.CollisionRayTraceVsBlockBounds (vanilla/client Block.java:3396-3411): the absolute ray
+    // against the state bounds offset into the world, so calculateIntercept's hitVec (a point on the ray) is
+    // already absolute. The state box goes through the same guard as the collision/selection boxes.
+    public MovingObjectPosition CollisionRayTraceVsBlockBounds(World world, int i, int j, int k, Vec3 startVec, Vec3 endVec) {
+        AxisAlignedBB collisionBox = getStateBoundsInWorld(world, i, j, k);
+        MovingObjectPosition collisionPoint = collisionBox.calculateIntercept(startVec, endVec);
+
+        if (collisionPoint != null) {
+            collisionPoint.blockX = i;
+            collisionPoint.blockY = j;
+            collisionPoint.blockZ = k;
+        }
+
+        return collisionPoint;
+    }
 
     // --- BTW-added: Grazing methods ---
 
@@ -985,10 +1066,10 @@ public abstract class Block {
         return 0;
     }
 
+    // 1.5.2 (FCMOD) Block.getSelectedBoundingBoxFromPool (vanilla/client Block.java:3769-3772): same per-position
+    // state bounds as the collision box (it read the shared fields too)
     public AxisAlignedBB getSelectedBoundingBoxFromPool(World world, int x, int y, int z) {
-        return AxisAlignedBB.getBoundingBox(
-            (double)x + this.minX, (double)y + this.minY, (double)z + this.minZ,
-            (double)x + this.maxX, (double)y + this.maxY, (double)z + this.maxZ);
+        return getStateBoundsInWorld(world, x, y, z);
     }
 
     public String getUnlocalizedName2() {
@@ -1010,8 +1091,12 @@ public abstract class Block {
         return GetFixedBlockBoundsFromPool();
     }
 
+    // 1.5.2 (FCMOD) Block.DoesItemRenderAsBlock (vanilla/client Block.java:3706-3709): the item draws as a 3D
+    // block only for the render types RenderBlocks.DoesRenderIDRenderItemIn3d lists (0, 10, 11, 13, 16, 22, ...);
+    // plants (1), torches (2), crops (6), ladders (8) and rails (9) draw as flat icons. Consumers: ItemRenderer,
+    // RenderItem, RenderBiped, RenderSnowMan, RenderWitch and FCTileEntityBasketWickerRenderer:104.
     public boolean DoesItemRenderAsBlock(int iItemDamage) {
-        return true;
+        return RenderBlocks.DoesRenderIDRenderItemIn3d(getRenderType());
     }
 
     public boolean ShouldRenderNeighborHalfSlabSide(IBlockAccess blockAccess, int x, int y, int z, int side, boolean isUpsideDown) {
@@ -1074,7 +1159,75 @@ public abstract class Block {
     public void RenderCookingByKilnOverlay(RenderBlocks renderBlocks, int i, int j, int k, boolean bCooking) {
     }
 
-    public void RenderCrossHatch(RenderBlocks renderBlocks, int i, int j, int k, Icon icon, double dYOffset, double dHeight) {
+    // 1.5.2 (FCMOD) Block.RenderCrossHatch (vanilla/client Block.java:3796-3854), verbatim: the
+    // '#'-shaped double-sided planes of wheat crops (FCBlockCrops.RenderCrops:311) and weeds
+    // (FCBlockWeeds.RenderWeeds:184). Callers set brightness and colour first.
+    // Capture-bridge adaptations: the quads are tagged with the icon's name explicitly (as
+    // GetIconByIndex does) and given an up normal (as RenderBlocks.renderCrossedSquares does) so
+    // the baked quads take no directional shade, like 1.5.2's unlit plant planes.
+    public void RenderCrossHatch(RenderBlocks renderer, int i, int j, int k, Icon icon,
+                                 double dBorderWidth, double dVerticalOffset) {
+        Tessellator tessellator = Tessellator.instance;
+
+        if (icon != null) {
+            tessellator.setCurrentTextureName(icon.getIconName());
+        }
+        tessellator.setNormal(0.0F, 1.0F, 0.0F);
+
+        double dX = i;
+        double dY = j + dVerticalOffset;
+        double dZ = k;
+
+        double dMinU = icon.getMinU();
+        double dMinV = icon.getMinV();
+        double dMaxU = icon.getMaxU();
+        double dMaxV = icon.getMaxV();
+
+        double dX1 = dX + 1D - dBorderWidth;
+        double dX2 = dX + dBorderWidth;
+
+        double dZ1 = dZ;
+        double dZ2 = dZ + 1D;
+
+        tessellator.addVertexWithUV(dX1, dY + 1D, dZ1, dMinU, dMinV);
+        tessellator.addVertexWithUV(dX1, dY + 0D, dZ1, dMinU, dMaxV);
+        tessellator.addVertexWithUV(dX1, dY + 0D, dZ2, dMaxU, dMaxV);
+        tessellator.addVertexWithUV(dX1, dY + 1D, dZ2, dMaxU, dMinV);
+        tessellator.addVertexWithUV(dX1, dY + 1D, dZ2, dMinU, dMinV);
+        tessellator.addVertexWithUV(dX1, dY + 0D, dZ2, dMinU, dMaxV);
+        tessellator.addVertexWithUV(dX1, dY + 0D, dZ1, dMaxU, dMaxV);
+        tessellator.addVertexWithUV(dX1, dY + 1D, dZ1, dMaxU, dMinV);
+        tessellator.addVertexWithUV(dX2, dY + 1D, dZ2, dMinU, dMinV);
+        tessellator.addVertexWithUV(dX2, dY + 0D, dZ2, dMinU, dMaxV);
+        tessellator.addVertexWithUV(dX2, dY + 0D, dZ1, dMaxU, dMaxV);
+        tessellator.addVertexWithUV(dX2, dY + 1D, dZ1, dMaxU, dMinV);
+        tessellator.addVertexWithUV(dX2, dY + 1D, dZ1, dMinU, dMinV);
+        tessellator.addVertexWithUV(dX2, dY + 0D, dZ1, dMinU, dMaxV);
+        tessellator.addVertexWithUV(dX2, dY + 0D, dZ2, dMaxU, dMaxV);
+        tessellator.addVertexWithUV(dX2, dY + 1D, dZ2, dMaxU, dMinV);
+
+        dX1 = dX;
+        dX2 = dX + 1D;
+
+        dZ1 = dZ + dBorderWidth;
+        dZ2 = dZ + 1D - dBorderWidth;
+
+        tessellator.addVertexWithUV(dX1, dY + 1D, dZ1, dMinU, dMinV);
+        tessellator.addVertexWithUV(dX1, dY + 0D, dZ1, dMinU, dMaxV);
+        tessellator.addVertexWithUV(dX2, dY + 0D, dZ1, dMaxU, dMaxV);
+        tessellator.addVertexWithUV(dX2, dY + 1D, dZ1, dMaxU, dMinV);
+        tessellator.addVertexWithUV(dX2, dY + 1D, dZ1, dMinU, dMinV);
+        tessellator.addVertexWithUV(dX2, dY + 0D, dZ1, dMinU, dMaxV);
+        tessellator.addVertexWithUV(dX1, dY + 0D, dZ1, dMaxU, dMaxV);
+        tessellator.addVertexWithUV(dX1, dY + 1D, dZ1, dMaxU, dMinV);
+        tessellator.addVertexWithUV(dX2, dY + 1D, dZ2, dMinU, dMinV);
+        tessellator.addVertexWithUV(dX2, dY + 0D, dZ2, dMinU, dMaxV);
+        tessellator.addVertexWithUV(dX1, dY + 0D, dZ2, dMaxU, dMaxV);
+        tessellator.addVertexWithUV(dX1, dY + 1D, dZ2, dMaxU, dMinV);
+        tessellator.addVertexWithUV(dX1, dY + 1D, dZ2, dMinU, dMinV);
+        tessellator.addVertexWithUV(dX1, dY + 0D, dZ2, dMinU, dMaxV);
+        tessellator.addVertexWithUV(dX2, dY + 0D, dZ2, dMaxU, dMaxV);
+        tessellator.addVertexWithUV(dX2, dY + 1D, dZ2, dMaxU, dMinV);
     }
 
     public void RenderBlockSecondPass(RenderBlocks renderBlocks, int i, int j, int k, boolean bFirstPassResult) {
@@ -1207,16 +1360,10 @@ public abstract class Block {
         DropComponentItemsOnBadBreak(world, i, j, k, iMetadata, 1F);
     }
     public void DropItemsIndividualy(World world, int i, int j, int k, int iIDDropped, int iPileCount, int iDamageDropped, float fChanceOfPileDrop) {
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info(
-                "[BTW-DEBUG] DropItemsIndividualy itemID={} count={} isRemote={}",
-                iIDDropped, iPileCount, world.isRemote);
         if (!world.isRemote) {
             for (int count = 0; count < iPileCount; count++) {
                 if (world.rand.nextFloat() <= fChanceOfPileDrop) {
                     ItemStack stack = new ItemStack(iIDDropped, 1, iDamageDropped);
-                    org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info(
-                            "[BTW-DEBUG] dropping stack itemID={} item={}",
-                            stack.itemID, stack.getItem() != null ? stack.getItem().getClass().getSimpleName() : "null");
                     dropBlockAsItem_do(world, i, j, k, stack);
                 }
             }
@@ -1521,7 +1668,15 @@ public abstract class Block {
 
     // --- BTW-added: Ground cover ---
 
-    public boolean CanGroundCoverRestOnBlock(World world, int i, int j, int k) { return false; }
+    // 1.5.2 (FCMOD) Block.CanGroundCoverRestOnBlock (vanilla/client Block.java:2590-2598): any solid top surface.
+    // The old 'false' stub let ground cover rest only on FC blocks that override this, so FCBlockSnowCover (78,
+    // which MC snow layers route to through BlockBehaviorMixin.neighborChanged) failed FCBlockGroundCover
+    // .canPlaceBlockAt:54-66 on stone/dirt/grass and removed itself on every neighbour update (:69-75), and
+    // burning leaves / wood cinders never left ash on the ground (FCBlockLeaves.GenerateAshOnBurn:149-167,
+    // FCBlockAshGroundCover.AttemptToPlaceAshAt:73-89).
+    public boolean CanGroundCoverRestOnBlock(World world, int i, int j, int k) {
+        return world.doesBlockHaveSolidTopSurface(i, j, k);
+    }
     public float GroundCoverRestingOnVisualOffset(IBlockAccess blockAccess, int i, int j, int k) { return 0F; }
 
     // --- BTW-added: Grass spreading ---

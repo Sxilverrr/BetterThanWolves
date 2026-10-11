@@ -26,20 +26,16 @@ public class ItemInWorldManager {
      */
     public boolean tryHarvestBlock(int i, int j, int k, int iFromSide) {
         if (theWorld == null || thisPlayerMP == null) {
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] tryHarvestBlock: world or player null");
             return false;
         }
 
         int iBlockID = theWorld.getBlockId(i, j, k);
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] tryHarvestBlock at " + i + "," + j + "," + k + " blockID=" + iBlockID);
         if (iBlockID <= 0) return false;
 
         Block block = Block.blocksList[iBlockID];
         if (block == null) {
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] blocksList[" + iBlockID + "] is null");
             return false;
         }
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] block class: " + block.getClass().getSimpleName());
 
         int iMetadata = theWorld.getBlockMetadata(i, j, k);
         // NOTE: break particles/sound are handled by the vanilla client when
@@ -48,40 +44,31 @@ public class ItemInWorldManager {
         // (modern registry ID), which causes wrong particle textures.
 
         ItemStack currentStack = thisPlayerMP.getCurrentEquippedItem();
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] currentStack: " + (currentStack != null ? "id=" + currentStack.itemID : "null"));
 
         boolean bRemovingBlock = true;
         boolean bConvertingBlock = false;
 
         boolean bHarvestingBlock = thisPlayerMP.canHarvestBlock(block, i, j, k);
-        org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] canHarvest=" + bHarvestingBlock);
 
         if (!bHarvestingBlock) {
             bConvertingBlock = block.CanConvertBlock(currentStack, theWorld, i, j, k);
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] canConvert=" + bConvertingBlock);
 
             if (bConvertingBlock) {
                 boolean converted = block.ConvertBlock(currentStack, theWorld, i, j, k, iFromSide);
                 bRemovingBlock = !converted;
-                org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] ConvertBlock returned " + converted + ", removing=" + bRemovingBlock);
             }
         }
 
         if (bRemovingBlock) {
             boolean bRemoved = theWorld.setBlockToAir(i, j, k);
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] setBlockToAir=" + bRemoved + " converting=" + bConvertingBlock);
 
             if (bRemoved && !bConvertingBlock) {
                 if (bHarvestingBlock) {
-                    org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] calling harvestBlock");
                     block.harvestBlock(theWorld, thisPlayerMP, i, j, k, iMetadata);
                 } else {
-                    org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] calling OnBlockDestroyedWithImproperTool");
                     block.OnBlockDestroyedWithImproperTool(theWorld, thisPlayerMP, i, j, k, iMetadata);
                 }
             }
-        } else {
-            org.apache.logging.log4j.LogManager.getLogger("BTW-Harvest").info("[BTW-DEBUG] block NOT removed (converted in place)");
         }
 
         // Damage the held tool

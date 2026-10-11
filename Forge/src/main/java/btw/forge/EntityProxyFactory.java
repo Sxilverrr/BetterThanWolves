@@ -27,12 +27,31 @@ import org.apache.logging.log4j.Logger;
  * </ul>
  *
  * If a registered {@link EntityType} exists for the FC entity's class
- * (see {@link BTWEntityRegistration}), the factory uses that type.
- * Otherwise a generic type is used as a fallback.
+ * (see {@link BTWEntityRegistration}), the factory uses that type. Plain
+ * (non-living) classes without one fall back to the generic {@code fc_entity}
+ * type. Living classes without one are refused (null + one WARN per class):
+ * a borrowed vanilla type would be built client-side as that vanilla mob
+ * (Forge SpawnEntity -> type.create), saved under the vanilla id (FCClassName
+ * lost on load) and then converted by {@link VanillaMobReplacer}.
  */
 public class EntityProxyFactory {
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-EntityProxyFactory");
+
+    private static final java.util.Set<String> WARNED_UNREGISTERED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Living FC classes need their own EntityType (see the class javadoc). Returns null, which
+     * WorldBridge.spawnEntityInWorld turns into a logged "not spawned".
+     */
+    private static net.minecraft.world.entity.Entity refuseUnregistered(btw.modern.Entity fcEntity) {
+        if (WARNED_UNREGISTERED.add(fcEntity.getClass().getName())) {
+            LOGGER.warn("No BTW EntityType for living FC class {}; not spawning it (register it in BTWEntityRegistration).",
+                    fcEntity.getClass().getName());
+        }
+        return null;
+    }
 
     /**
      * Creates a Forge proxy entity for the given FC entity.
@@ -47,6 +66,13 @@ public class EntityProxyFactory {
 
         if (fcEntity == null) {
             LOGGER.warn("createProxy called with null FC entity");
+            return null;
+        }
+
+        // An ItemEntityBridge (design_items U3) is a view of an ItemEntity already in the world;
+        // converting it again (createItemEntity) would spawn a second copy of its stack.
+        if (fcEntity instanceof ItemEntityBridge) {
+            LOGGER.warn("createProxy called with a live ItemEntityBridge (id={}) - ignored", fcEntity.entityId);
             return null;
         }
 
@@ -110,8 +136,8 @@ public class EntityProxyFactory {
             EntityType<?> registeredType,
             Level level) {
 
-        EntityType<ProxyAnimal> type = (EntityType<ProxyAnimal>)
-                (registeredType != null ? registeredType : EntityType.PIG);
+        if (registeredType == null) return refuseUnregistered(fcEntity);
+        EntityType<ProxyAnimal> type = (EntityType<ProxyAnimal>) registeredType;
         ProxyAnimal proxy = new ProxyAnimal(type, level);
         applyPositionFromFc(proxy, fcEntity);
         proxy.setFcEntity(fcEntity);
@@ -125,8 +151,8 @@ public class EntityProxyFactory {
             EntityType<?> registeredType,
             Level level) {
 
-        EntityType<ProxyMob> type = (EntityType<ProxyMob>)
-                (registeredType != null ? registeredType : EntityType.ZOMBIE);
+        if (registeredType == null) return refuseUnregistered(fcEntity);
+        EntityType<ProxyMob> type = (EntityType<ProxyMob>) registeredType;
         ProxyMob proxy = new ProxyMob(type, level);
         applyPositionFromFc(proxy, fcEntity);
         proxy.setFcEntity(fcEntity);
@@ -140,8 +166,8 @@ public class EntityProxyFactory {
             EntityType<?> registeredType,
             Level level) {
 
-        EntityType<ProxyPathfinderMob> type = (EntityType<ProxyPathfinderMob>)
-                (registeredType != null ? registeredType : EntityType.VILLAGER);
+        if (registeredType == null) return refuseUnregistered(fcEntity);
+        EntityType<ProxyPathfinderMob> type = (EntityType<ProxyPathfinderMob>) registeredType;
         ProxyPathfinderMob proxy = new ProxyPathfinderMob(type, level);
         applyPositionFromFc(proxy, fcEntity);
         proxy.setFcEntity(fcEntity);

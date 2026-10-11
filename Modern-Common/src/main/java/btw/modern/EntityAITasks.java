@@ -95,68 +95,118 @@ public class EntityAITasks {
         }
     }
 
+    /**
+     * Ported 1:1 from vanilla/client EntityAITasks.java:69-140; only the per-task try/catch is added.
+     *
+     * The order matters: a newly selected task is started (goalStart) BEFORE any running lower-priority task
+     * it conflicts with is reset, and that task is only dropped on a later full pass, when its own
+     * canUse fails. Both started and running tasks then get updateTask in the same tick (goalTick).
+     * FCMOD's EntityAIAttackOnCollide.resetTask clears the attack target
+     * (vanilla/client EntityAIAttackOnCollide.java:95-101), and EntityAICreeperSwell.startExecuting
+     * captures getAttackTarget() (EntityAICreeperSwell.java:33-37). Resetting conflicts first meant the
+     * swell task always captured null and the creeper fuse never lit.
+     */
     public void onUpdateTasks() {
-        tickCount++;
+        List<EntityAITaskEntry> started = new ArrayList<>();
 
-        Iterator<EntityAITaskEntry> execIt = executingTasks.iterator();
-        while (execIt.hasNext()) {
-            EntityAITaskEntry entry = execIt.next();
-            try {
-                if (!entry.action.continueExecuting()) {
-                    entry.action.resetTask();
-                    execIt.remove();
-                } else {
-                    entry.action.updateTask();
+        if (tickCount++ % TICK_RATE == 0) {
+            // Full pass (EntityAITasks.java:75-101): re-validate the running tasks and select new ones.
+            for (EntityAITaskEntry entry : taskEntries) {
+                if (executingTasks.contains(entry)) {
+                    boolean keep;
+                    try {
+                        keep = canUse(entry) && entry.action.continueExecuting();
+                    } catch (Throwable e) {
+                        logTaskFailureOnce("continueExecuting", entry.action, e);
+                        keep = false;
+                    }
+                    if (keep) continue;
+                    try {
+                        entry.action.resetTask();
+                    } catch (Throwable e) {
+                        logTaskFailureOnce("resetTask", entry.action, e);
+                    }
+                    executingTasks.remove(entry);
                 }
-            } catch (Throwable e) {
-                logTaskFailureOnce("updateTask/continue", entry.action, e);
-                try { entry.action.resetTask(); } catch (Throwable ignored) {}
-                execIt.remove();
+                // 1.5.2 falls through here, so a task dropped above may be re-selected in the same pass.
+                try {
+                    if (canUse(entry) && entry.action.shouldExecute()) {
+                        started.add(entry);
+                        executingTasks.add(entry);
+                    }
+                } catch (Throwable e) {
+                    logTaskFailureOnce("shouldExecute", entry.action, e);
+                }
+            }
+        } else {
+            // In-between ticks (EntityAITasks.java:102-116): only continueExecuting is checked.
+            Iterator<EntityAITaskEntry> it = executingTasks.iterator();
+            while (it.hasNext()) {
+                EntityAITaskEntry entry = it.next();
+                boolean keep;
+                try {
+                    keep = entry.action.continueExecuting();
+                } catch (Throwable e) {
+                    logTaskFailureOnce("continueExecuting", entry.action, e);
+                    keep = false;
+                }
+                if (!keep) {
+                    try {
+                        entry.action.resetTask();
+                    } catch (Throwable e) {
+                        logTaskFailureOnce("resetTask", entry.action, e);
+                    }
+                    it.remove();
+                }
             }
         }
 
-        if (tickCount % TICK_RATE != 0) return;
-
-        for (EntityAITaskEntry entry : taskEntries) {
-            if (executingTasks.contains(entry)) continue;
+        // goalStart (EntityAITasks.java:118-129). A task whose start throws is dropped without a reset,
+        // as before.
+        for (EntityAITaskEntry entry : started) {
             try {
-                if (entry.action.shouldExecute()) {
-                    if (canUse(entry)) {
-                        interruptConflicts(entry);
-                        try {
-                            entry.action.startExecuting();
-                            executingTasks.add(entry);
-                        } catch (Throwable e) {
-                            logTaskFailureOnce("startExecuting", entry.action, e);
-                        }
-                    }
-                }
+                entry.action.startExecuting();
             } catch (Throwable e) {
-                logTaskFailureOnce("shouldExecute", entry.action, e);
+                logTaskFailureOnce("startExecuting", entry.action, e);
+                executingTasks.remove(entry);
+            }
+        }
+
+        // goalTick (EntityAITasks.java:130-137). Every running task, including those started this tick.
+        Iterator<EntityAITaskEntry> it = executingTasks.iterator();
+        while (it.hasNext()) {
+            EntityAITaskEntry entry = it.next();
+            try {
+                entry.action.updateTask();
+            } catch (Throwable e) {
+                logTaskFailureOnce("updateTask", entry.action, e);
+                try { entry.action.resetTask(); } catch (Throwable ignored) {}
+                it.remove();
             }
         }
     }
 
+    /**
+     * vanilla/client EntityAITasks.java:157-186. A task can run if every running task of equal or higher
+     * priority (lower or equal number) is mutex-compatible with it, and every running lower-priority task is
+     * interruptible. Lower-priority conflicting tasks are not reset here: they fail this same check on the
+     * next full pass, because the new task is now running ahead of them.
+     */
     private boolean canUse(EntityAITaskEntry candidate) {
-        for (EntityAITaskEntry running : executingTasks) {
-            if (running == candidate) continue;
-            if ((candidate.action.getMutexBits() & running.action.getMutexBits()) != 0) {
-                if (candidate.priority >= running.priority) return false;
-                if (!running.action.isInterruptible()) return false;
+        for (EntityAITaskEntry other : taskEntries) {
+            if (other == candidate) continue;
+            if (candidate.priority >= other.priority) {
+                if (executingTasks.contains(other) && !areTasksCompatible(candidate, other)) return false;
+            } else if (executingTasks.contains(other) && !other.action.isInterruptible()) {
+                return false;
             }
         }
         return true;
     }
 
-    private void interruptConflicts(EntityAITaskEntry candidate) {
-        Iterator<EntityAITaskEntry> it = executingTasks.iterator();
-        while (it.hasNext()) {
-            EntityAITaskEntry running = it.next();
-            if ((candidate.action.getMutexBits() & running.action.getMutexBits()) != 0) {
-                running.action.resetTask();
-                it.remove();
-            }
-        }
+    /** vanilla/client EntityAITasks.java:191-194 */
+    private static boolean areTasksCompatible(EntityAITaskEntry a, EntityAITaskEntry b) {
+        return (a.action.getMutexBits() & b.action.getMutexBits()) == 0;
     }
 
     public boolean areTasksExecuting() {

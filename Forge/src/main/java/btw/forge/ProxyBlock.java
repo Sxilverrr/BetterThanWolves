@@ -174,69 +174,44 @@ public class ProxyBlock extends Block implements EntityBlock {
     @Override
     public void tick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
         btw.modern.World world = WorldBridge.getOrCreate(level);
-        String fcName = fc().getClass().getSimpleName();
-        boolean isKiln = fcName.contains("Kiln");
-        int metaBefore = state.hasProperty(META) ? state.getValue(META) : -1;
-        if (isKiln) {
-            // Check what's above and below
-            int aboveId = world.getBlockId(pos.getX(), pos.getY() + 1, pos.getZ());
-            int belowId = world.getBlockId(pos.getX(), pos.getY() - 1, pos.getZ());
-            btw.modern.Block aboveBlock = aboveId > 0 && aboveId < btw.modern.Block.blocksList.length ? btw.modern.Block.blocksList[aboveId] : null;
-            boolean canCook = aboveBlock != null && aboveBlock.GetCanBeCookedByKiln(world, pos.getX(), pos.getY() + 1, pos.getZ());
-            LOGGER.info("[KILN-TICK] at {} meta={} aboveId={} above={} canCook={} belowId={}",
-                    pos, metaBefore, aboveId,
-                    aboveBlock != null ? aboveBlock.getClass().getSimpleName() : "null",
-                    canCook, belowId);
-        }
         try {
             fc().updateTick(world, pos.getX(), pos.getY(), pos.getZ(), new Random(random.nextLong()));
         } catch (Exception e) {
-            if (isKiln) {
-                LOGGER.error("[KILN-TICK] FAILED at {}: {}", pos, e.getMessage(), e);
-            }
-        }
-        if (isKiln) {
-            int metaAfter = level.getBlockState(pos).hasProperty(META) ? level.getBlockState(pos).getValue(META) : -1;
-            // Check if block is still a kiln (might have reverted to brick)
-            boolean stillKiln = level.getBlockState(pos).getBlock() instanceof ProxyBlock;
-            LOGGER.info("[KILN-TICK] DONE at {} metaBefore={} metaAfter={} stillKiln={}",
-                    pos, metaBefore, metaAfter, stillKiln);
+            warnTickFailureOnce("TICK", pos, e); // was silent for every block but kilns
         }
     }
 
     // --- randomTick ---
 
-    private static boolean loggedRandomTick = false;
-
     @Override
     public void randomTick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
         btw.modern.World world = WorldBridge.getOrCreate(level);
-        if (fc().getClass().getSimpleName().contains("Hemp") && !loggedRandomTick) {
-            loggedRandomTick = true;
-            int light = world.getBlockLightValue(pos.getX(), pos.getY(), pos.getZ());
-            int belowId = world.getBlockId(pos.getX(), pos.getY() - 1, pos.getZ());
-            btw.modern.Block belowBlock = belowId > 0 && belowId < btw.modern.Block.blocksList.length ? btw.modern.Block.blocksList[belowId] : null;
-            boolean hydrated = belowBlock != null && belowBlock.IsBlockHydratedForPlantGrowthOn(world, pos.getX(), pos.getY() - 1, pos.getZ());
-            LOGGER.info("[HEMP-GROW] at {} meta={} light={} belowId={} below={} hydrated={}",
-                    pos, state.hasProperty(META) ? state.getValue(META) : -1,
-                    light, belowId,
-                    belowBlock != null ? belowBlock.getClass().getSimpleName() : "null",
-                    hydrated);
-        }
         try {
             fc().RandomUpdateTick(world, pos.getX(), pos.getY(), pos.getZ(), new Random(random.nextLong()));
         } catch (Throwable e) {
-            LOGGER.error("[RANDOM-TICK] {} at {} FAILED: {}", fc().getClass().getSimpleName(), pos, e.toString(), e);
+            warnTickFailureOnce("RANDOM-TICK", pos, e); // was an ERROR with stack on every failing random tick
+        }
+    }
+
+    /** Tick failure sites already reported by {@link #warnTickFailureOnce}. */
+    private static final java.util.Set<String> LOGGED_TICK_FAILURES = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * One WARN with its stack trace per distinct throw site (stage, block id, exception class and top frame),
+     * triage HAI-10 / design_build_logging U10: a block failing every tick neither floods the log nor hides.
+     */
+    private void warnTickFailureOnce(String stage, BlockPos pos, Throwable e) {
+        StackTraceElement[] frames = e.getStackTrace();
+        String site = stage + '|' + legacyId + '|' + e.getClass().getName() + '@' + (frames.length > 0 ? frames[0] : "?");
+        if (LOGGED_TICK_FAILURES.add(site)) {
+            LOGGER.warn("[{}] {} (id {}) at {} threw {}", stage, fc().getClass().getSimpleName(), legacyId, pos,
+                    e.toString(), e);
         }
     }
 
     @Override
     public boolean isRandomlyTicking(BlockState state) {
-        boolean result = fc().getTickRandomly();
-        if (fc().getClass().getSimpleName().contains("Hemp")) {
-            LOGGER.info("[TICK-CHECK] {} isRandomlyTicking={} needsRandomTick={}", fc().getClass().getSimpleName(), result, fc().needsRandomTick);
-        }
-        return result;
+        return fc().getTickRandomly();
     }
 
     // --- animateTick (client-side particle effects) ---
@@ -244,8 +219,9 @@ public class ProxyBlock extends Block implements EntityBlock {
     @Override
     public void animateTick(BlockState state, Level level, BlockPos pos, RandomSource random) {
         try {
-            // Lightweight FC World over the modern level (see createFcWorld).
-            btw.modern.World clientWorld = createFcWorld(level);
+            // Lightweight FC World over the modern level (see createFcWorld); client particle display, so
+            // neighbours read identity ids (ProxyRegistry.getBlockId).
+            btw.modern.World clientWorld = createFcWorld(level, false);
             fc().randomDisplayTick(clientWorld, pos.getX(), pos.getY(), pos.getZ(),
                     new Random(random.nextLong()));
         } catch (Exception ignored) {
@@ -306,9 +282,6 @@ public class ProxyBlock extends Block implements EntityBlock {
             if (block instanceof ProxyBlock pb) {
                 neighborId = pb.getLegacyId();
             }
-            if (fc().getClass().getSimpleName().contains("Turntable")) {
-                LOGGER.info("[NEIGHBOR] Turntable at {} neighborChanged from {} neighborId={} block={}", pos, neighborPos, neighborId, block);
-            }
             fc().onNeighborBlockChange(world, pos.getX(), pos.getY(), pos.getZ(), neighborId);
         }
     }
@@ -318,9 +291,6 @@ public class ProxyBlock extends Block implements EntityBlock {
     @Override
     public void onPlace(BlockState state, Level level, BlockPos pos,
                         BlockState oldState, boolean moving) {
-        LOGGER.info("[ON-PLACE] block={} pos={} thread={} isServer={} sameBlock={}",
-                legacyId, pos, Thread.currentThread().getName(),
-                level instanceof ServerLevel, state.is(oldState.getBlock()));
         if (!state.is(oldState.getBlock())) {
             if (level instanceof ServerLevel sl) {
                 btw.modern.World world = WorldBridge.getOrCreate(sl);
@@ -337,9 +307,6 @@ public class ProxyBlock extends Block implements EntityBlock {
     public void setPlacedBy(Level level, BlockPos pos, BlockState state,
                             net.minecraft.world.entity.LivingEntity placer,
                             net.minecraft.world.item.ItemStack stack) {
-        LOGGER.info("[SET-PLACED-BY] block={} pos={} placer={} thread={} levelType={}",
-                legacyId, pos, placer != null ? placer.getClass().getSimpleName() : "null",
-                Thread.currentThread().getName(), level.getClass().getSimpleName());
         if (level instanceof ServerLevel sl && placer != null) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
             btw.modern.EntityLiving fcPlacer = null;
@@ -360,12 +327,7 @@ public class ProxyBlock extends Block implements EntityBlock {
             btw.modern.ItemStack fcStack = fcPlacer instanceof PlayerBridge pb
                     ? pb.getCurrentEquippedItem()
                     : null;
-            int metaBefore = state.hasProperty(META) ? state.getValue(META) : -1;
             fc().onBlockPlacedBy(world, pos.getX(), pos.getY(), pos.getZ(), fcPlacer, fcStack);
-            int metaAfter = level.getBlockState(pos).hasProperty(META)
-                    ? level.getBlockState(pos).getValue(META) : -1;
-            LOGGER.info("[PLACED] block={} at {} yaw={} metaBefore={} metaAfter={}",
-                    fc().getClass().getSimpleName(), pos, fcPlacer.rotationYaw, metaBefore, metaAfter);
         }
     }
 
@@ -392,22 +354,12 @@ public class ProxyBlock extends Block implements EntityBlock {
             btw.modern.Container prevContainer = fcPlayer.openContainer;
 
             // Stage 1: FC block activation
-            int meta = state.hasProperty(META) ? state.getValue(META) : -1;
-            LOGGER.info("use() block={} fc={} pos={} meta={} side={} hitY={} blockAbove={} isNormalAbove={}", legacyId, fc().getClass().getSimpleName(), pos, meta, side, hitY,
-                    world.getBlockId(pos.getX(), pos.getY() + 1, pos.getZ()),
-                    btw.modern.Block.isNormalCube(world.getBlockId(pos.getX(), pos.getY() + 1, pos.getZ())));
             boolean result = fc().onBlockActivated(world, pos.getX(), pos.getY(), pos.getZ(),
                     fcPlayer, side, hitX, hitY, hitZ);
-            LOGGER.info("use() result={} openContainer={}", result,
-                    fcPlayer.openContainer != null ? fcPlayer.openContainer.getClass().getSimpleName() : "null");
 
             if (!result) {
-                // Stage 2: FC item use on block
-                if (fcHeld != null) {
-                    result = fcHeld.tryPlaceItemIntoWorld(
-                            fcPlayer, world, pos.getX(), pos.getY(), pos.getZ(),
-                            side, hitX, hitY, hitZ);
-                }
+                // Stage 2: FC item use on block (creative restore: tryPlaceHeldItem)
+                result = tryPlaceHeldItem(fcHeld, player, fcPlayer, world, pos, side, hitX, hitY, hitZ);
             }
 
             // Check if FC opened a container GUI and open the MC menu
@@ -437,6 +389,34 @@ public class ProxyBlock extends Block implements EntityBlock {
         return InteractionResult.SUCCESS;
     }
 
+    /**
+     * Stage 2 of 1.5.2 ItemInWorldManager.activateBlockOrUseItem (vanilla/server ItemInWorldManager.java:390-404):
+     * the held stack's tryPlaceItemIntoWorld, with its damage and stackSize restored afterwards in creative
+     * (:394-402; Stage 1, onBlockActivated, is never restored). 1.20.1 restores the creative count only around
+     * ItemStack.useOn (ServerPlayerGameMode.useItemOn), not around Block.use, where the bridge runs this, so
+     * without the restore the write-back that follows commits FC's in-place decrement / damage (a block placed
+     * against FC terrain, a planted seed, flint and steel) to a creative inventory. Shared with
+     * BlockBehaviorMixin.btw$use (vanilla-id blocks with an FC replacement).
+     */
+    public static boolean tryPlaceHeldItem(btw.modern.ItemStack fcHeld, Player player, PlayerBridge fcPlayer,
+                                           btw.modern.World world, BlockPos pos, int side,
+                                           float hitX, float hitY, float hitZ) {
+        if (fcHeld == null) return false;
+        if (!player.isCreative()) {
+            return fcHeld.tryPlaceItemIntoWorld(fcPlayer, world, pos.getX(), pos.getY(), pos.getZ(),
+                    side, hitX, hitY, hitZ);
+        }
+        int damage = fcHeld.getItemDamage();
+        int size = fcHeld.stackSize;
+        try {
+            return fcHeld.tryPlaceItemIntoWorld(fcPlayer, world, pos.getX(), pos.getY(), pos.getZ(),
+                    side, hitX, hitY, hitZ);
+        } finally {
+            fcHeld.setItemDamage(damage);
+            fcHeld.stackSize = size;
+        }
+    }
+
     // --- attack (onBlockClicked) ---
 
     @Override
@@ -453,21 +433,103 @@ public class ProxyBlock extends Block implements EntityBlock {
 
     @Override
     public void entityInside(BlockState state, Level level, BlockPos pos, Entity entity) {
+        // FC web (1037, FCBlockWeb extends BlockWeb): no collision box (vanilla/server BlockWeb.java:47-50,
+        // so getCollisionShape is empty), and onEntityCollidedWithBlock -> setInWeb (BlockWeb.java:31) makes
+        // Entity.moveEntity scale that tick's move by 0.25/0.05/0.25 and zero the motion (Entity.java:592-600).
+        // The bridges don't carry isInWeb back to MC, so apply the identical 1.20.1 mechanism
+        // (WebBlock.entityInside -> makeStuckInBlock) on BOTH sides: the client predicts its own movement.
+        if (fc() instanceof btw.modern.BlockWeb) {
+            entity.makeStuckInBlock(state, new Vec3(0.25D, (double) 0.05F, 0.25D));
+        }
         if (level instanceof ServerLevel sl) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
             btw.modern.Entity fcEntity = wrapEntity(entity);
+            if (fcEntity == null) return; // item consumed earlier in this checkInsideBlocks pass (see wrapEntity)
             fc().onEntityCollidedWithBlock(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+            applyFcContactFire(sl, world, pos, entity, fcEntity);
         }
+    }
+
+    private volatile boolean loggedFireProbeFailure;
+
+    /**
+     * Per-entity 1.5.2 contact counter for {@link #applyFcContactFire}: {last game tick burned, ticks of contact}.
+     * Server thread only. Weak keys: an entry dies with its entity.
+     */
+    private static final Map<Entity, long[]> FIRE_CONTACT = new java.util.WeakHashMap<>();
+
+    /**
+     * 1.5.2 contact fire: Entity.moveEntity runs doBlockCollisions, then World.isBoundingBoxBurning asks every
+     * overlapped block GetDoesFireDamageToEntities (FCMOD, vanilla/server World.java:2112-2142), then
+     * dealFireDamage(1) and, unless wet, ++fire, igniting (setFire(8)) when the counter, which starts at
+     * -fireResistance (Entity 1, EntityPlayer 20), reaches 0 (FCMOD Entity.java:2842-2862). FC fire ProxyBlocks
+     * (stoked fire, ladder on fire, lit campfires) have no MC fire behaviour, so MC entities, players included,
+     * took no damage, and stoked fire and campfires are now walk-through (null collision, getCollisionShape).
+     * Same per-cell hook as 1.20.1 BaseFireBlock.entityInside, but the contact counter is kept here: these
+     * blocks are not in BlockTags.FIRE, so Entity.move resets an unlit entity's remainingFireTicks to
+     * -getFireImmuneTicks() right after entityInside, and a +1 on it would never ignite a player. FC puppets
+     * are skipped: their FC entity's own moveEntity already burns them through WorldBridge, and the proxies
+     * drop MC fire damage (FCPuppetSupport.isFcSimulatedFireDamage).
+     */
+    private void applyFcContactFire(ServerLevel level, btw.modern.World world, BlockPos pos,
+                                    Entity entity, btw.modern.Entity fcEntity) {
+        if (fcEntity == null || isFcPuppet(entity)) return;
+        try {
+            if (!fc().GetDoesFireDamageToEntities(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity)) return;
+            long now = level.getGameTime();
+            long[] contact = FIRE_CONTACT.get(entity);
+            if (contact == null) {
+                contact = new long[] {Long.MIN_VALUE / 2, 0L};
+                FIRE_CONTACT.put(entity, contact);
+            }
+            if (contact[0] == now) return; // once per tick (one isBoundingBoxBurning per moveEntity), not per cell
+            // Leaving the fire resets the counter (1.5.2: fire = -fireResistance on a move outside it). The server
+            // sees a still player's move only every 20 ticks (LocalPlayer position reminder), so a gap up to that
+            // is still contact.
+            if (now - contact[0] > 20L) contact[1] = 0L;
+            contact[0] = now;
+            entity.hurt(level.damageSources().inFire(), 1.0F); // dealFireDamage(1)
+            // !isWet(); a damage-immune (creative) player is extinguished every tick (EntityPlayer.java:287-289)
+            if (!entity.fireImmune() && !entity.isInWaterRainOrBubble()
+                    && !(entity instanceof Player p && p.getAbilities().invulnerable)) {
+                int remaining = entity.getRemainingFireTicks();
+                if (remaining > 0) {
+                    entity.setRemainingFireTicks(remaining + 1); // burning: ++fire
+                    contact[1] = 0L;
+                } else if (++contact[1] >= (entity instanceof Player ? 20L : 1L)) {
+                    contact[1] = 0L;
+                    entity.setSecondsOnFire(8); // fire reached 0: setFire(8)
+                }
+            }
+        } catch (Throwable t) {
+            if (!loggedFireProbeFailure) {
+                loggedFireProbeFailure = true;
+                LOGGER.warn("[FIRE] contact fire for {} (id {}) at {} failed: {}",
+                        fc().getClass().getSimpleName(), legacyId, pos, t.toString());
+            }
+        }
+    }
+
+    /** FC puppets (MC proxies owning an FC entity whose own physics runs FC's block contact effects). */
+    private static boolean isFcPuppet(Entity entity) {
+        return entity instanceof ProxyMob || entity instanceof ProxyAnimal
+                || entity instanceof ProxyPathfinderMob || entity instanceof ProxyEntity;
     }
 
     // --- stepOn (onEntityWalking) ---
 
     @Override
     public void stepOn(Level level, BlockPos pos, BlockState state, Entity entity) {
+        // MC calls stepOn for every grounded entity; 1.5.2 Entity.moveEntity gates onEntityWalking on
+        // canTriggerWalking() (vanilla/server Entity.java:841), which EntityItem answers false (EntityItem.java:59).
+        // Checked before wrapping so a resting item is not re-synced every move.
+        if (entity instanceof net.minecraft.world.entity.item.ItemEntity) return;
         if (level instanceof ServerLevel sl) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
             btw.modern.Entity fcEntity = wrapEntity(entity);
-            fc().onEntityWalking(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+            if (fcEntity != null) {
+                fc().onEntityWalking(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+            }
         }
     }
 
@@ -479,25 +541,30 @@ public class ProxyBlock extends Block implements EntityBlock {
         if (level instanceof ServerLevel sl) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
             btw.modern.Entity fcEntity = wrapEntity(entity);
-            fc().onFallenUpon(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity, fallDistance);
+            if (fcEntity != null) {
+                fc().onFallenUpon(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity, fallDistance);
+            }
         }
         // Always call super to apply vanilla fall damage (entity.causeFallDamage).
         // FC's onFallenUpon is a notification hook, not a replacement for damage.
         super.fallOn(level, state, pos, entity, fallDistance);
     }
 
-    // --- getDestroySpeed (getPlayerRelativeBlockHardness mapped to destroy speed) ---
+    // --- getDestroyProgress (FC getPlayerRelativeBlockHardness) ---
+    // 1.5.2 digs with Block.getPlayerRelativeBlockHardness on both sides (PlayerControllerMP.java:242,316;
+    // ItemInWorldManager.java:106,139,181,219); FC's body (Block.java:2340-2361) folds in the held tool.
+    // Vanilla's BlockBehaviour.getDestroyProgress applies the tool INSIDE itself (player.getDigSpeed /
+    // hardness / 30|100) - nothing is applied on top - so the old 1/(hardness*30) ignored every tool.
 
     @Override
     public float getDestroyProgress(BlockState state, Player player, BlockGetter level, BlockPos pos) {
-        // FC computes hardness; if < 0 the block is unbreakable.
-        float hardness = fc().blockHardness;
-        if (hardness < 0.0F) {
-            return 0.0F;
+        float result = FCMiningSpeed.relativeHardness(fc(), player, level, pos);
+        if (!Float.isNaN(result)) {
+            return result;
         }
-        // Vanilla formula: 1 / (hardness * 30) for non-tool, 1 / (hardness * 100) for tool.
-        // We return the base speed; Forge applies tool modifiers on top.
-        return 1.0F / (hardness * 30.0F);
+        // FC threw (logged by FCMiningSpeed): previous tool-blind behaviour as a safe fallback.
+        float hardness = fc().blockHardness;
+        return hardness < 0.0F ? 0.0F : 1.0F / (hardness * 30.0F);
     }
 
     // --- getExplosionResistance ---
@@ -608,13 +675,59 @@ public class ProxyBlock extends Block implements EntityBlock {
     // MC 1.20.1 multiplies getSpeedFactor into carried deltaMovement every tick (Entity.move),
     // so the +20% hard-surface bonus compounded into airborne momentum → the sprint-jump
     // "flying" bug. FC applied that bonus to the INPUT speed instead, which the bridge now
-    // reproduces in the getSpeed hooks (FCMovementBonus). The inherited getSpeedFactor (the
-    // block's own speed factor, e.g. soul sand's slowdown) is left intact.
+    // reproduces in PlayerMixin.btw$applyBlockMovementModifier (Player.getSpeed, via
+    // FCMovementBonus). The inherited getSpeedFactor (the block's own speed factor, e.g. soul
+    // sand's slowdown) is left intact.
+
+    /**
+     * Whether the FC class overrides getCollisionBoundingBoxFromPool (0 = not yet known, 1 = yes, 2 = no).
+     * Only an override can return null - the base btw.modern.Block always returns its bounds - so other
+     * blocks skip the probe below; getCollisionShape is hot (every entity move scans the blocks it sweeps).
+     */
+    private volatile byte fcCollisionOverride;
+    private volatile boolean loggedCollisionProbeFailure;
 
     @Override
     public net.minecraft.world.phys.shapes.VoxelShape getCollisionShape(BlockState state, BlockGetter level, BlockPos pos,
             net.minecraft.world.phys.shapes.CollisionContext ctx) {
+        // 1.5.2: a null getCollisionBoundingBoxFromPool means NO collision - Block.addCollisionBoxesToList
+        // only adds a non-null box (vanilla/server Block.java:658-666), so rails, plants, torches,
+        // campfires, candles, webs, ground cover... are walk-through, and projectiles ignore them
+        // (World.rayTraceBlocks_do_do, World.java:1062). Selection (getShape) keeps the FC bounds.
+        // If the FC probe throws, keep the bounds shape: a failure must never make a possibly solid
+        // block passable.
+        if (fcCollisionMayBeNull()) {
+            try {
+                if (fc().getCollisionBoundingBoxFromPool(createFcWorld(level, true),
+                        pos.getX(), pos.getY(), pos.getZ()) == null) {
+                    return net.minecraft.world.phys.shapes.Shapes.empty();
+                }
+            } catch (Throwable t) {
+                if (!loggedCollisionProbeFailure) {
+                    loggedCollisionProbeFailure = true;
+                    LOGGER.warn("[COLLISION] FC getCollisionBoundingBoxFromPool threw for {} (id {}) at {}; "
+                            + "keeping the bounds shape: {}", fc().getClass().getSimpleName(), legacyId, pos, t.toString());
+                }
+            }
+        }
         return getFcShape(level, pos);
+    }
+
+    private boolean fcCollisionMayBeNull() {
+        byte v = fcCollisionOverride;
+        if (v == 0) {
+            boolean overridden;
+            try {
+                overridden = fc().getClass().getMethod("getCollisionBoundingBoxFromPool",
+                        btw.modern.World.class, int.class, int.class, int.class)
+                        .getDeclaringClass() != btw.modern.Block.class;
+            } catch (Throwable t) {
+                overridden = true; // unknown: probe (the probe itself is guarded)
+            }
+            v = overridden ? (byte) 1 : (byte) 2;
+            fcCollisionOverride = v;
+        }
+        return v == 1;
     }
 
     @Override
@@ -643,10 +756,14 @@ public class ProxyBlock extends Block implements EntityBlock {
     private net.minecraft.world.phys.shapes.VoxelShape getFcShape(BlockGetter level, BlockPos pos) {
         btw.modern.Block fcBlock = fc();
         try {
-            // Create a lightweight IBlockAccess from the BlockGetter
+            // Create a lightweight IBlockAccess from the BlockGetter. Neighbour ids are the ones FC sees in the
+            // live world (ProxyRegistry.getWorldBlockId, as WorldBridge.getBlockId): a modern-only solid reads
+            // as a ModernBlockStandIn, a double slab as 43/125 -- not air (design_blockmap U4). Shapes are FC
+            // collision logic on BOTH sides, so client prediction and server agree.
             btw.modern.IBlockAccess access = new btw.modern.IBlockAccess() {
                 @Override public int getBlockId(int x, int y, int z) {
-                    return ProxyRegistry.getBlockId(level.getBlockState(new BlockPos(x, y, z)).getBlock());
+                    BlockPos p = new BlockPos(x, y, z);
+                    return ProxyRegistry.getWorldBlockId(level.getBlockState(p), level, p);
                 }
                 @Override public int getBlockMetadata(int x, int y, int z) {
                     BlockState s = level.getBlockState(new BlockPos(x, y, z));
@@ -673,7 +790,7 @@ public class ProxyBlock extends Block implements EntityBlock {
         if (fullCube && !fcBlock.renderAsNormalBlock()) {
             try {
                 btw.modern.AxisAlignedBB bb = fcBlock.getCollisionBoundingBoxFromPool(
-                        createFcWorld(level), pos.getX(), pos.getY(), pos.getZ());
+                        createFcWorld(level, true), pos.getX(), pos.getY(), pos.getZ());
                 if (bb != null) {
                     double ox = pos.getX(), oy = pos.getY(), oz = pos.getZ();
                     return net.minecraft.world.phys.shapes.Shapes.box(
@@ -698,12 +815,18 @@ public class ProxyBlock extends Block implements EntityBlock {
      * enough for FC block queries that only read the world (randomDisplayTick particles;
      * getCollisionBoundingBoxFromPool bounds, which read metadata). Level-only calls are guarded
      * so it also works from collision queries where the accessor may not be a full Level.
+     *
+     * @param worldIds true for FC logic (collision bounds): neighbours read with the live-world ids FC sees
+     *                 through WorldBridge ({@link ProxyRegistry#getWorldBlockId}); false for client display
+     *                 (randomDisplayTick particles), which reads identity ids ({@link ProxyRegistry#getBlockId})
      */
-    private btw.modern.World createFcWorld(net.minecraft.world.level.BlockGetter level) {
+    private btw.modern.World createFcWorld(net.minecraft.world.level.BlockGetter level, boolean worldIds) {
         return new btw.modern.World() {
             { this.isRemote = true; this.rand = new Random(); }
             public int getBlockId(int x, int y, int z) {
-                return ProxyRegistry.getBlockId(level.getBlockState(new BlockPos(x, y, z)).getBlock());
+                BlockPos p = new BlockPos(x, y, z);
+                BlockState s = level.getBlockState(p);
+                return worldIds ? ProxyRegistry.getWorldBlockId(s, level, p) : ProxyRegistry.getBlockId(s.getBlock());
             }
             public int getBlockMetadata(int x, int y, int z) {
                 BlockState s = level.getBlockState(new BlockPos(x, y, z));
@@ -808,29 +931,9 @@ public class ProxyBlock extends Block implements EntityBlock {
         return btw.modern.Block.lightOpacity[legacyId] == 0;
     }
 
-    /**
-     * Provides real world data to FCBakedModel so FC's RenderBlock runs with
-     * real neighbor access during chunk rebuilds — matching MC 1.5.2 behavior.
-     */
-    public net.minecraftforge.client.model.data.ModelData getModelData(
-            net.minecraft.world.level.BlockGetter level, net.minecraft.core.BlockPos pos,
-            BlockState state, net.minecraftforge.client.model.data.ModelData modelData) {
-        var builder = modelData.derive()
-                .with(btw.forge.client.FCBakedModel.BLOCK_GETTER, level)
-                .with(btw.forge.client.FCBakedModel.BLOCK_POS, pos);
-
-        // Pass the FC tile entity so the live capture can read block state
-        // (e.g., campfire m_bIsCooking for fire rendering).
-        // RenderChunkRegion doesn't support getBlockEntity(), so we pass it explicitly.
-        try {
-            net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
-            if (be instanceof ProxyBlockEntity pbe && pbe.getFcTileEntity() != null) {
-                builder.with(btw.forge.client.FCBakedModel.FC_TILE_ENTITY, pbe.getFcTileEntity());
-            }
-        } catch (Exception ignored) {}
-
-        return builder.build();
-    }
+    // Live per-position block rendering is supplied by FCBakedModel.getModelData (the
+    // IForgeBakedModel hook ChunkRenderDispatcher calls); IForgeBlock has no getModelData,
+    // so a Block-side provider here would never be called.
 
     @Override
     public net.minecraft.world.level.block.RenderShape getRenderShape(BlockState state) {
@@ -853,7 +956,9 @@ public class ProxyBlock extends Block implements EntityBlock {
      * Wraps a vanilla MC entity as a btw.modern.Entity for FC callbacks.
      * Returns a {@link PlayerBridge} for Player entities (richer state and
      * correct EntityPlayer type), a {@link LivingEntityBridge} for non-player
-     * living entities, or an {@link EntityBridge} for other entities.
+     * living entities, an {@link ItemEntityBridge} for dropped items, or an
+     * {@link EntityBridge} for other entities. Null for a dropped item without
+     * an FC view; callers then skip the FC callback.
      */
     private static btw.modern.Entity wrapEntity(Entity entity) {
         if (entity instanceof Player player) {
@@ -865,6 +970,17 @@ public class ProxyBlock extends Block implements EntityBlock {
             LivingEntityBridge lb = LivingEntityBridge.getOrCreate(living);
             lb.syncFromReal();
             return lb;
+        }
+        // MC ItemEntity -> its FC EntityItem view (design_items U3b): 1.5.2 EntityItem passes itself to the block
+        // (vanilla/server EntityItem.java:483-500), so `instanceof EntityItem` callbacks work (FCBlockHopper:162,
+        // FCBlockCampfire:442, FCBlockFarmlandBase:153, FCBlockPlanterBase:61, FCBlockNetherGrowth:276) and
+        // EntityItem.CanEntityTriggerTripwire() == false applies. In-place FC changes (bone meal stackSize--) are
+        // landed by the ItemEntityMixin getItem() hook / end-of-tick flush; setDead discards immediately.
+        // Never the generic EntityBridge: wrap() is null for an item an FC block in an earlier cell of the same
+        // checkInsideBlocks pass consumed, an empty one, or one that failed to sync, and as an EntityBridge it
+        // would answer CanEntityTriggerTripwire() == true and fail every `instanceof EntityItem` branch.
+        if (entity instanceof net.minecraft.world.entity.item.ItemEntity ie) {
+            return ItemEntityBridge.wrap(ie);
         }
         EntityBridge eb = EntityBridge.getOrCreate(entity);
         eb.syncFromReal();

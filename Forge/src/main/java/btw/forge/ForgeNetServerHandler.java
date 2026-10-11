@@ -58,12 +58,20 @@ public class ForgeNetServerHandler extends btw.modern.NetServerHandler {
                 sp.sendSystemMessage(Component.literal(chatPacket.message));
 
             } else if (packet instanceof btw.modern.Packet250CustomPayload customPacket) {
-                // Custom payload — FC uses these for GUI open packets etc.
-                // The channel and data are FC-specific. For GUI opens,
-                // ContainerBridge.checkAndOpenContainer handles it separately.
-                // Log for debugging but don't crash.
-                LOGGER.debug("FC custom packet on channel '{}' ({} bytes)",
-                        customPacket.channel, customPacket.length);
+                if (BTWNetwork.isForwardedFcChannel(customPacket.channel)) {
+                    // FC's login handshake payloads (FC|VC version check, FC|OP hardcore options),
+                    // sent by FCBetterThanWolves.ServerPlayerConnectionInitialized (Client
+                    // FCBetterThanWolves.java:2213-2280, called by FCLoginHandler). Forwarded raw to
+                    // the client, where FC's own client dispatcher handles them (triage CTX-5).
+                    BTWNetwork.sendFcPayload(sp, customPacket.channel, customPacket.data);
+                } else {
+                    // Other custom payloads — FC uses these for GUI open packets etc.
+                    // The channel and data are FC-specific. For GUI opens,
+                    // ContainerBridge.checkAndOpenContainer handles it separately.
+                    // Log for debugging but don't crash.
+                    LOGGER.debug("FC custom packet on channel '{}' ({} bytes)",
+                            customPacket.channel, customPacket.length);
+                }
 
             } else if (packet instanceof btw.modern.Packet70GameEvent gamePacket) {
                 // Game events (weather sync, etc.) — MC handles these natively

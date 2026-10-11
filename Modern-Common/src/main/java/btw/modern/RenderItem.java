@@ -11,12 +11,13 @@ import java.util.Random;
  * EntityItem in RenderManager's static initializer.
  *
  * <p>Adaptations from vanilla (dropped world items are MODERN entities and
- * never reach this class — only FC tile-embedded display items do):
- * fancyGraphics comes solely from m_bForceFancyItemRender (GameSettings is
- * not bridged; the FC tile renderers force it around their calls); the
+ * never reach this class — only FC tile-embedded display items do): the
  * enchantment-glint pass and GL12.GL_RESCALE_NORMAL state are omitted
  * (renderEngine texture-matrix effects, cosmetic); the missing-icon fallback
- * (renderEngine.getMissingIcon) becomes a skip.</p>
+ * (renderEngine.getMissingIcon) becomes a skip; renderItemIn2D gets its slice
+ * count from ItemRenderer.sliceSheetWidth/sliceSheetHeight. fancyGraphics is
+ * read from RenderManager.options as in 1.5.2 (a GameSettings with 1.5.2's
+ * default fancyGraphics = true, see RenderManager's constructor).</p>
  */
 public class RenderItem extends Render {
 
@@ -146,9 +147,11 @@ public class RenderItem extends Render {
         float halfWidth = 0.5F;
         float quarterHeight = 0.25F;
 
-        // FCMOD: Changed (client only) — fancy render forced by FC tile renderers;
-        // GameSettings.fancyGraphics is not bridged (see class javadoc).
-        if (m_bForceFancyItemRender) {
+        // FCMOD: Changed (client only)
+        //if (this.renderManager.options.fancyGraphics)
+        // (null-guarded: a RenderItem built outside RenderManager.AddEntityRenderer has no manager)
+        if ((this.renderManager != null && this.renderManager.options != null
+                && this.renderManager.options.fancyGraphics) || m_bForceFancyItemRender) {
         // END FCMOD
             GL11.glPushMatrix();
 
@@ -186,7 +189,11 @@ public class RenderItem extends Render {
                 }
 
                 GL11.glColor4f(r, g, b, 1.0F);
-                ItemRenderer.renderItemIn2D(tess, minU, maxV, maxU, minV, icon.getSheetWidth(), icon.getSheetHeight(), thickness);
+                // 1.5.2 passes par2Icon.getSheetWidth()/getSheetHeight() (RenderItem.java:290); the
+                // bridge's icons report 0..1 UVs, so the sheet size is derived from the icon to keep
+                // 1.5.2's one edge slice per icon pixel (see ItemRenderer.sliceSheetWidth).
+                ItemRenderer.renderItemIn2D(tess, minU, maxV, maxU, minV,
+                        ItemRenderer.sliceSheetWidth(icon), ItemRenderer.sliceSheetHeight(icon), thickness);
                 // Adaptation: enchantment glint pass omitted (renderEngine
                 // texture-matrix effect; cosmetic).
             }

@@ -87,8 +87,11 @@ public class SoundMapping {
         SOUND_MAP.put("mob.ghast.fireball", SoundEvents.GHAST_SHOOT);
         SOUND_MAP.put("mob.ghast.moan", SoundEvents.GHAST_AMBIENT);
         SOUND_MAP.put("mob.ghast.scream", SoundEvents.GHAST_HURT);
-        // BTW "affectionate scream" (witch idle / possession transforms) — reuse ghast ambient.
-        SOUND_MAP.put("mob.ghast.affectionate scream", SoundEvents.GHAST_AMBIENT);
+        // BTW "affectionate scream" (FCEntityWitch.playLivingSound, Common FCEntityWitch.java:84-93;
+        // possession transforms, FCBetterThanWolves.java:3558): 1.5.2 played the
+        // mob/ghast/affectionate_scream file, which 1.20.1 ships as entity.ghast.scream; GHAST_AMBIENT
+        // is the moan1-7 set (GH2).
+        SOUND_MAP.put("mob.ghast.affectionate scream", SoundEvents.GHAST_SCREAM);
         SOUND_MAP.put("mob.zombie.wood", SoundEvents.ZOMBIE_ATTACK_WOODEN_DOOR);
         SOUND_MAP.put("mob.zombie.woodbreak", SoundEvents.ZOMBIE_BREAK_WOODEN_DOOR);
         SOUND_MAP.put("mob.zombie.say", SoundEvents.ZOMBIE_AMBIENT);
