@@ -175,7 +175,7 @@ public abstract class BlockBehaviorMixin {
 
         if (level instanceof ServerLevel sl) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
-            int neighborId = ProxyRegistry.getBlockId(neighborBlock);
+            int neighborId = ProxyRegistry.getNeighbourSourceId(neighborBlock, level, neighborPos);
             fcBlock.onNeighborBlockChange(world, pos.getX(), pos.getY(), pos.getZ(), neighborId);
             // Don't cancel neighborChanged for vanilla blocks — MC needs its own
             // neighbor logic (redstone, dropper triggering, etc.) to run.
@@ -252,8 +252,18 @@ public abstract class BlockBehaviorMixin {
                 // This mirrors FC's ItemInWorldManager.activateBlockOrUseItem pipeline
                 // (creative: damage/stackSize restored like ItemInWorldManager.java:394-402, see tryPlaceHeldItem)
                 btw.modern.ItemStack fcHeld = fcPlayer.getCurrentEquippedItem();
-                result = ProxyBlock.tryPlaceHeldItem(fcHeld, player, fcPlayer, world, pos,
-                        side, hitX, hitY, hitZ);
+                // The client got PASS from this block's use and predicted the held BlockItem's placement,
+                // place sound included, so FC's place sound leaves this player out (WorldBridge.PREDICTING_ACTOR).
+                // ProxyBlock.use needs no such scope: its client returns SUCCESS and predicts nothing.
+                if (player instanceof net.minecraft.server.level.ServerPlayer sp
+                        && player.getItemInHand(hand).getItem() instanceof net.minecraft.world.item.BlockItem) {
+                    final btw.modern.ItemStack held = fcHeld;
+                    result = WorldBridge.withPredictingActor(sp, () -> ProxyBlock.tryPlaceHeldItem(held, player,
+                            fcPlayer, world, pos, side, hitX, hitY, hitZ));
+                } else {
+                    result = ProxyBlock.tryPlaceHeldItem(fcHeld, player, fcPlayer, world, pos,
+                            side, hitX, hitY, hitZ);
+                }
             }
 
             // Check if FC opened a container GUI and open the MC menu

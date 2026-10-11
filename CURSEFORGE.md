@@ -75,7 +75,7 @@ If you've never played BTW before, **do not expect vanilla Minecraft + extras**.
 
 ## Compatibility Notes
 
-This port runs the original FC code through a runtime bridge. Other Forge mods generally work alongside it, but a few caveats apply:
+This port runs FlowerChild's original code through a runtime bridge. The port's rule is never to edit his code: it adapts modern Minecraft around it instead. Other Forge mods generally work alongside it, but a few caveats apply:
 
 - **World generation mods** that replace Minecraft biomes wholesale may hide FC ores or shift FC worldgen.
 - **Food/hunger mods** will conflict — BTW replaces the vanilla food system with its own penalty model.

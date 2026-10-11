@@ -5,6 +5,22 @@ Every row in this doc is a decision that downstream mixins and event
 handlers must honor exactly. Source references are to files from the FC
 1.5.2 source tree (shadow-remapped to `btw.modern.*` at runtime).
 
+> **FC code is read-only. Never modify it.** FC code is FlowerChild's
+> sources (`net.minecraft.src.btw.*` under `Common/`, `Client/`,
+> `Server/`), the FCMOD-edited 1.5.2 sources under `vanilla/`, the frozen
+> compiled classes in root `build/classes/java/{main,server}`,
+> FlowerChild's original 4.B release files kept in the repo (`Src/`,
+> `SrcServer/` and `SrcClient/`, holding the flat sources and the
+> `patch.txt` files that `setupVanilla` applies to build `vanilla/`, plus
+> `BTWMod4-B0000003.zip`), and FlowerChild's own files such as
+> `Readme.txt`. The FC files cited in this
+> audit are references only. Every change here lands outside FC code: in
+> the Forge bridge (mixins on 1.20.1 classes, `btw.forge` code, data
+> packs), in Modern-Common (the port's `btw.modern` stand-ins, which are
+> port code), or in the planned subproject that extends and patches FC
+> code at build or load time without writing back to FC files (the
+> build-time ASM transforms in `Forge/build.gradle` are its precursors).
+
 ---
 
 ## 1. FC melee damage — baseline
@@ -74,8 +90,13 @@ still feel vanilla.
 
 ## 3. Shields — new FC item, not free
 
-**New item** `btw.modern.FCItemShield` (registered via FC item list,
-not Forge `DeferredRegister`; follows FC item-registration pattern).
+**New item** `btw.forge.combat.FCItemShield` (port code; registered
+into FC's item list at load time, not via Forge `DeferredRegister`;
+follows FC item-registration pattern).
+The shield class and its registration are port code: it is added to FC's
+item list from the bridge (or, later, the planned FC extension
+subproject) at load time. `FCBetterThanWolves.java` and FC's recipe
+sources are never edited.
 
 | Property | Value | Rationale |
 |---|---|---|
@@ -98,7 +119,10 @@ tacitly propose a soulforged armor tier, which is out of scope.
 **Implementation files:**
 - `Forge/src/main/java/btw/forge/combat/FCItemShield.java` (new)
 - Registration entry point: follow `BTWRegistration` item-list pattern
-- Recipe entry point: `FCCraftingManagerCauldron` stoked recipes
+- Recipe entry point: stoked-cauldron recipes, added from port code at
+  load time through `FCCraftingManagerCauldronStoked.getInstance().AddRecipe`
+  (or FC's public static `FCRecipes.AddStokedCauldronRecipe`); FC's
+  recipe sources stay untouched
 
 ## 4. Sweeping edge (1.9+) — **disable (radius 0)**
 
@@ -234,6 +258,9 @@ damage numbers.
 
 ## Protocol tags
 
-Each mixin header carries `// FCMOD-INTEGRATION(1.20.1): <feature>: <one-line why>`
-per Protocol #1. Each new FC-source line (none expected here — combat
-touches Forge/mixin code only) would carry the same tag.
+Each mixin header carries `// FCMOD-INTEGRATION(1.20.1): <feature>: <one-line why>`.
+These are bridge mixins on 1.20.1 classes, so the tag marks port code,
+never FC code. There are no FC-source lines to tag: FC code is read-only
+and is never edited, here or anywhere else. *(2026-10-10: the earlier
+wording, that new FC-source lines would carry the same tag, is
+withdrawn.)*

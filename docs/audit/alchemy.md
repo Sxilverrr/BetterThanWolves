@@ -8,6 +8,26 @@ items are invented here (Protocol #2 again — gate, don't replace).
 All FC item IDs are the numeric IDs FC registers them at. Registration
 site: `Client/src/main/java/net/minecraft/src/btw/core/FCBetterThanWolves.java`.
 
+> **FC code is read-only. Never modify it.** FC code is FlowerChild's
+> sources (`net.minecraft.src.btw.*` under `Common/`, `Client/`,
+> `Server/`), the FCMOD-edited 1.5.2 sources under `vanilla/`, the frozen
+> compiled classes in root `build/classes/java/{main,server}`,
+> FlowerChild's original 4.B release files kept in the repo (`Src/`,
+> `SrcServer/` and `SrcClient/`, holding the flat sources and the
+> `patch.txt` files that `setupVanilla` applies to build `vanilla/`, plus
+> `BTWMod4-B0000003.zip`), and FlowerChild's own files such as
+> `Readme.txt`. The FC files and line
+> numbers cited here are references only. Every gate in this audit lands
+> outside FC code: in the Forge bridge (mixins on 1.20.1 classes,
+> `btw.forge` code, data packs), in Modern-Common (the port's `btw.modern`
+> stand-ins, which are port code), or in the planned subproject that
+> extends and patches FC code at build or load time without writing back
+> to FC files (the build-time ASM transforms in `Forge/build.gradle` are
+> its precursors). New FC-workstation recipes are added from port code
+> through the FC crafting managers' public `AddRecipe` at load time (the
+> `...Stoked` managers for stoked recipes), never by editing
+> `FCRecipes.java` or the managers.
+
 ---
 
 ## Reagent vocabulary (FC inventory of gate-keepers)
@@ -82,7 +102,7 @@ decision to "go flying today."
 | Cost | Soul Speed book requires 1 soul dust to craft (overrides the rare-loot-only distribution) |
 | Storage | Recipe ingredient; one-shot |
 | Rationale | Soul Speed boosts walk speed on soul-blocks — already a soul-themed mechanic; soul dust is the natural FC-side offering. Also routes the enchant through an FC workstation instead of loot RNG |
-| Implementation | Recipe override (Phase 2 data). Add `data/minecraft/recipes/soul_speed_book.json` overriding vanilla loot-only distribution — in practice, add an FC-authored recipe since vanilla has none, and mark piglin-barter tables to drop less frequently (|#041 piglin barter work, Phase 6) |
+| Implementation | Recipe override (Phase 2 data). Add `data/minecraft/recipes/soul_speed_book.json` overriding vanilla loot-only distribution — in practice, add an FC-authored recipe since vanilla has none, and mark piglin-barter tables to drop less frequently (#041 piglin barter work, Phase 6) |
 
 ### Respawn Anchor (#014) — **concentrated hellfire per charge**
 
@@ -119,7 +139,7 @@ decision to "go flying today."
 | Reagent | `fcItemSoulFlux` (1) + prismarine shards (8) |
 | Cost | Crucible stoked cycle; heart-of-the-sea is replaced by soul flux |
 | Rationale | Heart of the sea + nautilus shells is FC-illegible — the items don't participate in FC progression. Moving the craft to crucible integrates conduit into FC's workstation chain; soul flux makes it an endgame commitment |
-| Implementation | Crucible recipe added to `FCCraftingManagerCrucible`. Vanilla crafting recipe for conduit blocked via Phase 2 data override (negative recipe) |
+| Implementation | Stoked-crucible recipe added to `FCCraftingManagerCrucibleStoked` from port code at load time (FC sources untouched). Vanilla crafting recipe for conduit blocked via Phase 2 data override (negative recipe) |
 
 ### Beacon (#060 co-entry) — **FoodStats hunger drain**
 
@@ -137,7 +157,7 @@ decision to "go flying today."
 | Reagent | Honey bottle consumed as cauldron input |
 | Cost | Cauldron recipe: 1 honey bottle + 1 blaze powder → 1 new potion (e.g., "Potion of Regenerative Sting") |
 | Rationale | Honey bottle restores 6 hunger instantly — too good as raw food. Routing it through alchemy keeps the bees-for-honey loop alive but makes honey a resource, not a snack |
-| Implementation | New stoked-cauldron recipe in `FCCraftingManagerCauldron` alongside the existing blasting-oil/concentrated-hellfire entries. New potion uses next free ID (26, 27, or 28) |
+| Implementation | New stoked-cauldron recipe in `FCCraftingManagerCauldronStoked` alongside the existing blasting-oil/concentrated-hellfire entries, registered from port code at load time (FC sources untouched). New potion uses next free ID (26, 27, or 28) and is likewise registered from port code |
 
 ---
 
@@ -165,8 +185,8 @@ When Phase 2 data-gen lands, the following recipes need explicit entries:
 | Respawn anchor charge | *(mixin; no recipe)* |
 | Lodestone | `data/minecraft/recipes/lodestone.json` override |
 | Recovery compass | `data/minecraft/recipes/recovery_compass.json` override |
-| Conduit | `data/minecraft/recipes/conduit.json` → deletion + add FC crucible entry |
-| Honey bottle alchemy | FC-internal: `FCCraftingManagerCauldron` add stoked recipe |
+| Conduit | `data/minecraft/recipes/conduit.json` → deletion + add stoked-crucible entry to `FCCraftingManagerCrucibleStoked` (from port code at load time) |
+| Honey bottle alchemy | *(no recipe file)* port code adds the stoked recipe to `FCCraftingManagerCauldronStoked` at load time |
 | Grindstone disenchant | *(mixin; no recipe)* |
 
 ---
@@ -174,7 +194,8 @@ When Phase 2 data-gen lands, the following recipes need explicit entries:
 ## Ordering note
 
 Phase 5 (`#035` honey alchemy) can proceed in parallel with Phase 3 and
-Phase 4 since it only adds to `FCCraftingManagerCauldron`. All other
+Phase 4 since it only adds a recipe to `FCCraftingManagerCauldronStoked`
+at load time, from port code (no FC file changes). All other
 reagent gates depend on either Phase 2 data-gen being live (for
 JSON-based overrides) or Phase 4 off-hand routing (for totem activation
 detection through off-hand if that becomes the trigger instead of main

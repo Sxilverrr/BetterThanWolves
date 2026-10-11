@@ -129,9 +129,47 @@ public class RenderBlocks {
 
     // --- Block rendering by render type ---
 
-    public void renderBlockUsingTexture(Block block, int x, int y, int z, Icon icon) {}
+    /**
+     * 1.5.2 renderBlockUsingTexture (RenderBlocks.java:392-397): the block's own render with every face
+     * drawn in the given icon. Port: the override is cleared in a finally block, and an exception from
+     * FC still reaches the caller (as in 1.5.2), whose capture records the failure.
+     */
+    public void renderBlockUsingTexture(Block block, int x, int y, int z, Icon icon) {
+        this.setOverrideBlockTexture(icon);
+        try {
+            this.renderBlockThroughFC(block, x, y, z);
+        } finally {
+            this.clearOverrideBlockTexture();
+        }
+    }
 
-    public void renderBlockAllFaces(Block block, int x, int y, int z) {}
+    /**
+     * 1.5.2 renderBlockAllFaces (RenderBlocks.java:402-407), which the default
+     * Block.RenderBlockMovedByPiston draws a piston-moved block with (vanilla/client Block.java:3764-3767):
+     * the block's own render with the shouldSideBeRendered culling switched off. The flag is reset in
+     * a finally block, as the override is in renderBlockUsingTexture.
+     */
+    public void renderBlockAllFaces(Block block, int x, int y, int z) {
+        this.renderAllFaces = true;
+        try {
+            this.renderBlockThroughFC(block, x, y, z);
+        } finally {
+            this.renderAllFaces = false;
+        }
+    }
+
+    /**
+     * 1.5.2 (FCMOD) renderBlockByRenderType (RenderBlocks.java:9442-9451), the dispatch both methods
+     * above go through. The port's renderBlockByRenderType below is the vanilla render-type switch that
+     * btw.modern.Block.RenderBlock falls back to, so calling it from them would skip FC's RenderBlock
+     * overrides and the second pass.
+     */
+    private boolean renderBlockThroughFC(Block block, int x, int y, int z) {
+        block.m_currentBlockRenderer = this;
+        boolean firstPass = block.RenderBlock(this, x, y, z);
+        block.RenderBlockSecondPass(this, x, y, z, firstPass);
+        return firstPass;
+    }
 
     public boolean renderBlockByRenderType(Block block, int x, int y, int z) {
         int renderType = block.getRenderType();
@@ -164,65 +202,231 @@ public class RenderBlocks {
 
     // --- Standard block rendering ---
 
+    /**
+     * 1.5.2 RenderBlocks.renderStandardBlock (RenderBlocks.java:4270-4292): the block's colorMultiplier
+     * tint, then the AO or colour-multiplier variant. The capture has no per-vertex AO (MC relights
+     * the baked quads), so it always takes renderStandardBlockWithColorMultiplier. Like 1.5.2 it does
+     * not set the render bounds: the caller (Block.RenderBlock, FCBlockAxle.RenderBlock, ...) has.
+     */
     public boolean renderStandardBlock(Block block, int x, int y, int z) {
-        // Do NOT call setRenderBoundsFromBlock here — the caller (e.g.,
-        // FCBlockAxle.RenderBlock) may have already set custom render bounds.
-        // In MC 1.5.2, renderStandardBlock also did not override bounds.
-        int meta = blockAccess != null ? blockAccess.getBlockMetadata(x, y, z) : 0;
-        Icon icon;
-        icon = getBlockIconFromSideAndMetadata(block, 0, meta);
-        renderFaceYNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 1, meta);
-        renderFaceYPos(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 2, meta);
-        renderFaceZNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 3, meta);
-        renderFaceZPos(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 4, meta);
-        renderFaceXNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 5, meta);
-        renderFaceXPos(block, x, y, z, icon);
-        return true;
+        int color = this.colorMultiplierForFaces(block, x, y, z);
+        float r = (float)(color >> 16 & 255) / 255.0F;
+        float g = (float)(color >> 8 & 255) / 255.0F;
+        float b = (float)(color & 255) / 255.0F;
+        return this.renderStandardBlockWithColorMultiplier(block, x, y, z, r, g, b);
     }
 
+    /**
+     * 1.5.2 renderStandardBlockWithAmbientOcclusion (RenderBlocks.java:4352-5161): the same
+     * renderAllFaces / shouldSideBeRendered gate and getBlockIcon faces as the colour-multiplier
+     * variant; the capture discards per-vertex AO, so it draws through that variant. 1.5.2 drops the
+     * tint while an override texture is set (:4373-4377).
+     */
     public boolean renderStandardBlockWithAmbientOcclusion(Block block, int x, int y, int z, float r, float g, float b) {
-        return false;
+        boolean tint = !this.hasOverrideBlockTexture();
+        return this.renderStandardBlockWithColorMultiplier(block, x, y, z, tint ? r : 1.0F, tint ? g : 1.0F, tint ? b : 1.0F);
     }
 
+    /** 1.5.2 func_102027_b (RenderBlocks.java:5163-6012), the partial-bounds AO variant; see renderStandardBlockWithAmbientOcclusion. */
     public boolean func_102027_b(Block block, int x, int y, int z, float r, float g, float b) {
-        return false;
+        return this.renderStandardBlockWithAmbientOcclusion(block, x, y, z, r, g, b);
     }
 
+    /**
+     * 1.5.2 renderStandardBlockWithColorMultiplier (RenderBlocks.java:6047-6187): each face is drawn
+     * when renderAllFaces or block.shouldSideBeRendered(neighbour, side) allows it, with the
+     * world-aware icon block.getBlockTexture(blockAccess, x, y, z, side) (getBlockIcon, :8377-8380).
+     * That is where FC puts facing- and neighbour-dependent faces (gear box / clutch input and output,
+     * axle axis and powered textures, bellows / saw / screw pump fronts), and FCBakedModel's capture
+     * sees those neighbour reads and captures such metas live.
+     *
+     * <p>Capture adaptations: the colour is the tint alone; 1.5.2's face shades (0.5 bottom, 1.0 top,
+     * 0.8 z sides, 0.6 x sides) and setBrightness are left out because MC shades and lights the baked
+     * quads itself (ModelBlockRenderer multiplies the vertex colour by its directional shade). With
+     * no blockAccess (a draw outside the world) every face is drawn with getIcon(side, 0) in the
+     * caller's colour.
+     */
     public boolean renderStandardBlockWithColorMultiplier(Block block, int x, int y, int z, float r, float g, float b) {
-        return false;
+        this.enableAO = false;
+        Tessellator t = Tessellator.instance;
+        boolean rendered = false;
+
+        if (this.renderAllFaces || this.sideVisible(block, x, y - 1, z, 0)) {
+            this.setFaceColor(t, r, g, b);
+            this.renderFaceYNeg(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 0));
+            rendered = true;
+        }
+
+        if (this.renderAllFaces || this.sideVisible(block, x, y + 1, z, 1)) {
+            this.setFaceColor(t, r, g, b);
+            this.renderFaceYPos(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 1));
+            rendered = true;
+        }
+
+        if (this.renderAllFaces || this.sideVisible(block, x, y, z - 1, 2)) {
+            this.setFaceColor(t, r, g, b);
+            this.renderFaceZNeg(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 2));
+            rendered = true;
+        }
+
+        if (this.renderAllFaces || this.sideVisible(block, x, y, z + 1, 3)) {
+            this.setFaceColor(t, r, g, b);
+            this.renderFaceZPos(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 3));
+            rendered = true;
+        }
+
+        if (this.renderAllFaces || this.sideVisible(block, x - 1, y, z, 4)) {
+            this.setFaceColor(t, r, g, b);
+            this.renderFaceXNeg(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 4));
+            rendered = true;
+        }
+
+        if (this.renderAllFaces || this.sideVisible(block, x + 1, y, z, 5)) {
+            this.setFaceColor(t, r, g, b);
+            this.renderFaceXPos(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 5));
+            rendered = true;
+        }
+
+        return rendered;
     }
 
     // --- FC additions: standard full block rendering ---
 
+    /**
+     * 1.5.2 (FCMOD) RenderStandardFullBlock (RenderBlocks.java:9461-9478): full-cube bounds written
+     * straight to the fields (the bounds lock is not consulted), then the AO or colour-multiplier
+     * variant; the capture has no AO, so always the latter.
+     */
     public boolean RenderStandardFullBlock(Block block, int x, int y, int z) {
-        int meta = blockAccess != null ? blockAccess.getBlockMetadata(x, y, z) : 0;
-        Icon icon;
-        icon = getBlockIconFromSideAndMetadata(block, 0, meta);
-        renderFaceYNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 1, meta);
-        renderFaceYPos(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 2, meta);
-        renderFaceZNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 3, meta);
-        renderFaceZPos(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 4, meta);
-        renderFaceXNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 5, meta);
-        renderFaceXPos(block, x, y, z, icon);
-        return true;
+        this.renderMinX = this.renderMinY = this.renderMinZ = 0.0D;
+        this.renderMaxX = this.renderMaxY = this.renderMaxZ = 1.0D;
+        this.partialRenderBounds = false;
+        return this.RenderStandardFullBlockWithColorMultiplier(block, x, y, z);
     }
 
+    /** 1.5.2 RenderStandardFullBlockWithAmbientOcclusion (RenderBlocks.java:9480-10101): same gate and icons; drawn without AO. */
     public boolean RenderStandardFullBlockWithAmbientOcclusion(Block block, int x, int y, int z) {
-        return false;
+        return this.RenderStandardFullBlockWithColorMultiplier(block, x, y, z);
     }
 
+    /**
+     * 1.5.2 RenderStandardFullBlockWithColorMultiplier (RenderBlocks.java:10103-10175): faces gated by
+     * block.shouldSideBeRendered alone (FC strips the renderAllFaces test here, see
+     * RenderStandardFullBlockMovedByPiston), world-aware getBlockIcon faces, drawn through the
+     * RenderFull*Face methods. The face shades are left out as in renderStandardBlockWithColorMultiplier.
+     */
     public boolean RenderStandardFullBlockWithColorMultiplier(Block block, int x, int y, int z) {
-        return false;
+        this.enableAO = false;
+        Tessellator t = Tessellator.instance;
+        boolean rendered = false;
+
+        if (this.sideVisible(block, x, y - 1, z, 0)) {
+            this.setFaceColor(t, 1.0F, 1.0F, 1.0F);
+            this.RenderFullBottomFace(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 0));
+            rendered = true;
+        }
+
+        if (this.sideVisible(block, x, y + 1, z, 1)) {
+            this.setFaceColor(t, 1.0F, 1.0F, 1.0F);
+            this.RenderFullTopFace(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 1));
+            rendered = true;
+        }
+
+        if (this.sideVisible(block, x, y, z - 1, 2)) {
+            this.setFaceColor(t, 1.0F, 1.0F, 1.0F);
+            this.RenderFullEastFace(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 2));
+            rendered = true;
+        }
+
+        if (this.sideVisible(block, x, y, z + 1, 3)) {
+            this.setFaceColor(t, 1.0F, 1.0F, 1.0F);
+            this.RenderFullWestFace(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 3));
+            rendered = true;
+        }
+
+        if (this.sideVisible(block, x - 1, y, z, 4)) {
+            this.setFaceColor(t, 1.0F, 1.0F, 1.0F);
+            this.RenderFullNorthFace(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 4));
+            rendered = true;
+        }
+
+        if (this.sideVisible(block, x + 1, y, z, 5)) {
+            this.setFaceColor(t, 1.0F, 1.0F, 1.0F);
+            this.RenderFullSouthFace(block, (double)x, (double)y, (double)z, this.standardFaceIcon(block, x, y, z, 5));
+            rendered = true;
+        }
+
+        return rendered;
+    }
+
+    // --- Standard-block helpers (FC calls guarded so a throwing override cannot drop the capture) ---
+
+    /** "Class#method" for each FC override (colorMultiplier, getBlockTexture, shouldSideBeRendered, ...) that threw here; logged once. */
+    private static final java.util.Set<String> FAILED_FACE_CALLS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private static void logFaceCallFailure(Block block, String method, Throwable t) {
+        if (FAILED_FACE_CALLS.add(block.getClass().getName() + "#" + method)) {
+            LOGGER.warn("{}.{} threw while drawing a standard block; using the fallback for it: {}",
+                    block.getClass().getSimpleName(), method, t.toString());
+        }
+    }
+
+    /**
+     * The colour 1.5.2 sets before each standard-block face (Tessellator.setColorOpaque_F). Without a
+     * blockAccess it is left alone, so such a draw keeps the colour its caller set, as the port drew
+     * these faces before.
+     */
+    private void setFaceColor(Tessellator t, float r, float g, float b) {
+        if (this.blockAccess != null) {
+            t.setColorOpaque_F(r, g, b);
+        }
+    }
+
+    /** block.colorMultiplier(blockAccess, x, y, z) (1.5.2 :4272); white without a blockAccess or if it throws. */
+    private int colorMultiplierForFaces(Block block, int x, int y, int z) {
+        if (this.blockAccess == null) {
+            return 0xFFFFFF;
+        }
+        try {
+            return block.colorMultiplier(this.blockAccess, x, y, z);
+        } catch (Throwable t) {
+            logFaceCallFailure(block, "colorMultiplier", t);
+            return 0xFFFFFF;
+        }
+    }
+
+    /**
+     * block.shouldSideBeRendered(blockAccess, neighbour, side) for the standard-block gates. Without a
+     * blockAccess, or if the override throws (FC overrides dereference m_currentBlockRenderer), the
+     * face is drawn, as the port did before the gate existed.
+     */
+    private boolean sideVisible(Block block, int nx, int ny, int nz, int side) {
+        if (this.blockAccess == null) {
+            return true;
+        }
+        try {
+            return block.shouldSideBeRendered(this.blockAccess, nx, ny, nz, side);
+        } catch (Throwable t) {
+            logFaceCallFailure(block, "shouldSideBeRendered", t);
+            return true;
+        }
+    }
+
+    /**
+     * The icon 1.5.2's standard-block routines draw a face with: getBlockIcon(block, blockAccess, x, y,
+     * z, side), i.e. the world-aware block.getBlockTexture. getIcon(side, meta) is FC's item-render API
+     * and is used only without a blockAccess (meta 0) or when getBlockTexture throws.
+     */
+    private Icon standardFaceIcon(Block block, int x, int y, int z, int side) {
+        if (this.blockAccess == null) {
+            return this.getBlockIconFromSideAndMetadata(block, side, 0);
+        }
+        try {
+            return this.getBlockIcon(block, this.blockAccess, x, y, z, side);
+        } catch (Throwable t) {
+            logFaceCallFailure(block, "getBlockTexture", t);
+            return this.getBlockIconFromSideAndMetadata(block, side, this.blockAccess.getBlockMetadata(x, y, z));
+        }
     }
 
     // --- Grass block rendering ---
@@ -2378,21 +2582,16 @@ public class RenderBlocks {
         renderFaceXPos(block, x, y, z, icon);
     }
 
+    /**
+     * 1.5.2 (FCMOD) RenderStandardFullBlockMovedByPiston (RenderBlocks.java:10631-10643): a full block
+     * pushed by a piston is drawn through renderStandardBlock with renderAllFaces set, because
+     * RenderStandardFullBlock's faces skip the renderAllFaces test and would be culled by neighbours.
+     */
     public void RenderStandardFullBlockMovedByPiston(Block block, int x, int y, int z) {
-        int meta = blockAccess != null ? blockAccess.getBlockMetadata(x, y, z) : 0;
-        Icon icon;
-        icon = getBlockIconFromSideAndMetadata(block, 0, meta);
-        renderFaceYNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 1, meta);
-        renderFaceYPos(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 2, meta);
-        renderFaceZNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 3, meta);
-        renderFaceZPos(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 4, meta);
-        renderFaceXNeg(block, x, y, z, icon);
-        icon = getBlockIconFromSideAndMetadata(block, 5, meta);
-        renderFaceXPos(block, x, y, z, icon);
+        this.SetRenderAllFaces(true);
+        this.setRenderBoundsFromBlock(block);
+        this.renderStandardBlock(block, x, y, z);
+        this.SetRenderAllFaces(false);
     }
 
     // --- Torch / helper rendering ---
@@ -2590,180 +2789,643 @@ public class RenderBlocks {
 
     // --- Face rendering ---
 
-    // Face methods interpolate UVs based on render bounds, matching MC 1.5.2.
-    // For a face spanning renderMinX..renderMaxX, the U coordinate maps from
-    // icon pixel (renderMin*16) to icon pixel (renderMax*16). With NamedIcon
-    // (getInterpolatedU returns d/16 for 0-1 normalized), the captured UVs
-    // stay in 0-1 range and convertCapturedQuad maps via sprite.getU(v.u*16).
+    // The six renderFace* methods are 1.5.2 RenderBlocks.java:7167-7806 (non-AO branch): the override
+    // texture replaces the passed icon, UVs interpolate over the render bounds, bounds outside 0..1
+    // take the whole icon, flipTexture mirrors the side faces, and the per-face uvRotate value (0-3;
+    // any other value, e.g. the saw's 4, is no rotation) turns the UVs. 1.5.2's field-to-face mapping
+    // is kept: YNeg uvRotateBottom, YPos uvRotateTop, ZNeg uvRotateEast, ZPos uvRotateWest, XNeg
+    // uvRotateNorth, XPos uvRotateSouth. Capture adaptations: the icon's name tags the quad and the
+    // face normal is set; a null icon samples d/16 (NamedIcon's mapping) instead of throwing. With
+    // NamedIcon the captured UVs stay in 0..1 icon space and FCBakedModel.convertCapturedQuad maps
+    // them onto the sprite with sprite.getU(u * 16).
 
+    private static double iconU(Icon icon, double d) {
+        return icon != null ? (double)icon.getInterpolatedU(d) : d / 16.0D;
+    }
+
+    private static double iconV(Icon icon, double d) {
+        return icon != null ? (double)icon.getInterpolatedV(d) : d / 16.0D;
+    }
+
+    private static double iconMinU(Icon icon) {
+        return icon != null ? (double)icon.getMinU() : 0.0D;
+    }
+
+    private static double iconMaxU(Icon icon) {
+        return icon != null ? (double)icon.getMaxU() : 1.0D;
+    }
+
+    private static double iconMinV(Icon icon) {
+        return icon != null ? (double)icon.getMinV() : 0.0D;
+    }
+
+    private static double iconMaxV(Icon icon) {
+        return icon != null ? (double)icon.getMaxV() : 1.0D;
+    }
+
+    /** 1.5.2 RenderBlocks.renderFaceYNeg (RenderBlocks.java:7167-7264). */
     public void renderFaceYNeg(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
+
+        if (this.hasOverrideBlockTexture()) {
+            icon = this.overrideBlockTexture;
+        }
+
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double u0 = icon != null ? icon.getInterpolatedU(renderMinX * 16.0) : 0;
-        double u1 = icon != null ? icon.getInterpolatedU(renderMaxX * 16.0) : 1;
-        double v0 = icon != null ? icon.getInterpolatedV(renderMinZ * 16.0) : 0;
-        double v1 = icon != null ? icon.getInterpolatedV(renderMaxZ * 16.0) : 1;
+        double u1 = iconU(icon, this.renderMinX * 16.0D);
+        double u2 = iconU(icon, this.renderMaxX * 16.0D);
+        double v1 = iconV(icon, this.renderMinZ * 16.0D);
+        double v2 = iconV(icon, this.renderMaxZ * 16.0D);
+
+        if (this.renderMinX < 0.0D || this.renderMaxX > 1.0D) {
+            u1 = iconMinU(icon);
+            u2 = iconMaxU(icon);
+        }
+
+        if (this.renderMinZ < 0.0D || this.renderMaxZ > 1.0D) {
+            v1 = iconMinV(icon);
+            v2 = iconMaxV(icon);
+        }
+
+        double u3 = u2;
+        double u4 = u1;
+        double v3 = v1;
+        double v4 = v2;
+
+        if (this.uvRotateBottom == 2) {
+            u1 = iconU(icon, this.renderMinZ * 16.0D);
+            v1 = iconV(icon, 16.0D - this.renderMaxX * 16.0D);
+            u2 = iconU(icon, this.renderMaxZ * 16.0D);
+            v2 = iconV(icon, 16.0D - this.renderMinX * 16.0D);
+            v3 = v1;
+            v4 = v2;
+            u3 = u1;
+            u4 = u2;
+            v1 = v2;
+            v2 = v3;
+        } else if (this.uvRotateBottom == 1) {
+            u1 = iconU(icon, 16.0D - this.renderMaxZ * 16.0D);
+            v1 = iconV(icon, this.renderMinX * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMinZ * 16.0D);
+            v2 = iconV(icon, this.renderMaxX * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            u1 = u2;
+            u2 = u4;
+            v3 = v2;
+            v4 = v1;
+        } else if (this.uvRotateBottom == 3) {
+            u1 = iconU(icon, 16.0D - this.renderMinX * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMaxX * 16.0D);
+            v1 = iconV(icon, 16.0D - this.renderMinZ * 16.0D);
+            v2 = iconV(icon, 16.0D - this.renderMaxZ * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            v3 = v1;
+            v4 = v2;
+        }
+
+        double x0 = x + this.renderMinX;
+        double x1 = x + this.renderMaxX;
+        double y0 = y + this.renderMinY;
+        double z0 = z + this.renderMinZ;
+        double z1 = z + this.renderMaxZ;
+
         t.setNormal(0, -1, 0);
-        t.addVertexWithUV(x + renderMinX, y + renderMinY, z + renderMaxZ, u0, v1);
-        t.addVertexWithUV(x + renderMinX, y + renderMinY, z + renderMinZ, u0, v0);
-        t.addVertexWithUV(x + renderMaxX, y + renderMinY, z + renderMinZ, u1, v0);
-        t.addVertexWithUV(x + renderMaxX, y + renderMinY, z + renderMaxZ, u1, v1);
+        t.addVertexWithUV(x0, y0, z1, u4, v4);
+        t.addVertexWithUV(x0, y0, z0, u1, v1);
+        t.addVertexWithUV(x1, y0, z0, u3, v3);
+        t.addVertexWithUV(x1, y0, z1, u2, v2);
     }
 
+    /** 1.5.2 RenderBlocks.renderFaceYPos (RenderBlocks.java:7269-7366). */
     public void renderFaceYPos(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
+
+        if (this.hasOverrideBlockTexture()) {
+            icon = this.overrideBlockTexture;
+        }
+
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double u0 = icon != null ? icon.getInterpolatedU(renderMinX * 16.0) : 0;
-        double u1 = icon != null ? icon.getInterpolatedU(renderMaxX * 16.0) : 1;
-        double v0 = icon != null ? icon.getInterpolatedV(renderMinZ * 16.0) : 0;
-        double v1 = icon != null ? icon.getInterpolatedV(renderMaxZ * 16.0) : 1;
+        double u1 = iconU(icon, this.renderMinX * 16.0D);
+        double u2 = iconU(icon, this.renderMaxX * 16.0D);
+        double v1 = iconV(icon, this.renderMinZ * 16.0D);
+        double v2 = iconV(icon, this.renderMaxZ * 16.0D);
+
+        if (this.renderMinX < 0.0D || this.renderMaxX > 1.0D) {
+            u1 = iconMinU(icon);
+            u2 = iconMaxU(icon);
+        }
+
+        if (this.renderMinZ < 0.0D || this.renderMaxZ > 1.0D) {
+            v1 = iconMinV(icon);
+            v2 = iconMaxV(icon);
+        }
+
+        double u3 = u2;
+        double u4 = u1;
+        double v3 = v1;
+        double v4 = v2;
+
+        if (this.uvRotateTop == 1) {
+            u1 = iconU(icon, this.renderMinZ * 16.0D);
+            v1 = iconV(icon, 16.0D - this.renderMaxX * 16.0D);
+            u2 = iconU(icon, this.renderMaxZ * 16.0D);
+            v2 = iconV(icon, 16.0D - this.renderMinX * 16.0D);
+            v3 = v1;
+            v4 = v2;
+            u3 = u1;
+            u4 = u2;
+            v1 = v2;
+            v2 = v3;
+        } else if (this.uvRotateTop == 2) {
+            u1 = iconU(icon, 16.0D - this.renderMaxZ * 16.0D);
+            v1 = iconV(icon, this.renderMinX * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMinZ * 16.0D);
+            v2 = iconV(icon, this.renderMaxX * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            u1 = u2;
+            u2 = u4;
+            v3 = v2;
+            v4 = v1;
+        } else if (this.uvRotateTop == 3) {
+            u1 = iconU(icon, 16.0D - this.renderMinX * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMaxX * 16.0D);
+            v1 = iconV(icon, 16.0D - this.renderMinZ * 16.0D);
+            v2 = iconV(icon, 16.0D - this.renderMaxZ * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            v3 = v1;
+            v4 = v2;
+        }
+
+        double x0 = x + this.renderMinX;
+        double x1 = x + this.renderMaxX;
+        double y1 = y + this.renderMaxY;
+        double z0 = z + this.renderMinZ;
+        double z1 = z + this.renderMaxZ;
+
         t.setNormal(0, 1, 0);
-        t.addVertexWithUV(x + renderMaxX, y + renderMaxY, z + renderMaxZ, u1, v1);
-        t.addVertexWithUV(x + renderMaxX, y + renderMaxY, z + renderMinZ, u1, v0);
-        t.addVertexWithUV(x + renderMinX, y + renderMaxY, z + renderMinZ, u0, v0);
-        t.addVertexWithUV(x + renderMinX, y + renderMaxY, z + renderMaxZ, u0, v1);
+        t.addVertexWithUV(x1, y1, z1, u2, v2);
+        t.addVertexWithUV(x1, y1, z0, u3, v3);
+        t.addVertexWithUV(x0, y1, z0, u1, v1);
+        t.addVertexWithUV(x0, y1, z1, u4, v4);
     }
 
+    /** 1.5.2 RenderBlocks.renderFaceZNeg (RenderBlocks.java:7371-7476). */
     public void renderFaceZNeg(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
+
+        if (this.hasOverrideBlockTexture()) {
+            icon = this.overrideBlockTexture;
+        }
+
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double u0 = icon != null ? icon.getInterpolatedU(renderMinX * 16.0) : 0;
-        double u1 = icon != null ? icon.getInterpolatedU(renderMaxX * 16.0) : 1;
-        double v0 = icon != null ? icon.getInterpolatedV((1.0 - renderMaxY) * 16.0) : 0;
-        double v1 = icon != null ? icon.getInterpolatedV((1.0 - renderMinY) * 16.0) : 1;
+        double u1 = iconU(icon, this.renderMinX * 16.0D);
+        double u2 = iconU(icon, this.renderMaxX * 16.0D);
+        double v1 = iconV(icon, 16.0D - this.renderMaxY * 16.0D);
+        double v2 = iconV(icon, 16.0D - this.renderMinY * 16.0D);
+
+        if (this.flipTexture) {
+            double swap = u1;
+            u1 = u2;
+            u2 = swap;
+        }
+
+        if (this.renderMinX < 0.0D || this.renderMaxX > 1.0D) {
+            u1 = iconMinU(icon);
+            u2 = iconMaxU(icon);
+        }
+
+        if (this.renderMinY < 0.0D || this.renderMaxY > 1.0D) {
+            v1 = iconMinV(icon);
+            v2 = iconMaxV(icon);
+        }
+
+        double u3 = u2;
+        double u4 = u1;
+        double v3 = v1;
+        double v4 = v2;
+
+        if (this.uvRotateEast == 2) {
+            u1 = iconU(icon, this.renderMinY * 16.0D);
+            v1 = iconV(icon, 16.0D - this.renderMinX * 16.0D);
+            u2 = iconU(icon, this.renderMaxY * 16.0D);
+            v2 = iconV(icon, 16.0D - this.renderMaxX * 16.0D);
+            v3 = v1;
+            v4 = v2;
+            u3 = u1;
+            u4 = u2;
+            v1 = v2;
+            v2 = v3;
+        } else if (this.uvRotateEast == 1) {
+            u1 = iconU(icon, 16.0D - this.renderMaxY * 16.0D);
+            v1 = iconV(icon, this.renderMaxX * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMinY * 16.0D);
+            v2 = iconV(icon, this.renderMinX * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            u1 = u2;
+            u2 = u4;
+            v3 = v2;
+            v4 = v1;
+        } else if (this.uvRotateEast == 3) {
+            u1 = iconU(icon, 16.0D - this.renderMinX * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMaxX * 16.0D);
+            v1 = iconV(icon, this.renderMaxY * 16.0D);
+            v2 = iconV(icon, this.renderMinY * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            v3 = v1;
+            v4 = v2;
+        }
+
+        double x0 = x + this.renderMinX;
+        double x1 = x + this.renderMaxX;
+        double y0 = y + this.renderMinY;
+        double y1 = y + this.renderMaxY;
+        double z0 = z + this.renderMinZ;
+
         t.setNormal(0, 0, -1);
-        t.addVertexWithUV(x + renderMinX, y + renderMaxY, z + renderMinZ, u1, v0);
-        t.addVertexWithUV(x + renderMaxX, y + renderMaxY, z + renderMinZ, u0, v0);
-        t.addVertexWithUV(x + renderMaxX, y + renderMinY, z + renderMinZ, u0, v1);
-        t.addVertexWithUV(x + renderMinX, y + renderMinY, z + renderMinZ, u1, v1);
+        t.addVertexWithUV(x0, y1, z0, u3, v3);
+        t.addVertexWithUV(x1, y1, z0, u1, v1);
+        t.addVertexWithUV(x1, y0, z0, u4, v4);
+        t.addVertexWithUV(x0, y0, z0, u2, v2);
     }
 
+    /** 1.5.2 RenderBlocks.renderFaceZPos (RenderBlocks.java:7481-7586). */
     public void renderFaceZPos(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
+
+        if (this.hasOverrideBlockTexture()) {
+            icon = this.overrideBlockTexture;
+        }
+
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double u0 = icon != null ? icon.getInterpolatedU(renderMinX * 16.0) : 0;
-        double u1 = icon != null ? icon.getInterpolatedU(renderMaxX * 16.0) : 1;
-        double v0 = icon != null ? icon.getInterpolatedV((1.0 - renderMaxY) * 16.0) : 0;
-        double v1 = icon != null ? icon.getInterpolatedV((1.0 - renderMinY) * 16.0) : 1;
+        double u1 = iconU(icon, this.renderMinX * 16.0D);
+        double u2 = iconU(icon, this.renderMaxX * 16.0D);
+        double v1 = iconV(icon, 16.0D - this.renderMaxY * 16.0D);
+        double v2 = iconV(icon, 16.0D - this.renderMinY * 16.0D);
+
+        if (this.flipTexture) {
+            double swap = u1;
+            u1 = u2;
+            u2 = swap;
+        }
+
+        if (this.renderMinX < 0.0D || this.renderMaxX > 1.0D) {
+            u1 = iconMinU(icon);
+            u2 = iconMaxU(icon);
+        }
+
+        if (this.renderMinY < 0.0D || this.renderMaxY > 1.0D) {
+            v1 = iconMinV(icon);
+            v2 = iconMaxV(icon);
+        }
+
+        double u3 = u2;
+        double u4 = u1;
+        double v3 = v1;
+        double v4 = v2;
+
+        if (this.uvRotateWest == 1) {
+            u1 = iconU(icon, this.renderMinY * 16.0D);
+            v2 = iconV(icon, 16.0D - this.renderMinX * 16.0D);
+            u2 = iconU(icon, this.renderMaxY * 16.0D);
+            v1 = iconV(icon, 16.0D - this.renderMaxX * 16.0D);
+            v3 = v1;
+            v4 = v2;
+            u3 = u1;
+            u4 = u2;
+            v1 = v2;
+            v2 = v3;
+        } else if (this.uvRotateWest == 2) {
+            u1 = iconU(icon, 16.0D - this.renderMaxY * 16.0D);
+            v1 = iconV(icon, this.renderMinX * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMinY * 16.0D);
+            v2 = iconV(icon, this.renderMaxX * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            u1 = u2;
+            u2 = u4;
+            v3 = v2;
+            v4 = v1;
+        } else if (this.uvRotateWest == 3) {
+            u1 = iconU(icon, 16.0D - this.renderMinX * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMaxX * 16.0D);
+            v1 = iconV(icon, this.renderMaxY * 16.0D);
+            v2 = iconV(icon, this.renderMinY * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            v3 = v1;
+            v4 = v2;
+        }
+
+        double x0 = x + this.renderMinX;
+        double x1 = x + this.renderMaxX;
+        double y0 = y + this.renderMinY;
+        double y1 = y + this.renderMaxY;
+        double z1 = z + this.renderMaxZ;
+
         t.setNormal(0, 0, 1);
-        t.addVertexWithUV(x + renderMinX, y + renderMaxY, z + renderMaxZ, u0, v0);
-        t.addVertexWithUV(x + renderMinX, y + renderMinY, z + renderMaxZ, u0, v1);
-        t.addVertexWithUV(x + renderMaxX, y + renderMinY, z + renderMaxZ, u1, v1);
-        t.addVertexWithUV(x + renderMaxX, y + renderMaxY, z + renderMaxZ, u1, v0);
+        t.addVertexWithUV(x0, y1, z1, u1, v1);
+        t.addVertexWithUV(x0, y0, z1, u4, v4);
+        t.addVertexWithUV(x1, y0, z1, u2, v2);
+        t.addVertexWithUV(x1, y1, z1, u3, v3);
     }
 
+    /** 1.5.2 RenderBlocks.renderFaceXNeg (RenderBlocks.java:7591-7696). */
     public void renderFaceXNeg(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
+
+        if (this.hasOverrideBlockTexture()) {
+            icon = this.overrideBlockTexture;
+        }
+
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double u0 = icon != null ? icon.getInterpolatedU(renderMinZ * 16.0) : 0;
-        double u1 = icon != null ? icon.getInterpolatedU(renderMaxZ * 16.0) : 1;
-        double v0 = icon != null ? icon.getInterpolatedV((1.0 - renderMaxY) * 16.0) : 0;
-        double v1 = icon != null ? icon.getInterpolatedV((1.0 - renderMinY) * 16.0) : 1;
+        double u1 = iconU(icon, this.renderMinZ * 16.0D);
+        double u2 = iconU(icon, this.renderMaxZ * 16.0D);
+        double v1 = iconV(icon, 16.0D - this.renderMaxY * 16.0D);
+        double v2 = iconV(icon, 16.0D - this.renderMinY * 16.0D);
+
+        if (this.flipTexture) {
+            double swap = u1;
+            u1 = u2;
+            u2 = swap;
+        }
+
+        if (this.renderMinZ < 0.0D || this.renderMaxZ > 1.0D) {
+            u1 = iconMinU(icon);
+            u2 = iconMaxU(icon);
+        }
+
+        if (this.renderMinY < 0.0D || this.renderMaxY > 1.0D) {
+            v1 = iconMinV(icon);
+            v2 = iconMaxV(icon);
+        }
+
+        double u3 = u2;
+        double u4 = u1;
+        double v3 = v1;
+        double v4 = v2;
+
+        if (this.uvRotateNorth == 1) {
+            u1 = iconU(icon, this.renderMinY * 16.0D);
+            v1 = iconV(icon, 16.0D - this.renderMaxZ * 16.0D);
+            u2 = iconU(icon, this.renderMaxY * 16.0D);
+            v2 = iconV(icon, 16.0D - this.renderMinZ * 16.0D);
+            v3 = v1;
+            v4 = v2;
+            u3 = u1;
+            u4 = u2;
+            v1 = v2;
+            v2 = v3;
+        } else if (this.uvRotateNorth == 2) {
+            u1 = iconU(icon, 16.0D - this.renderMaxY * 16.0D);
+            v1 = iconV(icon, this.renderMinZ * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMinY * 16.0D);
+            v2 = iconV(icon, this.renderMaxZ * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            u1 = u2;
+            u2 = u4;
+            v3 = v2;
+            v4 = v1;
+        } else if (this.uvRotateNorth == 3) {
+            u1 = iconU(icon, 16.0D - this.renderMinZ * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMaxZ * 16.0D);
+            v1 = iconV(icon, this.renderMaxY * 16.0D);
+            v2 = iconV(icon, this.renderMinY * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            v3 = v1;
+            v4 = v2;
+        }
+
+        double x0 = x + this.renderMinX;
+        double y0 = y + this.renderMinY;
+        double y1 = y + this.renderMaxY;
+        double z0 = z + this.renderMinZ;
+        double z1 = z + this.renderMaxZ;
+
         t.setNormal(-1, 0, 0);
-        t.addVertexWithUV(x + renderMinX, y + renderMaxY, z + renderMaxZ, u1, v0);
-        t.addVertexWithUV(x + renderMinX, y + renderMaxY, z + renderMinZ, u0, v0);
-        t.addVertexWithUV(x + renderMinX, y + renderMinY, z + renderMinZ, u0, v1);
-        t.addVertexWithUV(x + renderMinX, y + renderMinY, z + renderMaxZ, u1, v1);
+        t.addVertexWithUV(x0, y1, z1, u3, v3);
+        t.addVertexWithUV(x0, y1, z0, u1, v1);
+        t.addVertexWithUV(x0, y0, z0, u4, v4);
+        t.addVertexWithUV(x0, y0, z1, u2, v2);
     }
 
+    /**
+     * 1.5.2 RenderBlocks.renderFaceXPos (RenderBlocks.java:7701-7806). U runs from u(maxZ) at minZ to
+     * u(minZ) at maxZ, i.e. u(z) = (minZ + maxZ - z) * 16, which equals (1 - z) * 16 only for bounds
+     * centred on the block.
+     */
     public void renderFaceXPos(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
+
+        if (this.hasOverrideBlockTexture()) {
+            icon = this.overrideBlockTexture;
+        }
+
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double u0 = icon != null ? icon.getInterpolatedU((1.0 - renderMaxZ) * 16.0) : 0;
-        double u1 = icon != null ? icon.getInterpolatedU((1.0 - renderMinZ) * 16.0) : 1;
-        double v0 = icon != null ? icon.getInterpolatedV((1.0 - renderMaxY) * 16.0) : 0;
-        double v1 = icon != null ? icon.getInterpolatedV((1.0 - renderMinY) * 16.0) : 1;
+        double u1 = iconU(icon, this.renderMinZ * 16.0D);
+        double u2 = iconU(icon, this.renderMaxZ * 16.0D);
+        double v1 = iconV(icon, 16.0D - this.renderMaxY * 16.0D);
+        double v2 = iconV(icon, 16.0D - this.renderMinY * 16.0D);
+
+        if (this.flipTexture) {
+            double swap = u1;
+            u1 = u2;
+            u2 = swap;
+        }
+
+        if (this.renderMinZ < 0.0D || this.renderMaxZ > 1.0D) {
+            u1 = iconMinU(icon);
+            u2 = iconMaxU(icon);
+        }
+
+        if (this.renderMinY < 0.0D || this.renderMaxY > 1.0D) {
+            v1 = iconMinV(icon);
+            v2 = iconMaxV(icon);
+        }
+
+        double u3 = u2;
+        double u4 = u1;
+        double v3 = v1;
+        double v4 = v2;
+
+        if (this.uvRotateSouth == 2) {
+            u1 = iconU(icon, this.renderMinY * 16.0D);
+            v1 = iconV(icon, 16.0D - this.renderMinZ * 16.0D);
+            u2 = iconU(icon, this.renderMaxY * 16.0D);
+            v2 = iconV(icon, 16.0D - this.renderMaxZ * 16.0D);
+            v3 = v1;
+            v4 = v2;
+            u3 = u1;
+            u4 = u2;
+            v1 = v2;
+            v2 = v3;
+        } else if (this.uvRotateSouth == 1) {
+            u1 = iconU(icon, 16.0D - this.renderMaxY * 16.0D);
+            v1 = iconV(icon, this.renderMaxZ * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMinY * 16.0D);
+            v2 = iconV(icon, this.renderMinZ * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            u1 = u2;
+            u2 = u4;
+            v3 = v2;
+            v4 = v1;
+        } else if (this.uvRotateSouth == 3) {
+            u1 = iconU(icon, 16.0D - this.renderMinZ * 16.0D);
+            u2 = iconU(icon, 16.0D - this.renderMaxZ * 16.0D);
+            v1 = iconV(icon, this.renderMaxY * 16.0D);
+            v2 = iconV(icon, this.renderMinY * 16.0D);
+            u3 = u2;
+            u4 = u1;
+            v3 = v1;
+            v4 = v2;
+        }
+
+        double x1 = x + this.renderMaxX;
+        double y0 = y + this.renderMinY;
+        double y1 = y + this.renderMaxY;
+        double z0 = z + this.renderMinZ;
+        double z1 = z + this.renderMaxZ;
+
         t.setNormal(1, 0, 0);
-        t.addVertexWithUV(x + renderMaxX, y + renderMinY, z + renderMaxZ, u0, v1);
-        t.addVertexWithUV(x + renderMaxX, y + renderMinY, z + renderMinZ, u1, v1);
-        t.addVertexWithUV(x + renderMaxX, y + renderMaxY, z + renderMinZ, u1, v0);
-        t.addVertexWithUV(x + renderMaxX, y + renderMaxY, z + renderMaxZ, u0, v0);
+        t.addVertexWithUV(x1, y0, z1, u4, v4);
+        t.addVertexWithUV(x1, y0, z0, u2, v2);
+        t.addVertexWithUV(x1, y1, z0, u3, v3);
+        t.addVertexWithUV(x1, y1, z1, u1, v1);
     }
 
     // --- FC additions: full face rendering ---
 
+    // 1.5.2 (FCMOD) RenderFull*Face (RenderBlocks.java:10177-10449), RenderStandardFullBlock's faces:
+    // renderFace* without the override texture, flip, clamps or uvRotate. FC names them after its own
+    // compass, not the face normal: East is the z-negative face, West z-positive, North x-negative,
+    // South x-positive. Same capture adaptations as renderFace*.
+
+    /** 1.5.2 RenderFullBottomFace (RenderBlocks.java:10177-10219). */
     public void RenderFullBottomFace(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double minU = icon != null ? icon.getMinU() : 0;
-        double maxU = icon != null ? icon.getMaxU() : 1;
-        double minV = icon != null ? icon.getMinV() : 0;
-        double maxV = icon != null ? icon.getMaxV() : 1;
+        double u1 = iconU(icon, this.renderMinX * 16.0D);
+        double u2 = iconU(icon, this.renderMaxX * 16.0D);
+        double v1 = iconV(icon, this.renderMinZ * 16.0D);
+        double v2 = iconV(icon, this.renderMaxZ * 16.0D);
+        double x0 = x + this.renderMinX;
+        double x1 = x + this.renderMaxX;
+        double y0 = y + this.renderMinY;
+        double z0 = z + this.renderMinZ;
+        double z1 = z + this.renderMaxZ;
         t.setNormal(0, -1, 0);
-        t.addVertexWithUV(x + 0, y + 0, z + 1, minU, maxV);
-        t.addVertexWithUV(x + 0, y + 0, z + 0, minU, minV);
-        t.addVertexWithUV(x + 1, y + 0, z + 0, maxU, minV);
-        t.addVertexWithUV(x + 1, y + 0, z + 1, maxU, maxV);
+        t.addVertexWithUV(x0, y0, z1, u1, v2);
+        t.addVertexWithUV(x0, y0, z0, u1, v1);
+        t.addVertexWithUV(x1, y0, z0, u2, v1);
+        t.addVertexWithUV(x1, y0, z1, u2, v2);
     }
 
+    /** 1.5.2 RenderFullTopFace (RenderBlocks.java:10221-10263). */
     public void RenderFullTopFace(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double minU = icon != null ? icon.getMinU() : 0;
-        double maxU = icon != null ? icon.getMaxU() : 1;
-        double minV = icon != null ? icon.getMinV() : 0;
-        double maxV = icon != null ? icon.getMaxV() : 1;
+        double u1 = iconU(icon, this.renderMinX * 16.0D);
+        double u2 = iconU(icon, this.renderMaxX * 16.0D);
+        double v1 = iconV(icon, this.renderMinZ * 16.0D);
+        double v2 = iconV(icon, this.renderMaxZ * 16.0D);
+        double x0 = x + this.renderMinX;
+        double x1 = x + this.renderMaxX;
+        double y1 = y + this.renderMaxY;
+        double z0 = z + this.renderMinZ;
+        double z1 = z + this.renderMaxZ;
         t.setNormal(0, 1, 0);
-        t.addVertexWithUV(x + 1, y + 1, z + 1, maxU, maxV);
-        t.addVertexWithUV(x + 1, y + 1, z + 0, maxU, minV);
-        t.addVertexWithUV(x + 0, y + 1, z + 0, minU, minV);
-        t.addVertexWithUV(x + 0, y + 1, z + 1, minU, maxV);
+        t.addVertexWithUV(x1, y1, z1, u2, v2);
+        t.addVertexWithUV(x1, y1, z0, u2, v1);
+        t.addVertexWithUV(x0, y1, z0, u1, v1);
+        t.addVertexWithUV(x0, y1, z1, u1, v2);
     }
 
+    /** 1.5.2 RenderFullEastFace (RenderBlocks.java:10265-10308): the z-negative face. */
     public void RenderFullEastFace(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double minU = icon != null ? icon.getMinU() : 0;
-        double maxU = icon != null ? icon.getMaxU() : 1;
-        double minV = icon != null ? icon.getMinV() : 0;
-        double maxV = icon != null ? icon.getMaxV() : 1;
-        t.setNormal(1, 0, 0);
-        t.addVertexWithUV(x + 1, y + 0, z + 1, minU, maxV);
-        t.addVertexWithUV(x + 1, y + 0, z + 0, maxU, maxV);
-        t.addVertexWithUV(x + 1, y + 1, z + 0, maxU, minV);
-        t.addVertexWithUV(x + 1, y + 1, z + 1, minU, minV);
+        double u1 = iconU(icon, this.renderMinX * 16.0D);
+        double u2 = iconU(icon, this.renderMaxX * 16.0D);
+        double v1 = iconV(icon, 16.0D - this.renderMaxY * 16.0D);
+        double v2 = iconV(icon, 16.0D - this.renderMinY * 16.0D);
+        double x0 = x + this.renderMinX;
+        double x1 = x + this.renderMaxX;
+        double y0 = y + this.renderMinY;
+        double y1 = y + this.renderMaxY;
+        double z0 = z + this.renderMinZ;
+        t.setNormal(0, 0, -1);
+        t.addVertexWithUV(x0, y1, z0, u2, v1);
+        t.addVertexWithUV(x1, y1, z0, u1, v1);
+        t.addVertexWithUV(x1, y0, z0, u1, v2);
+        t.addVertexWithUV(x0, y0, z0, u2, v2);
     }
 
+    /** 1.5.2 RenderFullWestFace (RenderBlocks.java:10310-10353): the z-positive face. */
     public void RenderFullWestFace(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double minU = icon != null ? icon.getMinU() : 0;
-        double maxU = icon != null ? icon.getMaxU() : 1;
-        double minV = icon != null ? icon.getMinV() : 0;
-        double maxV = icon != null ? icon.getMaxV() : 1;
-        t.setNormal(-1, 0, 0);
-        t.addVertexWithUV(x + 0, y + 1, z + 1, maxU, minV);
-        t.addVertexWithUV(x + 0, y + 1, z + 0, minU, minV);
-        t.addVertexWithUV(x + 0, y + 0, z + 0, minU, maxV);
-        t.addVertexWithUV(x + 0, y + 0, z + 1, maxU, maxV);
+        double u1 = iconU(icon, this.renderMinX * 16.0D);
+        double u2 = iconU(icon, this.renderMaxX * 16.0D);
+        double v1 = iconV(icon, 16.0D - this.renderMaxY * 16.0D);
+        double v2 = iconV(icon, 16.0D - this.renderMinY * 16.0D);
+        double x0 = x + this.renderMinX;
+        double x1 = x + this.renderMaxX;
+        double y0 = y + this.renderMinY;
+        double y1 = y + this.renderMaxY;
+        double z1 = z + this.renderMaxZ;
+        t.setNormal(0, 0, 1);
+        t.addVertexWithUV(x0, y1, z1, u1, v1);
+        t.addVertexWithUV(x0, y0, z1, u1, v2);
+        t.addVertexWithUV(x1, y0, z1, u2, v2);
+        t.addVertexWithUV(x1, y1, z1, u2, v1);
     }
 
+    /** 1.5.2 RenderFullNorthFace (RenderBlocks.java:10358-10401): the x-negative face. */
     public void RenderFullNorthFace(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double minU = icon != null ? icon.getMinU() : 0;
-        double maxU = icon != null ? icon.getMaxU() : 1;
-        double minV = icon != null ? icon.getMinV() : 0;
-        double maxV = icon != null ? icon.getMaxV() : 1;
-        t.setNormal(0, 0, -1);
-        t.addVertexWithUV(x + 0, y + 1, z + 0, maxU, minV);
-        t.addVertexWithUV(x + 1, y + 1, z + 0, minU, minV);
-        t.addVertexWithUV(x + 1, y + 0, z + 0, minU, maxV);
-        t.addVertexWithUV(x + 0, y + 0, z + 0, maxU, maxV);
+        double u1 = iconU(icon, this.renderMinZ * 16.0D);
+        double u2 = iconU(icon, this.renderMaxZ * 16.0D);
+        double v1 = iconV(icon, 16.0D - this.renderMaxY * 16.0D);
+        double v2 = iconV(icon, 16.0D - this.renderMinY * 16.0D);
+        double x0 = x + this.renderMinX;
+        double y0 = y + this.renderMinY;
+        double y1 = y + this.renderMaxY;
+        double z0 = z + this.renderMinZ;
+        double z1 = z + this.renderMaxZ;
+        t.setNormal(-1, 0, 0);
+        t.addVertexWithUV(x0, y1, z1, u2, v1);
+        t.addVertexWithUV(x0, y1, z0, u1, v1);
+        t.addVertexWithUV(x0, y0, z0, u1, v2);
+        t.addVertexWithUV(x0, y0, z1, u2, v2);
     }
 
+    /** 1.5.2 RenderFullSouthFace (RenderBlocks.java:10406-10449): the x-positive face. */
     public void RenderFullSouthFace(Block block, double x, double y, double z, Icon icon) {
         Tessellator t = Tessellator.instance;
         t.setCurrentTextureName(icon != null ? icon.getIconName() : null);
-        double minU = icon != null ? icon.getMinU() : 0;
-        double maxU = icon != null ? icon.getMaxU() : 1;
-        double minV = icon != null ? icon.getMinV() : 0;
-        double maxV = icon != null ? icon.getMaxV() : 1;
-        t.setNormal(0, 0, 1);
-        t.addVertexWithUV(x + 0, y + 1, z + 1, minU, minV);
-        t.addVertexWithUV(x + 0, y + 0, z + 1, minU, maxV);
-        t.addVertexWithUV(x + 1, y + 0, z + 1, maxU, maxV);
-        t.addVertexWithUV(x + 1, y + 1, z + 1, maxU, minV);
+        double u1 = iconU(icon, this.renderMinZ * 16.0D);
+        double u2 = iconU(icon, this.renderMaxZ * 16.0D);
+        double v1 = iconV(icon, 16.0D - this.renderMaxY * 16.0D);
+        double v2 = iconV(icon, 16.0D - this.renderMinY * 16.0D);
+        double x1 = x + this.renderMaxX;
+        double y0 = y + this.renderMinY;
+        double y1 = y + this.renderMaxY;
+        double z0 = z + this.renderMinZ;
+        double z1 = z + this.renderMaxZ;
+        t.setNormal(1, 0, 0);
+        t.addVertexWithUV(x1, y0, z1, u1, v2);
+        t.addVertexWithUV(x1, y0, z0, u2, v2);
+        t.addVertexWithUV(x1, y1, z0, u2, v1);
+        t.addVertexWithUV(x1, y1, z1, u1, v1);
     }
 
     // --- Block as item rendering ---
@@ -3029,7 +3691,40 @@ public class RenderBlocks {
 
     // --- FC additions: ShouldSideBeRendered ---
 
-    public boolean ShouldSideBeRenderedBasedOnCurrentBounds(int x, int y, int z, int side) {
+    /**
+     * 1.5.2 (FCMOD) RenderBlocks.ShouldSideBeRenderedBasedOnCurrentBounds (RenderBlocks.java:10645-10670),
+     * which FC's shouldSideBeRendered overrides (saw, sidings, mouldings, stairs, bellows, ...) delegate
+     * to through m_currentBlockRenderer: a face inset from its block edge by the current render bounds
+     * is always drawn; a face on the edge is drawn unless the neighbour's ShouldRenderNeighborFullFaceSide
+     * hides it. Port guards: without a blockAccess (a renderer FCBakedModel has detached, or a draw
+     * outside the world) the face is drawn, and a throwing neighbour override draws it too (logged once).
+     */
+    public boolean ShouldSideBeRenderedBasedOnCurrentBounds(int iNeighborI, int iNeighborJ, int iNeighborK, int iSide) {
+        if ((iSide == 0 && this.renderMinY > 0.0D)
+                || (iSide == 1 && this.renderMaxY < 1.0D)
+                || (iSide == 2 && this.renderMinZ > 0.0D)
+                || (iSide == 3 && this.renderMaxZ < 1.0D)
+                || (iSide == 4 && this.renderMinX > 0.0D)
+                || (iSide == 5 && this.renderMaxX < 1.0D)) {
+            return true;
+        }
+
+        if (this.blockAccess == null) {
+            return true;
+        }
+
+        int neighborId = this.blockAccess.getBlockId(iNeighborI, iNeighborJ, iNeighborK);
+        Block neighborBlock = neighborId > 0 && neighborId < Block.blocksList.length ? Block.blocksList[neighborId] : null;
+
+        if (neighborBlock != null) {
+            try {
+                return neighborBlock.ShouldRenderNeighborFullFaceSide(this.blockAccess, iNeighborI, iNeighborJ, iNeighborK, iSide);
+            } catch (Throwable t) {
+                logFaceCallFailure(neighborBlock, "ShouldRenderNeighborFullFaceSide", t);
+                return true;
+            }
+        }
+
         return true;
     }
 

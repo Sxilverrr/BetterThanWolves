@@ -620,8 +620,16 @@ public abstract class EntityPlayer extends EntityLiving {
     public boolean IsWearingSoulforgedBoots() {
         if (inventory == null) return false;
         ItemStack boots = inventory.armorInventory[0];
-        if (boots == null || boots.getItem() == null) return false;
-        String className = boots.getItem().getClass().getSimpleName();
+        return boots != null && IsSoulforgedBootsItem(boots.getItem());
+    }
+
+    /**
+     * The boots-slot test of {@link #IsWearingSoulforgedBoots()}, shared with the bridge's client-side
+     * step-sound hook, which must agree with the server on when the boots replace the regular step.
+     */
+    public static boolean IsSoulforgedBootsItem(Item item) {
+        if (item == null) return false;
+        String className = item.getClass().getSimpleName();
         return className.contains("ArmorRefined") || className.contains("ArmorSoulforged");
     }
 
@@ -662,6 +670,76 @@ public abstract class EntityPlayer extends EntityLiving {
         // No soulforged helm: vanilla linear Respiration roll (1.5.2 base).
         return iEnchantmentLevel > 0 && rand.nextInt(iEnchantmentLevel + 1) > 0
                 ? iAirSupply : iAirSupply - 1;
+    }
+
+    // =========================================================================
+    // FC Step Sounds
+    // =========================================================================
+
+    /**
+     * FC's EntityPlayer.playStepSound override (vanilla/server EntityPlayer.java:2454-2492): the grunt, then
+     * the soulforged-boots step in place of the regular one. The bridge's players step through 1.20.1, so
+     * PlayerMixin calls the two parts below directly and keeps 1.20.1's own step as the regular one.
+     */
+    @Override
+    public void playStepSound(int i, int j, int k, int iBlockID) {
+        PlayStepGrunt();
+
+        if (!PlaySoulforgedBootsStep(i, j, k, iBlockID)) {
+            super.playStepSound(i, j, k, iBlockID);
+        }
+    }
+
+    /**
+     * The low health/exhaustion grunt played along with every step (vanilla/server EntityPlayer.java:2457-2468).
+     * 1.5.2 computes a grunt volume there but plays a fixed 0.5F.
+     */
+    public void PlayStepGrunt() {
+        if (worldObj != null && GetHealthAndExhaustionModifier() < 0.26F) {
+            worldObj.playSoundAtEntity(this, "random.classic_hurt", 0.5F, 1F + rand.nextFloat() * 0.1F);
+        }
+    }
+
+    /**
+     * The soulforged-boots branch (vanilla/server EntityPlayer.java:2470-2487): the step of the ground cover
+     * resting above the block stepped on, else of that block unless it is a liquid, at 0.3x volume and lowered
+     * pitch. Returns true when the boots are worn, i.e. when this replaces the regular step sound.
+     */
+    public boolean PlaySoulforgedBootsStep(int i, int j, int k, int iBlockID) {
+        if (!IsWearingSoulforgedBoots()) {
+            return false;
+        }
+
+        if (worldObj == null) {
+            return true;
+        }
+
+        int iBlockAboveID = worldObj.getBlockId(i, j + 1, k);
+        Block blockAbove = iBlockAboveID > 0 && iBlockAboveID < Block.blocksList.length
+                ? Block.blocksList[iBlockAboveID] : null;
+
+        if (blockAbove != null && blockAbove.IsGroundCover()) {
+            StepSound stepSound = blockAbove.stepSound;
+
+            if (stepSound != null) {
+                worldObj.playSoundAtEntity(this, stepSound.getStepSound(),
+                        stepSound.getVolume() * 0.3F, stepSound.getPitch() * 0.75F);
+            }
+        } else {
+            // 1.5.2 dereferences blocksList[iBlockID] unguarded; a block FC does not know plays nothing here
+            Block block = iBlockID > 0 && iBlockID < Block.blocksList.length ? Block.blocksList[iBlockID] : null;
+
+            if (block != null && (block.blockMaterial == null || !block.blockMaterial.isLiquid())) {
+                StepSound stepSound = block.GetStepSound(worldObj, i, j, k);
+
+                if (stepSound != null) {
+                    worldObj.playSoundAtEntity(this, stepSound.getStepSound(),
+                            stepSound.getVolume() * 0.3F, stepSound.getPitch() * 0.5F);
+                }
+            }
+        }
+
+        return true;
     }
 
     // =========================================================================

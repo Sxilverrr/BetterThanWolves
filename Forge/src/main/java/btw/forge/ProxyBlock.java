@@ -24,6 +24,8 @@ import net.minecraft.world.level.block.state.properties.IntegerProperty;
 import net.minecraft.world.level.storage.loot.LootParams;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.fml.DistExecutor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -83,32 +85,130 @@ public class ProxyBlock extends Block implements EntityBlock {
     }
 
     /**
-     * Derives the placement METADATA from the FC block's onBlockPlaced, keyed on the clicked
-     * face — the 1.5.2 mechanism for orientation-on-placement (axle axis, log axis, directional
-     * blocks). Without this every ProxyBlock was placed with META=0, so e.g. the horizontal
-     * axle always got the vertical-axis geometry. FC's `side` numbering (0/1=down/up, 2/3=N/S,
-     * 4/5=W/E) matches Direction.get3DDataValue exactly. onBlockPlaced defaults to returning
-     * the metadata unchanged, so non-orienting blocks keep META=0.
+     * Derives the placement METADATA the way FC's FCItemPlacesAsBlock.onItemUse does before it sets the block
+     * (Common .../FCItemPlacesAsBlock.java:61-98; the 1.5.2 ItemBlock extends it, vanilla/client ItemBlock.java:21):
+     * <ol>
+     *   <li>initial metadata = the held item's getMetadata(itemDamage) (:94), read from the stack in hand, not
+     *       from this block's own item: btw.forge.ProxyBlockItem places the block FC's GetBlockIDToPlace names and
+     *       delegates here with the same context;</li>
+     *   <li>a replaced ground cover (snow layer, ash) forces facing 1 (:79-82);</li>
+     *   <li>onBlockPlaced(target, facing, click, metadata) (:96), with the click relative to the CLICKED block as
+     *       1.5.2 PlayerControllerMP.onPlayerRightClick passes it, not to the target cell;</li>
+     *   <li>PreBlockPlacedBy(target, metadata, player) (:98), the only orientation hook of FC stairs, anvils,
+     *       baskets/hampers and shovels (MPR-5: they always faced 0 when placed against a non-FC block).</li>
+     * </ol>
+     * onBlockPlacedBy and onPostBlockPlaced follow in {@link #setPlacedBy}. Runs on both sides: the client predicts
+     * with a read-only FC view and a placer facade carrying the player's position and rotation, the server with
+     * the WorldBridge and the player's PlayerBridge, so both compute the same META. FC's `side` numbering
+     * (0/1=down/up, 2/3=N/S, 4/5=W/E) matches Direction.get3DDataValue exactly.
      */
     @Override
     public BlockState getStateForPlacement(net.minecraft.world.item.context.BlockPlaceContext ctx) {
         BlockState base = super.getStateForPlacement(ctx);
         if (base == null) base = this.defaultBlockState();
+        Level level = ctx.getLevel();
+        BlockPos pos = ctx.getClickedPos();
+        Direction face = ctx.getClickedFace();
+        int side = face.get3DDataValue();
+        BlockPos clicked = ctx.replacingClickedOnBlock() ? pos : pos.relative(face.getOpposite());
+        Vec3 hit = ctx.getClickLocation();
+        float hx = (float) (hit.x - clicked.getX());
+        float hy = (float) (hit.y - clicked.getY());
+        float hz = (float) (hit.z - clicked.getZ());
+        int x = pos.getX(), y = pos.getY(), z = pos.getZ();
+        btw.modern.World fcWorld;
         try {
-            BlockPos pos = ctx.getClickedPos();
-            int side = ctx.getClickedFace().get3DDataValue();
-            Vec3 hit = ctx.getClickLocation();
-            float hx = (float) (hit.x - pos.getX());
-            float hy = (float) (hit.y - pos.getY());
-            float hz = (float) (hit.z - pos.getZ());
-            btw.modern.World fcWorld = ctx.getLevel() instanceof ServerLevel sl
-                    ? WorldBridge.getOrCreate(sl) : null;
-            int meta = fc().onBlockPlaced(fcWorld, pos.getX(), pos.getY(), pos.getZ(),
-                    side, hx, hy, hz, 0);
-            return base.setValue(META, meta & 15);
+            fcWorld = level instanceof ServerLevel sl ? WorldBridge.getOrCreate(sl) : createFcWorld(level, true);
         } catch (Throwable t) {
-            // FC onBlockPlaced may need world data unavailable client-side — server corrects it.
+            placementFailure("PLACE-WORLD", level, pos, t);
             return base;
+        }
+        if (ctx.replacingClickedOnBlock() && isGroundCoverAt(level, pos)) {
+            side = 1;
+        }
+        int meta = initialPlacementMetadata(ctx.getItemInHand(), level, pos);
+        try {
+            meta = fc().onBlockPlaced(fcWorld, x, y, z, side, hx, hy, hz, meta);
+        } catch (Throwable t) {
+            placementFailure("PLACE", level, pos, t);
+        }
+        Player player = ctx.getPlayer();
+        if (player != null) { // the dispenser path (FCItemPlacesAsBlock.java:138-169) has no PreBlockPlacedBy
+            try {
+                meta = fc().PreBlockPlacedBy(fcWorld, x, y, z, meta, placingEntity(player, fcWorld));
+            } catch (Throwable t) {
+                placementFailure("PRE-PLACE", level, pos, t);
+            }
+        }
+        return base.setValue(META, meta & 15);
+    }
+
+    /**
+     * FCItemPlacesAsBlock.java:94 {@code getMetadata(itemStack.getItemDamage())} of the held item. A ProxyBlock's
+     * BlockItem is FC item id == block id (1.5.2 ItemBlock(id - 256), FCBetterThanWolves.java:1778-1780); any other
+     * item answers its ProxyRegistry legacy id. 0 when the item has no FC item (1.5.2 ItemBlock default).
+     */
+    private int initialPlacementMetadata(ItemStack held, Level level, BlockPos pos) {
+        if (held == null || held.isEmpty()) return 0;
+        try {
+            int itemId = held.getItem() instanceof net.minecraft.world.item.BlockItem bi
+                    && bi.getBlock() instanceof ProxyBlock pb
+                    ? pb.getLegacyId() : ProxyRegistry.getItemId(held.getItem());
+            if (itemId <= 0 || itemId >= btw.modern.Item.itemsList.length) return 0;
+            btw.modern.Item fcItem = btw.modern.Item.itemsList[itemId];
+            return fcItem != null ? fcItem.getMetadata(held.getDamageValue()) : 0;
+        } catch (Throwable t) {
+            placementFailure("PLACE-ITEM-META", level, pos, t);
+            return 0;
+        }
+    }
+
+    /** FCItemPlacesAsBlock.java:79-82: Block.IsGroundCover() of the block being replaced (read with live-world ids). */
+    private static boolean isGroundCoverAt(Level level, BlockPos pos) {
+        try {
+            int id = ProxyRegistry.getWorldBlockId(level.getBlockState(pos), level, pos);
+            btw.modern.Block old = id > 0 && id < btw.modern.Block.blocksList.length
+                    ? btw.modern.Block.blocksList[id] : null;
+            return old != null && old.IsGroundCover();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * The placer FC sees in PreBlockPlacedBy. Server: the player's PlayerBridge (getOrCreate syncs position and
+     * rotation from the real player). Client: a facade with the same position and rotation, which is all the
+     * FC PreBlockPlacedBy overrides read (rotationYaw/rotationPitch through FCUtilsMisc, position and yOffset in
+     * the piston's determineOrientation), so the predicted META matches the server's. It is built on a null world
+     * (the 1.5.2 Entity constructor reads world.provider, which the read-only view lacks) and then bound to it.
+     */
+    private static btw.modern.EntityLiving placingEntity(Player player, btw.modern.World fcWorld) {
+        if (player instanceof net.minecraft.server.level.ServerPlayer sp) {
+            return PlayerBridge.getOrCreate(sp);
+        }
+        btw.modern.EntityLiving facade = new btw.modern.EntityLiving((btw.modern.World) null) {
+            public int getMaxHealth() { return 20; }
+        };
+        facade.worldObj = fcWorld;
+        facade.setPosition(player.getX(), player.getY(), player.getZ());
+        facade.prevPosX = facade.posX;
+        facade.prevPosY = facade.posY;
+        facade.prevPosZ = facade.posZ;
+        facade.rotationYaw = facade.prevRotationYaw = player.getYRot();
+        facade.rotationPitch = facade.prevRotationPitch = player.getXRot();
+        return facade;
+    }
+
+    /**
+     * A placement hook threw. Server: one WARN per throw site (warnTickFailureOnce). Client: the read-only view can
+     * lack data FC reads during prediction; the server's state replaces the prediction, so only DEBUG.
+     */
+    private void placementFailure(String stage, Level level, BlockPos pos, Throwable t) {
+        if (level != null && level.isClientSide()) {
+            LOGGER.debug("[{}] client prediction for {} (id {}) at {} threw {}", stage,
+                    fc().getClass().getSimpleName(), legacyId, pos, t.toString());
+        } else {
+            warnTickFailureOnce(stage, pos, t);
         }
     }
 
@@ -276,12 +376,7 @@ public class ProxyBlock extends Block implements EntityBlock {
                                 Block block, BlockPos neighborPos, boolean moving) {
         if (level instanceof ServerLevel sl) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
-            // Resolve the neighbor's legacy block ID: if it is a ProxyBlock
-            // we can read the ID directly, otherwise fall back to 0.
-            int neighborId = 0;
-            if (block instanceof ProxyBlock pb) {
-                neighborId = pb.getLegacyId();
-            }
+            int neighborId = ProxyRegistry.getNeighbourSourceId(block, level, neighborPos);
             fc().onNeighborBlockChange(world, pos.getX(), pos.getY(), pos.getZ(), neighborId);
         }
     }
@@ -303,31 +398,71 @@ public class ProxyBlock extends Block implements EntityBlock {
 
     // --- setPlacedBy (onBlockPlacedBy) ---
 
+    /**
+     * FCItemPlacesAsBlock.onItemUse:103-108 once the block is set and still there (BlockItem.place calls this only
+     * then): onBlockPlacedBy(player, stack), then onPostBlockPlaced(metadata) (FCBlockLens beam setup, ...), then a
+     * player's NotifyNearbyAnimalsOfPlayerBlockAddOrRemove. Without a placer only onPostBlockPlaced runs, as on FC's
+     * dispenser path (FCItemPlacesAsBlock.java:162).
+     */
     @Override
     public void setPlacedBy(Level level, BlockPos pos, BlockState state,
                             net.minecraft.world.entity.LivingEntity placer,
                             net.minecraft.world.item.ItemStack stack) {
-        if (level instanceof ServerLevel sl && placer != null) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            btw.modern.EntityLiving fcPlacer = null;
-            if (placer instanceof net.minecraft.server.level.ServerPlayer sp) {
-                fcPlacer = PlayerBridge.getOrCreate(sp);
-                ((PlayerBridge) fcPlacer).syncFromReal();
+        if (!(level instanceof ServerLevel sl)) return;
+        btw.modern.World world = WorldBridge.getOrCreate(sl);
+        btw.modern.EntityLiving fcPlacer = null;
+        if (placer != null) {
+            try {
+                if (placer instanceof net.minecraft.server.level.ServerPlayer sp) {
+                    fcPlacer = PlayerBridge.getOrCreate(sp);
+                    ((PlayerBridge) fcPlacer).syncFromReal();
+                }
+                if (fcPlacer == null) {
+                    // Create a minimal EntityLiving with position/rotation for facing calc
+                    fcPlacer = new btw.modern.EntityLiving(world) {
+                        public int getMaxHealth() { return 20; }
+                    };
+                    fcPlacer.posX = placer.getX();
+                    fcPlacer.posY = placer.getY();
+                    fcPlacer.posZ = placer.getZ();
+                    fcPlacer.rotationYaw = placer.getYRot();
+                    fcPlacer.rotationPitch = placer.getXRot();
+                }
+                // FCItemPlacesAsBlock.java:105 passes the stack being placed (before its stackSize--): BlockItem.place
+                // hands it over before its shrink, and it is the OFF-hand stack when the main hand passed, so the
+                // player's equipped item would give FCBlockTorchFiniteBurning (:93-117) the wrong "outTime" or none.
+                btw.modern.ItemStack fcStack = placedFcStack(stack, pos);
+                if (fcStack == null && fcPlacer instanceof PlayerBridge pb) {
+                    fcStack = pb.getCurrentEquippedItem();
+                }
+                fc().onBlockPlacedBy(world, pos.getX(), pos.getY(), pos.getZ(), fcPlacer, fcStack);
+            } catch (Throwable t) {
+                warnTickFailureOnce("PLACED-BY", pos, t);
             }
-            if (fcPlacer == null) {
-                // Create a minimal EntityLiving with position/rotation for facing calc
-                fcPlacer = new btw.modern.EntityLiving(world) {
-                    public int getMaxHealth() { return 20; }
-                };
-                fcPlacer.posX = placer.getX();
-                fcPlacer.posY = placer.getY();
-                fcPlacer.posZ = placer.getZ();
-                fcPlacer.rotationYaw = placer.getYRot();
+        }
+        try {
+            fc().onPostBlockPlaced(world, pos.getX(), pos.getY(), pos.getZ(), state.getValue(META));
+        } catch (Throwable t) {
+            warnTickFailureOnce("POST-PLACE", pos, t);
+        }
+        if (fcPlacer instanceof PlayerBridge pb) {
+            // FCItemPlacesAsBlock.java:110-111: a player's placement spooks nearby animals (World.java:4678).
+            try {
+                world.NotifyNearbyAnimalsOfPlayerBlockAddOrRemove(pb, fc(), pos.getX(), pos.getY(), pos.getZ());
+            } catch (Throwable t) {
+                warnTickFailureOnce("PLACE-NOTIFY", pos, t);
             }
-            btw.modern.ItemStack fcStack = fcPlacer instanceof PlayerBridge pb
-                    ? pb.getCurrentEquippedItem()
-                    : null;
-            fc().onBlockPlacedBy(world, pos.getX(), pos.getY(), pos.getZ(), fcPlacer, fcStack);
+        }
+    }
+
+    /** The FC view (count, damage, NBT) of the stack BlockItem.place placed; null when absent or unconvertible. */
+    private btw.modern.ItemStack placedFcStack(ItemStack stack, BlockPos pos) {
+        if (stack == null || stack.isEmpty()) return null;
+        try {
+            return ItemStackHelper.toFcStack(stack);
+        } catch (Throwable t) {
+            warnTickFailureOnce("PLACED-BY-STACK", pos, t);
+            return null;
         }
     }
 
@@ -402,15 +537,25 @@ public class ProxyBlock extends Block implements EntityBlock {
                                            btw.modern.World world, BlockPos pos, int side,
                                            float hitX, float hitY, float hitZ) {
         if (fcHeld == null) return false;
+        // Runs inside the use-item packet handler with no catch above it: an FC onItemUse failure is logged
+        // once and treated as "nothing placed" instead of taking the server down.
         if (!player.isCreative()) {
-            return fcHeld.tryPlaceItemIntoWorld(fcPlayer, world, pos.getX(), pos.getY(), pos.getZ(),
-                    side, hitX, hitY, hitZ);
+            try {
+                return fcHeld.tryPlaceItemIntoWorld(fcPlayer, world, pos.getX(), pos.getY(), pos.getZ(),
+                        side, hitX, hitY, hitZ);
+            } catch (Throwable t) {
+                ProxyItem.logFcFailureOnce("onItemUse", fcHeld.itemID, t);
+                return false;
+            }
         }
         int damage = fcHeld.getItemDamage();
         int size = fcHeld.stackSize;
         try {
             return fcHeld.tryPlaceItemIntoWorld(fcPlayer, world, pos.getX(), pos.getY(), pos.getZ(),
                     side, hitX, hitY, hitZ);
+        } catch (Throwable t) {
+            ProxyItem.logFcFailureOnce("onItemUse", fcHeld.itemID, t);
+            return false;
         } finally {
             fcHeld.setItemDamage(damage);
             fcHeld.stackSize = size;
@@ -819,8 +964,19 @@ public class ProxyBlock extends Block implements EntityBlock {
      * @param worldIds true for FC logic (collision bounds): neighbours read with the live-world ids FC sees
      *                 through WorldBridge ({@link ProxyRegistry#getWorldBlockId}); false for client display
      *                 (randomDisplayTick particles), which reads identity ids ({@link ProxyRegistry#getBlockId})
+     *
+     * <p>The client display view over a client level is FC's 1.5.2 WorldClient + RenderGlobal (S1): playSound
+     * (both overloads; vanilla/client World.java:4994-4997 delegates the 6-arg one with no delay) plays locally like
+     * WorldClient.playSound (vanilla/client WorldClient.java:483-505), playAuxSFX / playAuxSFXAtEntity play locally
+     * like RenderGlobal.playAuxSFX (RenderGlobal.java:2169-2397, FC ids through FC's own client handler), both via
+     * btw.forge.client.LegacyClientSound, func_82739_e like RenderGlobal.broadcastSound; markBlockRangeForRenderUpdate,
+     * markBlockForRenderUpdate and markBlockForUpdate re-mesh like RenderGlobal.markBlockRangeForRenderUpdate /
+     * markBlockForUpdate (MPR-6), as ClientFcWorld does. playSoundEffect / playSoundAtEntity stay no-ops
+     * (RenderGlobal.java:1812/1817). Every other view (worldIds, or a server / generic accessor, e.g. collision
+     * queries on the server thread) stays silent.</p>
      */
     private btw.modern.World createFcWorld(net.minecraft.world.level.BlockGetter level, boolean worldIds) {
+        final boolean clientView = !worldIds && level instanceof Level lvl && lvl.isClientSide();
         return new btw.modern.World() {
             { this.isRemote = true; this.rand = new Random(); }
             public int getBlockId(int x, int y, int z) {
@@ -867,19 +1023,107 @@ public class ProxyBlock extends Block implements EntityBlock {
             public boolean checkChunksExist(int x1, int y1, int z1, int x2, int y2, int z2) { return true; }
             public boolean checkNoEntityCollision(btw.modern.AxisAlignedBB bb) { return true; }
             public void playSoundAtEntity(btw.modern.Entity e, String s, float v, float p) {}
-            public void playAuxSFX(int id, int x, int y, int z, int data) {}
-            public void playAuxSFXAtEntity(btw.modern.EntityPlayer p, int id, int x, int y, int z, int data) {}
+            public void playSound(double x, double y, double z, String sound, float vol, float pitch, boolean delay) {
+                if (clientView) playClientLocal(x, y, z, sound, vol, pitch, delay);
+            }
+            public void playSound(double x, double y, double z, String sound, float vol, float pitch) {
+                if (clientView) playClientLocal(x, y, z, sound, vol, pitch, false);
+            }
+            public void playAuxSFX(int id, int x, int y, int z, int data) {
+                if (clientView) playClientAux(id, x, y, z, data);
+            }
+            public void playAuxSFXAtEntity(btw.modern.EntityPlayer p, int id, int x, int y, int z, int data) {
+                if (clientView) playClientAux(id, x, y, z, data); // RenderGlobal ignores the player client-side
+            }
+            public void func_82739_e(int id, int x, int y, int z, int data) { // World -> RenderGlobal.broadcastSound
+                if (clientView) playClientAuxGlobal(id, x, y, z, data);
+            }
             public boolean isRaining() { return false; }
             public boolean isBlockGettingPowered(int x, int y, int z) { return false; }
             public boolean isBlockIndirectlyGettingPowered(int x, int y, int z) { return false; }
             public btw.modern.IChunkProvider createChunkProvider() { return null; }
             public boolean destroyBlock(int x, int y, int z, boolean drop) { return false; }
-            public void markBlockRangeForRenderUpdate(int x1, int y1, int z1, int x2, int y2, int z2) {}
+            public void markBlockRangeForRenderUpdate(int x1, int y1, int z1, int x2, int y2, int z2) {
+                if (clientView) markClientRenderRange(level, x1, y1, z1, x2, y2, z2);
+            }
+            public void markBlockForRenderUpdate(int x, int y, int z) {
+                if (clientView) markClientRenderRange(level, x, y, z, x, y, z);
+            }
+            public void markBlockForUpdate(int x, int y, int z) { // RenderGlobal.markBlockForUpdate re-meshes too
+                if (clientView) markClientRenderRange(level, x, y, z, x, y, z);
+            }
             public btw.modern.WorldChunkManager getWorldChunkManager() { return null; }
             public boolean setBlockToAir(int x, int y, int z) { return false; }
             public boolean setBlockMetadata(int x, int y, int z, int meta, int flags) { return false; }
             public btw.modern.BiomeGenBase getBiomeGenForCoords(int x, int z) { return btw.modern.BiomeGenBase.plains; }
         };
+    }
+
+    private static volatile boolean loggedClientSoundFailure;
+    private static volatile boolean loggedClientRenderFailure;
+
+    /** Client view playSound: LegacyClientSound.playLocal (CONTRACT C2), reached only on the client dist. */
+    private static void playClientLocal(double x, double y, double z, String sound, float vol, float pitch,
+                                        boolean delay) {
+        try {
+            DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () ->
+                    btw.forge.client.LegacyClientSound.playLocal(x, y, z, sound, vol, pitch, delay));
+        } catch (Throwable t) {
+            logClientSoundFailure(t);
+        }
+    }
+
+    /** Client view playAuxSFX: LegacyClientSound.playAux (CONTRACT C2), reached only on the client dist. */
+    private static void playClientAux(int id, int x, int y, int z, int data) {
+        try {
+            DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () ->
+                    btw.forge.client.LegacyClientSound.playAux(id, x, y, z, data));
+        } catch (Throwable t) {
+            logClientSoundFailure(t);
+        }
+    }
+
+    /** Client view func_82739_e: LegacyClientSound.playAux(..., global = true), as ClientFcWorld.func_82739_e. */
+    private static void playClientAuxGlobal(int id, int x, int y, int z, int data) {
+        try {
+            DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () ->
+                    btw.forge.client.LegacyClientSound.playAux(id, x, y, z, data, true));
+        } catch (Throwable t) {
+            logClientSoundFailure(t);
+        }
+    }
+
+    private static void logClientSoundFailure(Throwable t) {
+        if (!loggedClientSoundFailure) {
+            loggedClientSoundFailure = true;
+            LOGGER.warn("[SOUND] client FC world sound failed (further failures suppressed): {}", t.toString());
+        }
+    }
+
+    /**
+     * 1.5.2 RenderGlobal.markBlockRangeForRenderUpdate(x1..z2) -> markBlocksForUpdate(x1 - 1 .. z2 + 1): the 1.20.1
+     * LevelRenderer.setBlocksDirty marks the same one-block-padded range's sections, on the client thread. Only for
+     * the level being rendered (FC's ±3 axle/gear box re-mesh, Client FCBlockGearBox.java:440).
+     */
+    private static void markClientRenderRange(net.minecraft.world.level.BlockGetter level,
+                                              int x1, int y1, int z1, int x2, int y2, int z2) {
+        try {
+            DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> {
+                net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+                Runnable mark = () -> {
+                    if (mc.level != null && mc.level == level && mc.levelRenderer != null) {
+                        mc.levelRenderer.setBlocksDirty(x1, y1, z1, x2, y2, z2);
+                    }
+                };
+                if (mc.isSameThread()) mark.run(); else mc.execute(mark);
+            });
+        } catch (Throwable t) {
+            if (!loggedClientRenderFailure) {
+                loggedClientRenderFailure = true;
+                LOGGER.warn("[RENDER] client FC world re-mesh request failed (further failures suppressed): {}",
+                        t.toString());
+            }
+        }
     }
 
     @Override
@@ -891,15 +1135,127 @@ public class ProxyBlock extends Block implements EntityBlock {
     public net.minecraft.world.level.block.SoundType getSoundType(BlockState state) {
         btw.modern.StepSound ss = fc().stepSound;
         if (ss != null) {
-            return translateStepSound(ss);
+            return soundTypeFor(ss, ss);
         }
         return super.getSoundType(state);
+    }
+
+    /**
+     * S5: the block's sounds come from FC's own StepSound object (its getStepSound / getBreakSound / getPlaceSound
+     * names, volume and pitch), not from a name-to-SoundType table, so FCStepSoundSquish blocks squish and the
+     * glass/ladder/anvil step sounds keep their 1.5.2 names. The per-position FC override GetStepSound(world, x, y,
+     * z) (dung, bone, dirt/sand slabs) is consulted the way 1.5.2 does: only footsteps use it
+     * (vanilla/client Entity.java:1028); break (RenderGlobal.java:2309), hit (PlayerControllerMP.java:320), fall
+     * (EntityLiving.java:1470) and place (FCItemPlacesAsBlock.PlayPlaceSound) use the block's stepSound, volume and
+     * pitch included (a 1.20.1 SoundType has one volume/pitch for all its events, so a footstep SoundType must not
+     * answer the others: FCStepSoundSquish's pitch 0.1 would drop a dung block's break/place/fall to the 0.5 floor).
+     * See {@link #isFootstepQuery}. Vanilla-id FC replacements (clay, glowstone, vanilla web) are vanilla blocks and
+     * never get here.
+     */
+    @Override
+    public net.minecraft.world.level.block.SoundType getSoundType(BlockState state,
+            net.minecraft.world.level.LevelReader level, BlockPos pos, @javax.annotation.Nullable Entity entity) {
+        btw.modern.StepSound base = fc().stepSound;
+        if (base == null) {
+            return getSoundType(state); // IForgeBlock's default does the same
+        }
+        btw.modern.StepSound step = base;
+        if (level != null && pos != null && fcStepSoundVaries() && isFootstepQuery(pos, entity)) {
+            try {
+                btw.modern.World world = level instanceof ServerLevel sl
+                        ? WorldBridge.getOrCreate(sl) : createFcWorld(level, true);
+                btw.modern.StepSound positional = fc().GetStepSound(world, pos.getX(), pos.getY(), pos.getZ());
+                if (positional != null) step = positional;
+            } catch (Throwable t) {
+                if (!loggedStepSoundFailure) {
+                    loggedStepSoundFailure = true;
+                    LOGGER.warn("[SOUND] FC GetStepSound threw for {} (id {}) at {}; using its stepSound: {}",
+                            fc().getClass().getSimpleName(), legacyId, pos, t.toString());
+                }
+            }
+        }
+        return soundTypeFor(step, base);
+    }
+
+    /**
+     * Whether a 4-arg getSoundType query is a footstep: 1.20.1 Entity.playStepSound / playMuffledStepSound (and
+     * AbstractHorse's) pass the walking entity and its getOnPosLegacy() block, on the ground and after
+     * Entity.checkFallDamage has reset fallDistance. The other queries are not: break passes no entity
+     * (LevelRenderer levelEvent 2001), the fall sound runs inside fallOn while fallDistance is still positive
+     * (LivingEntity.playBlockFallSound), and a place targets a cell the placer is not standing on (BlockItem.place).
+     * Residual: the client hit sound of a block dug from on top of it (MultiPlayerGameMode.continueDestroyBlock)
+     * reads as a footstep; for squish dung that only changes its volume ((0.5 + 1) / 8 vs 1.5.2's (1 + 1) / 8), since
+     * both pitches (0.05, 0.5) land on 1.20.1's 0.5 floor.
+     */
+    private static boolean isFootstepQuery(BlockPos pos, @javax.annotation.Nullable Entity entity) {
+        try {
+            return entity != null && entity.fallDistance <= 0.0F && entity.onGround()
+                    && pos.equals(entity.getOnPosLegacy());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Whether the FC class overrides GetStepSound (0 = not yet known, 1 = yes, 2 = no); only 4 FC classes do. */
+    private volatile byte fcStepSoundOverride;
+    private volatile boolean loggedStepSoundFailure;
+
+    private boolean fcStepSoundVaries() {
+        byte v = fcStepSoundOverride;
+        if (v == 0) {
+            boolean overridden;
+            try {
+                overridden = fc().getClass().getMethod("GetStepSound",
+                        btw.modern.World.class, int.class, int.class, int.class)
+                        .getDeclaringClass() != btw.modern.Block.class;
+            } catch (Throwable t) {
+                overridden = false; // unknown: the block's stepSound, as before
+            }
+            v = overridden ? (byte) 1 : (byte) 2;
+            fcStepSoundOverride = v;
+        }
+        return v == 1;
+    }
+
+    /**
+     * MISSED-3: 1.5.2 pick block (vanilla/client Minecraft.java:2348-2380) takes FC's idPicked (a stick for a
+     * shaft, the seed for a crop, the idle oven for a lit one, idDropped for a kiln or a siding) and the damage of
+     * Block.blocksList[picked < 256 && !flower pot ? picked : clicked].getDamageValue(world, x, y, z); id 0 picks
+     * nothing. Previously the clicked ProxyBlock handed out its own (often hidden technical) item at meta 0.
+     */
+    @Override
+    public ItemStack getCloneItemStack(BlockGetter level, BlockPos pos, BlockState state) {
+        try {
+            btw.modern.World world = level instanceof ServerLevel sl
+                    ? WorldBridge.getOrCreate(sl) : createFcWorld(level, true);
+            int x = pos.getX(), y = pos.getY(), z = pos.getZ();
+            int picked = fc().idPicked(world, x, y, z);
+            if (picked <= 0) {
+                return ItemStack.EMPTY;
+            }
+            btw.modern.Block damageBlock = fc();
+            if (picked < 256 && !(fc() instanceof btw.modern.BlockFlowerPot)
+                    && btw.modern.Block.blocksList[picked] != null) {
+                damageBlock = btw.modern.Block.blocksList[picked];
+            }
+            int damage = damageBlock.getDamageValue(world, x, y, z);
+            // EMPTY when the picked id has no 1.20.1 item (ItemStackHelper warns once): nothing is picked rather
+            // than this block's own item.
+            return ItemStackHelper.fcIdToMcStack(picked, 1, damage);
+        } catch (Throwable t) {
+            warnTickFailureOnce("PICK", pos, t);
+            return super.getCloneItemStack(level, pos, state);
+        }
     }
 
     // ================================================================
     // Step sound mapping (replaces the removed StepSound.translateToModern)
     // ================================================================
 
+    /**
+     * Name-based fallback per FC StepSound name, used for any event whose 1.5.2 sound name
+     * {@link LegacySounds#resolve} does not know.
+     */
     private static final Map<String, net.minecraft.world.level.block.SoundType> SOUND_MAP = new HashMap<>();
 
     static {
@@ -921,9 +1277,96 @@ public class ProxyBlock extends Block implements EntityBlock {
         return mapped != null ? mapped : net.minecraft.world.level.block.SoundType.STONE;
     }
 
+    /** FC footstep StepSound + the block's own StepSound; identity (StepSound has no equals) — FC's are singletons. */
+    private record SoundKey(btw.modern.StepSound step, btw.modern.StepSound base) {}
+
+    private static final Map<SoundKey, net.minecraft.world.level.block.SoundType> SOUND_TYPES =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * The 1.20.1 SoundType for an FC StepSound pair (see the 4-arg getSoundType): step = the footstep StepSound's
+     * getStepSound(); break / place from the block's getBreakSound() / getPlaceSound(); hit and fall = the block's
+     * getStepSound() (PlayerControllerMP.java:320, EntityLiving.java:1470). Volume and pitch come from the footstep
+     * StepSound, so a pair with step != base is only handed out for footstep queries (it differs in volume/pitch only
+     * for the squish dung subtypes). Each name resolves through {@link LegacySounds#resolve} (CONTRACT C1); a name
+     * 1.5.2 had no sound file for (LegacySounds.isSilentIn152, e.g. "step.anvil") stays silent; other unknown names
+     * fall back to the name-mapped vanilla SoundType's event. Suppliers retry an unresolved name, so a call before
+     * registration completes is not cached as a fallback.
+     */
+    private static net.minecraft.world.level.block.SoundType soundTypeFor(btw.modern.StepSound step,
+                                                                         btw.modern.StepSound base) {
+        return SOUND_TYPES.computeIfAbsent(new SoundKey(step, base), key -> {
+            net.minecraft.world.level.block.SoundType stepFallback = translateStepSound(step);
+            net.minecraft.world.level.block.SoundType baseFallback = translateStepSound(base);
+            return new net.minecraftforge.common.util.ForgeSoundType(step.getVolume(), step.getPitch(),
+                    new LegacySoundSupplier(base.getBreakSound(), baseFallback.getBreakSound()),
+                    new LegacySoundSupplier(step.getStepSound(), stepFallback.getStepSound()),
+                    new LegacySoundSupplier(base.getPlaceSound(), baseFallback.getPlaceSound()),
+                    new LegacySoundSupplier(base.getStepSound(), baseFallback.getHitSound()),
+                    new LegacySoundSupplier(base.getStepSound(), baseFallback.getFallSound()));
+        });
+    }
+
+    private static volatile boolean loggedSoundResolveFailure;
+
+    /** A 1.5.2 sound name resolved lazily through LegacySounds, memoized once found; the fallback until then. */
+    private static final class LegacySoundSupplier
+            implements java.util.function.Supplier<net.minecraft.sounds.SoundEvent> {
+        private final String legacyName;
+        private final net.minecraft.sounds.SoundEvent fallback;
+        private volatile net.minecraft.sounds.SoundEvent resolved;
+
+        LegacySoundSupplier(String legacyName, net.minecraft.sounds.SoundEvent fallback) {
+            this.legacyName = legacyName;
+            this.fallback = fallback;
+        }
+
+        @Override
+        public net.minecraft.sounds.SoundEvent get() {
+            net.minecraft.sounds.SoundEvent r = resolved;
+            if (r != null) return r;
+            if (legacyName != null) {
+                try {
+                    r = LegacySounds.resolve(legacyName);
+                } catch (Throwable t) {
+                    if (!loggedSoundResolveFailure) {
+                        loggedSoundResolveFailure = true;
+                        LOGGER.warn("[SOUND] LegacySounds.resolve('{}') threw; using the mapped vanilla sound: {}",
+                                legacyName, t.toString());
+                    }
+                }
+                if (r != null) {
+                    resolved = r;
+                    return r;
+                }
+                // 1.5.2 played nothing for it (StepSoundAnvil's "step.anvil": FC anvil footsteps, hits and falls);
+                // intentionally_empty is 1.20.1's silent event (SoundEngine skips it). A name check, not registration
+                // dependent, so it is memoized at once.
+                if (LegacySounds.isSilentIn152(legacyName)) {
+                    resolved = net.minecraft.sounds.SoundEvents.EMPTY;
+                    return net.minecraft.sounds.SoundEvents.EMPTY;
+                }
+            }
+            return fallback;
+        }
+    }
+
+    /**
+     * 1.5.2 places a block INTO this cell when it is FC air (IsAirBlock: detector logic), ground cover
+     * (FCItemPlacesAsBlock.java:79-82 replaces a clicked IsGroundCover block, facing 1, which getStateForPlacement
+     * applies through isGroundCoverAt) or of a replaceable material (:83-86 and World.canPlaceEntityOnSide,
+     * vanilla/server World.java:3399-3401, which also names fcBlockFireStoked): FC ash and stoked fire. Answering
+     * only IsAirBlock refused every BlockItem placement into ash and stoked fire.
+     */
     @Override
     public boolean canBeReplaced(BlockState state, net.minecraft.world.item.context.BlockPlaceContext ctx) {
-        return fc().IsAirBlock();
+        btw.modern.Block b = fc();
+        try {
+            return b.IsAirBlock() || b.IsGroundCover()
+                    || (b.blockMaterial != null && b.blockMaterial.isReplaceable());
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     @Override

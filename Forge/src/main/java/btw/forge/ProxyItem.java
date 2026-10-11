@@ -190,6 +190,145 @@ public class ProxyItem extends Item implements LegacyProxyItem {
         }
     }
 
+    // ================================================================
+    // Taken from a crafting result → FC onCreated (audit sounds S9)
+    // ================================================================
+
+    /**
+     * Per FC item class: does it override 1.5.2 Item.onCreated? Thirteen FC items do, all for their crafting
+     * sound (e.g. Client FCItemTool.java:124-143, Common FCItemArmor.java:39-54); Modern-Common Item.onCreated is
+     * empty, so every other item skips the stack conversion and the player bridging.
+     */
+    private static final ClassValue<Boolean> ON_CREATED_OVERRIDDEN = new ClassValue<>() {
+        @Override
+        protected Boolean computeValue(Class<?> type) {
+            try {
+                return type.getMethod("onCreated", btw.modern.ItemStack.class, btw.modern.World.class,
+                        btw.modern.EntityPlayer.class).getDeclaringClass() != btw.modern.Item.class;
+            } catch (Throwable t) {
+                return true;   // cannot tell: call it (the base implementation is empty)
+            }
+        }
+    };
+
+    /**
+     * 1.5.2 SlotCrafting/SlotFurnace.onCrafting -> ItemStack.onCrafting -> Item.onCreated (vanilla/client
+     * SlotCrafting.java:72-75, ItemStack.java:501-504), which 1.20.1 has as ItemStack.onCraftedBy -> Item.onCraftedBy
+     * (ResultSlot/FurnaceResultSlot.checkTakeAchievements, InventoryMenu/CraftingMenu.quickMoveStack), on both sides.
+     */
+    @Override
+    public void onCraftedBy(ItemStack stack, Level level, Player player) {
+        super.onCraftedBy(stack, level, player);
+        runFcOnCreated(fc(), stack, level, player);
+    }
+
+    /**
+     * Runs FC's Item.onCreated for a stack {@code player} just took from a crafting (or smelting) result, on the
+     * side this runs on, as 1.5.2 ran it on both. FC plays its crafting sounds only on the client
+     * ({@code world.isRemote}, once per tick through m_iTimesCraftedThisTick) through the client player's
+     * playSound, which plays locally (vanilla/client EntityPlayerSP.java:663-666): the client gets a client FC
+     * world and {@link ClientCrafter}; on the server FC's isRemote guard makes the call a no-op, kept for
+     * parity. Used by {@link #onCraftedBy} and by ItemStackMixin for vanilla items with an FC replacement (the
+     * vanilla tools, swords, armour, shears), and by FCContainerMenu.ClientCraftResultSlot for FC containers
+     * (FC workbench, soulforge), whose server SlotCrafting already calls onCreated. Never throws.
+     */
+    public static void runFcOnCreated(ItemStack stack, Level level, Player player) {
+        if (stack == null || stack.isEmpty()) return;
+        runFcOnCreated(fcItemFor(stack.getItem()), stack, level, player);
+    }
+
+    private static void runFcOnCreated(btw.modern.Item fcItem, ItemStack stack, Level level, Player player) {
+        if (fcItem == null || stack == null || stack.isEmpty() || level == null || player == null) return;
+        if (!ON_CREATED_OVERRIDDEN.get(fcItem.getClass())) return;
+        try {
+            btw.modern.ItemStack fcStack = ItemStackHelper.toFcStack(stack);
+            if (fcStack == null) return;
+            if (level instanceof ServerLevel sl) {
+                if (player instanceof ServerPlayer sp) {
+                    fcItem.onCreated(fcStack, WorldBridge.getOrCreate(sl), PlayerBridge.getOrCreate(sp));
+                }
+            } else if (level.isClientSide()) {
+                ClientCrafter.onCreated(fcItem, fcStack, level, player);
+            }
+        } catch (Throwable t) {
+            // ResultSlot.onTake runs inside the container click handler (PacketUtils rethrows on the server)
+            logFcFailureOnce("onCreated", fcItem.itemID, t);
+        }
+    }
+
+    /**
+     * The 1.5.2 client player FC's client-side onCreated sees: m_iTimesCraftedThisTick counts the crafts of the
+     * current client tick (1.5.2 zeroed it in EntityPlayer.onUpdate, vanilla/client EntityPlayer.java:227, and
+     * SlotCrafting counted each craft, SlotCrafting.java:184), and playSound plays at the player's feet on this
+     * client only (EntityPlayerSP.playSound, EntityPlayerSP.java:663-666) through the shared client sink
+     * (LegacyClientSound.playLocal). Built only for client levels, on the render thread; holds its player weakly
+     * and no world between calls, so a closed world is never kept reachable.
+     */
+    private static final class ClientCrafter extends btw.modern.EntityClientPlayerMP {
+        /** The local player's crafter (render thread only). */
+        private static ClientCrafter current;
+
+        private final java.lang.ref.WeakReference<Player> owner;
+        private int craftTick;
+
+        private ClientCrafter(Player player) {
+            super((btw.modern.World) null);   // as PlayerBridge: built without a world, given one per call
+            this.owner = new java.lang.ref.WeakReference<>(player);
+            this.craftTick = player.tickCount;
+        }
+
+        static void onCreated(btw.modern.Item fcItem, btw.modern.ItemStack fcStack, Level level, Player player) {
+            ClientCrafter crafter = current;
+            if (crafter == null || crafter.owner.get() != player) {
+                crafter = new ClientCrafter(player);
+                current = crafter;
+            }
+            if (crafter.craftTick != player.tickCount) {
+                crafter.craftTick = player.tickCount;
+                crafter.m_iTimesCraftedThisTick = 0;
+            }
+            crafter.posX = player.getX();
+            crafter.posY = player.getY();
+            crafter.posZ = player.getZ();
+            btw.modern.World world = ProxyEntity.createDummyClientWorld(level);
+            crafter.worldObj = world;
+            try {
+                fcItem.onCreated(fcStack, world, crafter);
+            } finally {
+                crafter.worldObj = null;
+                crafter.m_iTimesCraftedThisTick++;
+            }
+        }
+
+        @Override
+        public void playSound(String name, float volume, float pitch) {
+            // Only ever built for a client level (runFcOnCreated), so the client-only sink is never reached
+            // on a server.
+            btw.forge.client.LegacyClientSound.playLocal(posX, posY, posZ, name, volume, pitch, false);
+        }
+    }
+
+    // ================================================================
+    // Vanilla eat sounds where FC's onEaten owns the eat (audit sounds S10)
+    // ================================================================
+
+    /**
+     * Implemented on ItemStack by ItemStackMixin: true while finishUsingItem runs an eat that FC's 1.5.2
+     * ItemFood.onEaten already fed (PlayerBridge.fcFedForEat), whose 'random.burp' FC plays itself
+     * (vanilla/server ItemFood.java:71). PlayerMixin then drops Player.eat's PLAYER_BURP, and ItemStackMixin
+     * makes LivingEntity.eat's closing eat sound (no 1.5.2 equivalent) {@link #SILENT_SOUND}.
+     */
+    public interface FcOwnedEat {
+        boolean btw$isFcOwnedEat();
+    }
+
+    /**
+     * A sound event that plays nothing: 1.20.1's client resolves minecraft:intentionally_empty to its silent
+     * sound without a missing-sound warning (AbstractSoundInstance.resolve, SoundEngine.play).
+     */
+    public static final net.minecraft.sounds.SoundEvent SILENT_SOUND = net.minecraft.sounds.SoundEvent
+            .createVariableRangeEvent(new net.minecraft.resources.ResourceLocation("minecraft", "intentionally_empty"));
+
     @Override
     public Component getName(ItemStack stack) {
         btw.modern.Item fcItem = fc();

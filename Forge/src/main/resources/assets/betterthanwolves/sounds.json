@@ -1,0 +1,3290 @@
+{
+  "ambient.cave.cave": {
+    "sounds": [
+      "minecraft:ambient/cave/cave1",
+      "minecraft:ambient/cave/cave10",
+      "minecraft:ambient/cave/cave11",
+      "minecraft:ambient/cave/cave12",
+      "minecraft:ambient/cave/cave13",
+      "minecraft:ambient/cave/cave2",
+      "minecraft:ambient/cave/cave3",
+      "minecraft:ambient/cave/cave4",
+      "minecraft:ambient/cave/cave5",
+      "minecraft:ambient/cave/cave6",
+      "minecraft:ambient/cave/cave7",
+      "minecraft:ambient/cave/cave8",
+      "minecraft:ambient/cave/cave9"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave1": {
+    "sounds": [
+      "minecraft:ambient/cave/cave1"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave10": {
+    "sounds": [
+      "minecraft:ambient/cave/cave10"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave11": {
+    "sounds": [
+      "minecraft:ambient/cave/cave11"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave12": {
+    "sounds": [
+      "minecraft:ambient/cave/cave12"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave13": {
+    "sounds": [
+      "minecraft:ambient/cave/cave13"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave2": {
+    "sounds": [
+      "minecraft:ambient/cave/cave2"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave3": {
+    "sounds": [
+      "minecraft:ambient/cave/cave3"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave4": {
+    "sounds": [
+      "minecraft:ambient/cave/cave4"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave5": {
+    "sounds": [
+      "minecraft:ambient/cave/cave5"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave6": {
+    "sounds": [
+      "minecraft:ambient/cave/cave6"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave7": {
+    "sounds": [
+      "minecraft:ambient/cave/cave7"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave8": {
+    "sounds": [
+      "minecraft:ambient/cave/cave8"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.cave.cave9": {
+    "sounds": [
+      "minecraft:ambient/cave/cave9"
+    ],
+    "subtitle": "subtitles.ambient.cave"
+  },
+  "ambient.weather.rain": {
+    "sounds": [
+      "minecraft:ambient/weather/rain1",
+      "minecraft:ambient/weather/rain2",
+      "minecraft:ambient/weather/rain3",
+      "minecraft:ambient/weather/rain4"
+    ],
+    "subtitle": "subtitles.weather.rain"
+  },
+  "ambient.weather.rain1": {
+    "sounds": [
+      "minecraft:ambient/weather/rain1"
+    ],
+    "subtitle": "subtitles.weather.rain"
+  },
+  "ambient.weather.rain2": {
+    "sounds": [
+      "minecraft:ambient/weather/rain2"
+    ],
+    "subtitle": "subtitles.weather.rain"
+  },
+  "ambient.weather.rain3": {
+    "sounds": [
+      "minecraft:ambient/weather/rain3"
+    ],
+    "subtitle": "subtitles.weather.rain"
+  },
+  "ambient.weather.rain4": {
+    "sounds": [
+      "minecraft:ambient/weather/rain4"
+    ],
+    "subtitle": "subtitles.weather.rain"
+  },
+  "ambient.weather.thunder": {
+    "sounds": [
+      "minecraft:ambient/weather/thunder1",
+      "minecraft:ambient/weather/thunder2",
+      "minecraft:ambient/weather/thunder3"
+    ],
+    "subtitle": "subtitles.entity.lightning_bolt.thunder"
+  },
+  "ambient.weather.thunder1": {
+    "sounds": [
+      "minecraft:ambient/weather/thunder1"
+    ],
+    "subtitle": "subtitles.entity.lightning_bolt.thunder"
+  },
+  "ambient.weather.thunder2": {
+    "sounds": [
+      "minecraft:ambient/weather/thunder2"
+    ],
+    "subtitle": "subtitles.entity.lightning_bolt.thunder"
+  },
+  "ambient.weather.thunder3": {
+    "sounds": [
+      "minecraft:ambient/weather/thunder3"
+    ],
+    "subtitle": "subtitles.entity.lightning_bolt.thunder"
+  },
+  "damage.fallbig": {
+    "sounds": [
+      "minecraft:damage/fallbig"
+    ],
+    "subtitle": "subtitles.entity.generic.big_fall"
+  },
+  "damage.fallsmall": {
+    "sounds": [
+      "minecraft:damage/fallsmall"
+    ],
+    "subtitle": "subtitles.entity.generic.small_fall"
+  },
+  "damage.hit": {
+    "sounds": [
+      "minecraft:damage/hit1",
+      "minecraft:damage/hit2",
+      "minecraft:damage/hit3"
+    ],
+    "subtitle": "subtitles.entity.generic.hurt"
+  },
+  "damage.hit1": {
+    "sounds": [
+      "minecraft:damage/hit1"
+    ],
+    "subtitle": "subtitles.entity.generic.hurt"
+  },
+  "damage.hit2": {
+    "sounds": [
+      "minecraft:damage/hit2"
+    ],
+    "subtitle": "subtitles.entity.generic.hurt"
+  },
+  "damage.hit3": {
+    "sounds": [
+      "minecraft:damage/hit3"
+    ],
+    "subtitle": "subtitles.entity.generic.hurt"
+  },
+  "dig.cloth": {
+    "sounds": [
+      "minecraft:dig/cloth1",
+      "minecraft:dig/cloth2",
+      "minecraft:dig/cloth3",
+      "minecraft:dig/cloth4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.cloth1": {
+    "sounds": [
+      "minecraft:dig/cloth1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.cloth2": {
+    "sounds": [
+      "minecraft:dig/cloth2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.cloth3": {
+    "sounds": [
+      "minecraft:dig/cloth3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.cloth4": {
+    "sounds": [
+      "minecraft:dig/cloth4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.grass": {
+    "sounds": [
+      "minecraft:dig/grass1",
+      "minecraft:dig/grass2",
+      "minecraft:dig/grass3",
+      "minecraft:dig/grass4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.grass1": {
+    "sounds": [
+      "minecraft:dig/grass1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.grass2": {
+    "sounds": [
+      "minecraft:dig/grass2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.grass3": {
+    "sounds": [
+      "minecraft:dig/grass3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.grass4": {
+    "sounds": [
+      "minecraft:dig/grass4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.gravel": {
+    "sounds": [
+      "minecraft:dig/gravel1",
+      "minecraft:dig/gravel2",
+      "minecraft:dig/gravel3",
+      "minecraft:dig/gravel4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.gravel1": {
+    "sounds": [
+      "minecraft:dig/gravel1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.gravel2": {
+    "sounds": [
+      "minecraft:dig/gravel2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.gravel3": {
+    "sounds": [
+      "minecraft:dig/gravel3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.gravel4": {
+    "sounds": [
+      "minecraft:dig/gravel4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.sand": {
+    "sounds": [
+      "minecraft:dig/sand1",
+      "minecraft:dig/sand2",
+      "minecraft:dig/sand3",
+      "minecraft:dig/sand4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.sand1": {
+    "sounds": [
+      "minecraft:dig/sand1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.sand2": {
+    "sounds": [
+      "minecraft:dig/sand2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.sand3": {
+    "sounds": [
+      "minecraft:dig/sand3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.sand4": {
+    "sounds": [
+      "minecraft:dig/sand4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.snow": {
+    "sounds": [
+      "minecraft:dig/snow1",
+      "minecraft:dig/snow2",
+      "minecraft:dig/snow3",
+      "minecraft:dig/snow4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.snow1": {
+    "sounds": [
+      "minecraft:dig/snow1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.snow2": {
+    "sounds": [
+      "minecraft:dig/snow2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.snow3": {
+    "sounds": [
+      "minecraft:dig/snow3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.snow4": {
+    "sounds": [
+      "minecraft:dig/snow4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.stone": {
+    "sounds": [
+      "minecraft:dig/stone1",
+      "minecraft:dig/stone2",
+      "minecraft:dig/stone3",
+      "minecraft:dig/stone4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.stone1": {
+    "sounds": [
+      "minecraft:dig/stone1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.stone2": {
+    "sounds": [
+      "minecraft:dig/stone2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.stone3": {
+    "sounds": [
+      "minecraft:dig/stone3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.stone4": {
+    "sounds": [
+      "minecraft:dig/stone4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.wood": {
+    "sounds": [
+      "minecraft:dig/wood1",
+      "minecraft:dig/wood2",
+      "minecraft:dig/wood3",
+      "minecraft:dig/wood4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.wood1": {
+    "sounds": [
+      "minecraft:dig/wood1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.wood2": {
+    "sounds": [
+      "minecraft:dig/wood2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.wood3": {
+    "sounds": [
+      "minecraft:dig/wood3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "dig.wood4": {
+    "sounds": [
+      "minecraft:dig/wood4"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "fire.fire": {
+    "sounds": [
+      "minecraft:fire/fire"
+    ],
+    "subtitle": "subtitles.block.fire.ambient"
+  },
+  "fire.ignite": {
+    "sounds": [
+      "minecraft:fire/ignite"
+    ],
+    "subtitle": "subtitles.item.flintandsteel.use"
+  },
+  "fireworks.blast": {
+    "sounds": [
+      "minecraft:fireworks/blast1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.blast"
+  },
+  "fireworks.blast1": {
+    "sounds": [
+      "minecraft:fireworks/blast1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.blast"
+  },
+  "fireworks.blast_far": {
+    "sounds": [
+      "minecraft:fireworks/blast_far1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.blast"
+  },
+  "fireworks.blast_far1": {
+    "sounds": [
+      "minecraft:fireworks/blast_far1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.blast"
+  },
+  "fireworks.largeblast": {
+    "sounds": [
+      "minecraft:fireworks/largeblast1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.blast"
+  },
+  "fireworks.largeblast1": {
+    "sounds": [
+      "minecraft:fireworks/largeblast1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.blast"
+  },
+  "fireworks.largeblast_far": {
+    "sounds": [
+      "minecraft:fireworks/largeblast_far1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.blast"
+  },
+  "fireworks.largeblast_far1": {
+    "sounds": [
+      "minecraft:fireworks/largeblast_far1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.blast"
+  },
+  "fireworks.launch": {
+    "sounds": [
+      "minecraft:fireworks/launch1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.launch"
+  },
+  "fireworks.launch1": {
+    "sounds": [
+      "minecraft:fireworks/launch1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.launch"
+  },
+  "fireworks.twinkle": {
+    "sounds": [
+      "minecraft:fireworks/twinkle1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.twinkle"
+  },
+  "fireworks.twinkle1": {
+    "sounds": [
+      "minecraft:fireworks/twinkle1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.twinkle"
+  },
+  "fireworks.twinkle_far": {
+    "sounds": [
+      "minecraft:fireworks/twinkle_far1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.twinkle"
+  },
+  "fireworks.twinkle_far1": {
+    "sounds": [
+      "minecraft:fireworks/twinkle_far1"
+    ],
+    "subtitle": "subtitles.entity.firework_rocket.twinkle"
+  },
+  "liquid.lava": {
+    "sounds": [
+      "minecraft:liquid/lava"
+    ],
+    "subtitle": "subtitles.block.lava.ambient"
+  },
+  "liquid.lavapop": {
+    "sounds": [
+      "minecraft:liquid/lavapop"
+    ],
+    "subtitle": "subtitles.block.lava.ambient"
+  },
+  "liquid.splash": {
+    "sounds": [
+      "minecraft:liquid/splash",
+      "minecraft:liquid/splash2"
+    ],
+    "subtitle": "subtitles.entity.generic.splash"
+  },
+  "liquid.splash2": {
+    "sounds": [
+      "minecraft:liquid/splash2"
+    ],
+    "subtitle": "subtitles.entity.generic.splash"
+  },
+  "liquid.swim": {
+    "sounds": [
+      "minecraft:liquid/swim1",
+      "minecraft:liquid/swim2",
+      "minecraft:liquid/swim3",
+      "minecraft:liquid/swim4"
+    ],
+    "subtitle": "subtitles.entity.generic.swim"
+  },
+  "liquid.swim1": {
+    "sounds": [
+      "minecraft:liquid/swim1"
+    ],
+    "subtitle": "subtitles.entity.generic.swim"
+  },
+  "liquid.swim2": {
+    "sounds": [
+      "minecraft:liquid/swim2"
+    ],
+    "subtitle": "subtitles.entity.generic.swim"
+  },
+  "liquid.swim3": {
+    "sounds": [
+      "minecraft:liquid/swim3"
+    ],
+    "subtitle": "subtitles.entity.generic.swim"
+  },
+  "liquid.swim4": {
+    "sounds": [
+      "minecraft:liquid/swim4"
+    ],
+    "subtitle": "subtitles.entity.generic.swim"
+  },
+  "liquid.water": {
+    "sounds": [
+      "minecraft:liquid/water"
+    ],
+    "subtitle": "subtitles.block.water.ambient"
+  },
+  "minecart.base": {
+    "sounds": [
+      "minecraft:minecart/base"
+    ],
+    "subtitle": "subtitles.entity.minecart.riding"
+  },
+  "minecart.inside": {
+    "sounds": [
+      "minecraft:minecart/inside"
+    ]
+  },
+  "mob.bat.death": {
+    "sounds": [
+      "minecraft:mob/bat/death"
+    ],
+    "subtitle": "subtitles.entity.bat.death"
+  },
+  "mob.bat.hurt": {
+    "sounds": [
+      "minecraft:mob/bat/hurt1",
+      "minecraft:mob/bat/hurt2",
+      "minecraft:mob/bat/hurt3",
+      "minecraft:mob/bat/hurt4"
+    ],
+    "subtitle": "subtitles.entity.bat.hurt"
+  },
+  "mob.bat.hurt1": {
+    "sounds": [
+      "minecraft:mob/bat/hurt1"
+    ],
+    "subtitle": "subtitles.entity.bat.hurt"
+  },
+  "mob.bat.hurt2": {
+    "sounds": [
+      "minecraft:mob/bat/hurt2"
+    ],
+    "subtitle": "subtitles.entity.bat.hurt"
+  },
+  "mob.bat.hurt3": {
+    "sounds": [
+      "minecraft:mob/bat/hurt3"
+    ],
+    "subtitle": "subtitles.entity.bat.hurt"
+  },
+  "mob.bat.hurt4": {
+    "sounds": [
+      "minecraft:mob/bat/hurt4"
+    ],
+    "subtitle": "subtitles.entity.bat.hurt"
+  },
+  "mob.bat.idle": {
+    "sounds": [
+      "minecraft:mob/bat/idle1",
+      "minecraft:mob/bat/idle2",
+      "minecraft:mob/bat/idle3",
+      "minecraft:mob/bat/idle4"
+    ],
+    "subtitle": "subtitles.entity.bat.ambient"
+  },
+  "mob.bat.idle1": {
+    "sounds": [
+      "minecraft:mob/bat/idle1"
+    ],
+    "subtitle": "subtitles.entity.bat.ambient"
+  },
+  "mob.bat.idle2": {
+    "sounds": [
+      "minecraft:mob/bat/idle2"
+    ],
+    "subtitle": "subtitles.entity.bat.ambient"
+  },
+  "mob.bat.idle3": {
+    "sounds": [
+      "minecraft:mob/bat/idle3"
+    ],
+    "subtitle": "subtitles.entity.bat.ambient"
+  },
+  "mob.bat.idle4": {
+    "sounds": [
+      "minecraft:mob/bat/idle4"
+    ],
+    "subtitle": "subtitles.entity.bat.ambient"
+  },
+  "mob.bat.loop": {
+    "sounds": [
+      "minecraft:mob/bat/loop"
+    ]
+  },
+  "mob.bat.takeoff": {
+    "sounds": [
+      "minecraft:mob/bat/takeoff"
+    ],
+    "subtitle": "subtitles.entity.bat.takeoff"
+  },
+  "mob.blaze.breathe": {
+    "sounds": [
+      "minecraft:mob/blaze/breathe1",
+      "minecraft:mob/blaze/breathe2",
+      "minecraft:mob/blaze/breathe3",
+      "minecraft:mob/blaze/breathe4"
+    ],
+    "subtitle": "subtitles.entity.blaze.ambient"
+  },
+  "mob.blaze.breathe1": {
+    "sounds": [
+      "minecraft:mob/blaze/breathe1"
+    ],
+    "subtitle": "subtitles.entity.blaze.ambient"
+  },
+  "mob.blaze.breathe2": {
+    "sounds": [
+      "minecraft:mob/blaze/breathe2"
+    ],
+    "subtitle": "subtitles.entity.blaze.ambient"
+  },
+  "mob.blaze.breathe3": {
+    "sounds": [
+      "minecraft:mob/blaze/breathe3"
+    ],
+    "subtitle": "subtitles.entity.blaze.ambient"
+  },
+  "mob.blaze.breathe4": {
+    "sounds": [
+      "minecraft:mob/blaze/breathe4"
+    ],
+    "subtitle": "subtitles.entity.blaze.ambient"
+  },
+  "mob.blaze.death": {
+    "sounds": [
+      "minecraft:mob/blaze/death"
+    ],
+    "subtitle": "subtitles.entity.blaze.death"
+  },
+  "mob.blaze.hit": {
+    "sounds": [
+      "minecraft:mob/blaze/hit1",
+      "minecraft:mob/blaze/hit2",
+      "minecraft:mob/blaze/hit3",
+      "minecraft:mob/blaze/hit4"
+    ],
+    "subtitle": "subtitles.entity.blaze.hurt"
+  },
+  "mob.blaze.hit1": {
+    "sounds": [
+      "minecraft:mob/blaze/hit1"
+    ],
+    "subtitle": "subtitles.entity.blaze.hurt"
+  },
+  "mob.blaze.hit2": {
+    "sounds": [
+      "minecraft:mob/blaze/hit2"
+    ],
+    "subtitle": "subtitles.entity.blaze.hurt"
+  },
+  "mob.blaze.hit3": {
+    "sounds": [
+      "minecraft:mob/blaze/hit3"
+    ],
+    "subtitle": "subtitles.entity.blaze.hurt"
+  },
+  "mob.blaze.hit4": {
+    "sounds": [
+      "minecraft:mob/blaze/hit4"
+    ],
+    "subtitle": "subtitles.entity.blaze.hurt"
+  },
+  "mob.cat.hiss": {
+    "sounds": [
+      "minecraft:mob/cat/hiss1",
+      "minecraft:mob/cat/hiss2",
+      "minecraft:mob/cat/hiss3"
+    ],
+    "subtitle": "subtitles.entity.cat.hiss"
+  },
+  "mob.cat.hiss1": {
+    "sounds": [
+      "minecraft:mob/cat/hiss1"
+    ],
+    "subtitle": "subtitles.entity.cat.hiss"
+  },
+  "mob.cat.hiss2": {
+    "sounds": [
+      "minecraft:mob/cat/hiss2"
+    ],
+    "subtitle": "subtitles.entity.cat.hiss"
+  },
+  "mob.cat.hiss3": {
+    "sounds": [
+      "minecraft:mob/cat/hiss3"
+    ],
+    "subtitle": "subtitles.entity.cat.hiss"
+  },
+  "mob.cat.hitt": {
+    "sounds": [
+      "minecraft:mob/cat/hitt1",
+      "minecraft:mob/cat/hitt2",
+      "minecraft:mob/cat/hitt3"
+    ],
+    "subtitle": "subtitles.entity.cat.hurt"
+  },
+  "mob.cat.hitt1": {
+    "sounds": [
+      "minecraft:mob/cat/hitt1"
+    ],
+    "subtitle": "subtitles.entity.cat.hurt"
+  },
+  "mob.cat.hitt2": {
+    "sounds": [
+      "minecraft:mob/cat/hitt2"
+    ],
+    "subtitle": "subtitles.entity.cat.hurt"
+  },
+  "mob.cat.hitt3": {
+    "sounds": [
+      "minecraft:mob/cat/hitt3"
+    ],
+    "subtitle": "subtitles.entity.cat.hurt"
+  },
+  "mob.cat.meow": {
+    "sounds": [
+      "minecraft:mob/cat/meow1",
+      "minecraft:mob/cat/meow2",
+      "minecraft:mob/cat/meow3",
+      "minecraft:mob/cat/meow4"
+    ],
+    "subtitle": "subtitles.entity.cat.ambient"
+  },
+  "mob.cat.meow1": {
+    "sounds": [
+      "minecraft:mob/cat/meow1"
+    ],
+    "subtitle": "subtitles.entity.cat.ambient"
+  },
+  "mob.cat.meow2": {
+    "sounds": [
+      "minecraft:mob/cat/meow2"
+    ],
+    "subtitle": "subtitles.entity.cat.ambient"
+  },
+  "mob.cat.meow3": {
+    "sounds": [
+      "minecraft:mob/cat/meow3"
+    ],
+    "subtitle": "subtitles.entity.cat.ambient"
+  },
+  "mob.cat.meow4": {
+    "sounds": [
+      "minecraft:mob/cat/meow4"
+    ],
+    "subtitle": "subtitles.entity.cat.ambient"
+  },
+  "mob.cat.purr": {
+    "sounds": [
+      "minecraft:mob/cat/purr1",
+      "minecraft:mob/cat/purr2",
+      "minecraft:mob/cat/purr3"
+    ],
+    "subtitle": "subtitles.entity.cat.purr"
+  },
+  "mob.cat.purr1": {
+    "sounds": [
+      "minecraft:mob/cat/purr1"
+    ],
+    "subtitle": "subtitles.entity.cat.purr"
+  },
+  "mob.cat.purr2": {
+    "sounds": [
+      "minecraft:mob/cat/purr2"
+    ],
+    "subtitle": "subtitles.entity.cat.purr"
+  },
+  "mob.cat.purr3": {
+    "sounds": [
+      "minecraft:mob/cat/purr3"
+    ],
+    "subtitle": "subtitles.entity.cat.purr"
+  },
+  "mob.cat.purreow": {
+    "sounds": [
+      "minecraft:mob/cat/purreow1",
+      "minecraft:mob/cat/purreow2"
+    ],
+    "subtitle": "subtitles.entity.cat.ambient"
+  },
+  "mob.cat.purreow1": {
+    "sounds": [
+      "minecraft:mob/cat/purreow1"
+    ],
+    "subtitle": "subtitles.entity.cat.ambient"
+  },
+  "mob.cat.purreow2": {
+    "sounds": [
+      "minecraft:mob/cat/purreow2"
+    ],
+    "subtitle": "subtitles.entity.cat.ambient"
+  },
+  "mob.chicken.hurt": {
+    "sounds": [
+      "minecraft:mob/chicken/hurt1",
+      "minecraft:mob/chicken/hurt2"
+    ],
+    "subtitle": "subtitles.entity.chicken.hurt"
+  },
+  "mob.chicken.hurt1": {
+    "sounds": [
+      "minecraft:mob/chicken/hurt1"
+    ],
+    "subtitle": "subtitles.entity.chicken.hurt"
+  },
+  "mob.chicken.hurt2": {
+    "sounds": [
+      "minecraft:mob/chicken/hurt2"
+    ],
+    "subtitle": "subtitles.entity.chicken.hurt"
+  },
+  "mob.chicken.plop": {
+    "sounds": [
+      "minecraft:mob/chicken/plop"
+    ],
+    "subtitle": "subtitles.entity.chicken.egg"
+  },
+  "mob.chicken.say": {
+    "sounds": [
+      "minecraft:mob/chicken/say1",
+      "minecraft:mob/chicken/say2",
+      "minecraft:mob/chicken/say3"
+    ],
+    "subtitle": "subtitles.entity.chicken.ambient"
+  },
+  "mob.chicken.say1": {
+    "sounds": [
+      "minecraft:mob/chicken/say1"
+    ],
+    "subtitle": "subtitles.entity.chicken.ambient"
+  },
+  "mob.chicken.say2": {
+    "sounds": [
+      "minecraft:mob/chicken/say2"
+    ],
+    "subtitle": "subtitles.entity.chicken.ambient"
+  },
+  "mob.chicken.say3": {
+    "sounds": [
+      "minecraft:mob/chicken/say3"
+    ],
+    "subtitle": "subtitles.entity.chicken.ambient"
+  },
+  "mob.chicken.step": {
+    "sounds": [
+      "minecraft:mob/chicken/step1",
+      "minecraft:mob/chicken/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.chicken.step1": {
+    "sounds": [
+      "minecraft:mob/chicken/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.chicken.step2": {
+    "sounds": [
+      "minecraft:mob/chicken/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.cow.hurt": {
+    "sounds": [
+      "minecraft:mob/cow/hurt1",
+      "minecraft:mob/cow/hurt2",
+      "minecraft:mob/cow/hurt3"
+    ],
+    "subtitle": "subtitles.entity.cow.hurt"
+  },
+  "mob.cow.hurt1": {
+    "sounds": [
+      "minecraft:mob/cow/hurt1"
+    ],
+    "subtitle": "subtitles.entity.cow.hurt"
+  },
+  "mob.cow.hurt2": {
+    "sounds": [
+      "minecraft:mob/cow/hurt2"
+    ],
+    "subtitle": "subtitles.entity.cow.hurt"
+  },
+  "mob.cow.hurt3": {
+    "sounds": [
+      "minecraft:mob/cow/hurt3"
+    ],
+    "subtitle": "subtitles.entity.cow.hurt"
+  },
+  "mob.cow.say": {
+    "sounds": [
+      "minecraft:mob/cow/say1",
+      "minecraft:mob/cow/say2",
+      "minecraft:mob/cow/say3",
+      "minecraft:mob/cow/say4"
+    ],
+    "subtitle": "subtitles.entity.cow.ambient"
+  },
+  "mob.cow.say1": {
+    "sounds": [
+      "minecraft:mob/cow/say1"
+    ],
+    "subtitle": "subtitles.entity.cow.ambient"
+  },
+  "mob.cow.say2": {
+    "sounds": [
+      "minecraft:mob/cow/say2"
+    ],
+    "subtitle": "subtitles.entity.cow.ambient"
+  },
+  "mob.cow.say3": {
+    "sounds": [
+      "minecraft:mob/cow/say3"
+    ],
+    "subtitle": "subtitles.entity.cow.ambient"
+  },
+  "mob.cow.say4": {
+    "sounds": [
+      "minecraft:mob/cow/say4"
+    ],
+    "subtitle": "subtitles.entity.cow.ambient"
+  },
+  "mob.cow.step": {
+    "sounds": [
+      "minecraft:mob/cow/step1",
+      "minecraft:mob/cow/step2",
+      "minecraft:mob/cow/step3",
+      "minecraft:mob/cow/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.cow.step1": {
+    "sounds": [
+      "minecraft:mob/cow/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.cow.step2": {
+    "sounds": [
+      "minecraft:mob/cow/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.cow.step3": {
+    "sounds": [
+      "minecraft:mob/cow/step3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.cow.step4": {
+    "sounds": [
+      "minecraft:mob/cow/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.creeper.death": {
+    "sounds": [
+      "minecraft:mob/creeper/death"
+    ],
+    "subtitle": "subtitles.entity.creeper.death"
+  },
+  "mob.creeper.say": {
+    "sounds": [
+      "minecraft:mob/creeper/say1",
+      "minecraft:mob/creeper/say2",
+      "minecraft:mob/creeper/say3",
+      "minecraft:mob/creeper/say4"
+    ],
+    "subtitle": "subtitles.entity.creeper.hurt"
+  },
+  "mob.creeper.say1": {
+    "sounds": [
+      "minecraft:mob/creeper/say1"
+    ],
+    "subtitle": "subtitles.entity.creeper.hurt"
+  },
+  "mob.creeper.say2": {
+    "sounds": [
+      "minecraft:mob/creeper/say2"
+    ],
+    "subtitle": "subtitles.entity.creeper.hurt"
+  },
+  "mob.creeper.say3": {
+    "sounds": [
+      "minecraft:mob/creeper/say3"
+    ],
+    "subtitle": "subtitles.entity.creeper.hurt"
+  },
+  "mob.creeper.say4": {
+    "sounds": [
+      "minecraft:mob/creeper/say4"
+    ],
+    "subtitle": "subtitles.entity.creeper.hurt"
+  },
+  "mob.enderdragon.end": {
+    "sounds": [
+      "minecraft:mob/enderdragon/end"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.death"
+  },
+  "mob.enderdragon.growl": {
+    "sounds": [
+      "minecraft:mob/enderdragon/growl1",
+      "minecraft:mob/enderdragon/growl2",
+      "minecraft:mob/enderdragon/growl3",
+      "minecraft:mob/enderdragon/growl4"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.growl"
+  },
+  "mob.enderdragon.growl1": {
+    "sounds": [
+      "minecraft:mob/enderdragon/growl1"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.growl"
+  },
+  "mob.enderdragon.growl2": {
+    "sounds": [
+      "minecraft:mob/enderdragon/growl2"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.growl"
+  },
+  "mob.enderdragon.growl3": {
+    "sounds": [
+      "minecraft:mob/enderdragon/growl3"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.growl"
+  },
+  "mob.enderdragon.growl4": {
+    "sounds": [
+      "minecraft:mob/enderdragon/growl4"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.growl"
+  },
+  "mob.enderdragon.hit": {
+    "sounds": [
+      "minecraft:mob/enderdragon/hit1",
+      "minecraft:mob/enderdragon/hit2",
+      "minecraft:mob/enderdragon/hit3",
+      "minecraft:mob/enderdragon/hit4"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.hurt"
+  },
+  "mob.enderdragon.hit1": {
+    "sounds": [
+      "minecraft:mob/enderdragon/hit1"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.hurt"
+  },
+  "mob.enderdragon.hit2": {
+    "sounds": [
+      "minecraft:mob/enderdragon/hit2"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.hurt"
+  },
+  "mob.enderdragon.hit3": {
+    "sounds": [
+      "minecraft:mob/enderdragon/hit3"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.hurt"
+  },
+  "mob.enderdragon.hit4": {
+    "sounds": [
+      "minecraft:mob/enderdragon/hit4"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.hurt"
+  },
+  "mob.enderdragon.wings": {
+    "sounds": [
+      "minecraft:mob/enderdragon/wings1",
+      "minecraft:mob/enderdragon/wings2",
+      "minecraft:mob/enderdragon/wings3",
+      "minecraft:mob/enderdragon/wings4",
+      "minecraft:mob/enderdragon/wings5",
+      "minecraft:mob/enderdragon/wings6"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.flap"
+  },
+  "mob.enderdragon.wings1": {
+    "sounds": [
+      "minecraft:mob/enderdragon/wings1"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.flap"
+  },
+  "mob.enderdragon.wings2": {
+    "sounds": [
+      "minecraft:mob/enderdragon/wings2"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.flap"
+  },
+  "mob.enderdragon.wings3": {
+    "sounds": [
+      "minecraft:mob/enderdragon/wings3"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.flap"
+  },
+  "mob.enderdragon.wings4": {
+    "sounds": [
+      "minecraft:mob/enderdragon/wings4"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.flap"
+  },
+  "mob.enderdragon.wings5": {
+    "sounds": [
+      "minecraft:mob/enderdragon/wings5"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.flap"
+  },
+  "mob.enderdragon.wings6": {
+    "sounds": [
+      "minecraft:mob/enderdragon/wings6"
+    ],
+    "subtitle": "subtitles.entity.ender_dragon.flap"
+  },
+  "mob.endermen.death": {
+    "sounds": [
+      "minecraft:mob/endermen/death"
+    ],
+    "subtitle": "subtitles.entity.enderman.death"
+  },
+  "mob.endermen.hit": {
+    "sounds": [
+      "minecraft:mob/endermen/hit1",
+      "minecraft:mob/endermen/hit2",
+      "minecraft:mob/endermen/hit3",
+      "minecraft:mob/endermen/hit4"
+    ],
+    "subtitle": "subtitles.entity.enderman.hurt"
+  },
+  "mob.endermen.hit1": {
+    "sounds": [
+      "minecraft:mob/endermen/hit1"
+    ],
+    "subtitle": "subtitles.entity.enderman.hurt"
+  },
+  "mob.endermen.hit2": {
+    "sounds": [
+      "minecraft:mob/endermen/hit2"
+    ],
+    "subtitle": "subtitles.entity.enderman.hurt"
+  },
+  "mob.endermen.hit3": {
+    "sounds": [
+      "minecraft:mob/endermen/hit3"
+    ],
+    "subtitle": "subtitles.entity.enderman.hurt"
+  },
+  "mob.endermen.hit4": {
+    "sounds": [
+      "minecraft:mob/endermen/hit4"
+    ],
+    "subtitle": "subtitles.entity.enderman.hurt"
+  },
+  "mob.endermen.idle": {
+    "sounds": [
+      "minecraft:mob/endermen/idle1",
+      "minecraft:mob/endermen/idle2",
+      "minecraft:mob/endermen/idle3",
+      "minecraft:mob/endermen/idle4",
+      "minecraft:mob/endermen/idle5"
+    ],
+    "subtitle": "subtitles.entity.enderman.ambient"
+  },
+  "mob.endermen.idle1": {
+    "sounds": [
+      "minecraft:mob/endermen/idle1"
+    ],
+    "subtitle": "subtitles.entity.enderman.ambient"
+  },
+  "mob.endermen.idle2": {
+    "sounds": [
+      "minecraft:mob/endermen/idle2"
+    ],
+    "subtitle": "subtitles.entity.enderman.ambient"
+  },
+  "mob.endermen.idle3": {
+    "sounds": [
+      "minecraft:mob/endermen/idle3"
+    ],
+    "subtitle": "subtitles.entity.enderman.ambient"
+  },
+  "mob.endermen.idle4": {
+    "sounds": [
+      "minecraft:mob/endermen/idle4"
+    ],
+    "subtitle": "subtitles.entity.enderman.ambient"
+  },
+  "mob.endermen.idle5": {
+    "sounds": [
+      "minecraft:mob/endermen/idle5"
+    ],
+    "subtitle": "subtitles.entity.enderman.ambient"
+  },
+  "mob.endermen.portal": {
+    "sounds": [
+      "minecraft:mob/endermen/portal",
+      "minecraft:mob/endermen/portal2"
+    ],
+    "subtitle": "subtitles.entity.enderman.teleport"
+  },
+  "mob.endermen.portal2": {
+    "sounds": [
+      "minecraft:mob/endermen/portal2"
+    ],
+    "subtitle": "subtitles.entity.enderman.teleport"
+  },
+  "mob.endermen.scream": {
+    "sounds": [
+      "minecraft:mob/endermen/scream1",
+      "minecraft:mob/endermen/scream2",
+      "minecraft:mob/endermen/scream3",
+      "minecraft:mob/endermen/scream4"
+    ],
+    "subtitle": "subtitles.entity.enderman.scream"
+  },
+  "mob.endermen.scream1": {
+    "sounds": [
+      "minecraft:mob/endermen/scream1"
+    ],
+    "subtitle": "subtitles.entity.enderman.scream"
+  },
+  "mob.endermen.scream2": {
+    "sounds": [
+      "minecraft:mob/endermen/scream2"
+    ],
+    "subtitle": "subtitles.entity.enderman.scream"
+  },
+  "mob.endermen.scream3": {
+    "sounds": [
+      "minecraft:mob/endermen/scream3"
+    ],
+    "subtitle": "subtitles.entity.enderman.scream"
+  },
+  "mob.endermen.scream4": {
+    "sounds": [
+      "minecraft:mob/endermen/scream4"
+    ],
+    "subtitle": "subtitles.entity.enderman.scream"
+  },
+  "mob.endermen.stare": {
+    "sounds": [
+      "minecraft:mob/endermen/stare"
+    ],
+    "subtitle": "subtitles.entity.enderman.stare"
+  },
+  "mob.ghast.affectionate_scream": {
+    "sounds": [
+      "minecraft:mob/ghast/affectionate_scream"
+    ]
+  },
+  "mob.ghast.charge": {
+    "sounds": [
+      "minecraft:mob/ghast/charge"
+    ],
+    "subtitle": "subtitles.entity.ghast.shoot"
+  },
+  "mob.ghast.death": {
+    "sounds": [
+      "minecraft:mob/ghast/death"
+    ],
+    "subtitle": "subtitles.entity.ghast.death"
+  },
+  "mob.ghast.fireball": {
+    "sounds": [
+      "minecraft:mob/ghast/fireball4"
+    ],
+    "subtitle": "subtitles.entity.ghast.shoot"
+  },
+  "mob.ghast.fireball4": {
+    "sounds": [
+      "minecraft:mob/ghast/fireball4"
+    ],
+    "subtitle": "subtitles.entity.ghast.shoot"
+  },
+  "mob.ghast.moan": {
+    "sounds": [
+      "minecraft:mob/ghast/moan1",
+      "minecraft:mob/ghast/moan2",
+      "minecraft:mob/ghast/moan3",
+      "minecraft:mob/ghast/moan4",
+      "minecraft:mob/ghast/moan5",
+      "minecraft:mob/ghast/moan6",
+      "minecraft:mob/ghast/moan7"
+    ],
+    "subtitle": "subtitles.entity.ghast.ambient"
+  },
+  "mob.ghast.moan1": {
+    "sounds": [
+      "minecraft:mob/ghast/moan1"
+    ],
+    "subtitle": "subtitles.entity.ghast.ambient"
+  },
+  "mob.ghast.moan2": {
+    "sounds": [
+      "minecraft:mob/ghast/moan2"
+    ],
+    "subtitle": "subtitles.entity.ghast.ambient"
+  },
+  "mob.ghast.moan3": {
+    "sounds": [
+      "minecraft:mob/ghast/moan3"
+    ],
+    "subtitle": "subtitles.entity.ghast.ambient"
+  },
+  "mob.ghast.moan4": {
+    "sounds": [
+      "minecraft:mob/ghast/moan4"
+    ],
+    "subtitle": "subtitles.entity.ghast.ambient"
+  },
+  "mob.ghast.moan5": {
+    "sounds": [
+      "minecraft:mob/ghast/moan5"
+    ],
+    "subtitle": "subtitles.entity.ghast.ambient"
+  },
+  "mob.ghast.moan6": {
+    "sounds": [
+      "minecraft:mob/ghast/moan6"
+    ],
+    "subtitle": "subtitles.entity.ghast.ambient"
+  },
+  "mob.ghast.moan7": {
+    "sounds": [
+      "minecraft:mob/ghast/moan7"
+    ],
+    "subtitle": "subtitles.entity.ghast.ambient"
+  },
+  "mob.ghast.scream": {
+    "sounds": [
+      "minecraft:mob/ghast/scream1",
+      "minecraft:mob/ghast/scream2",
+      "minecraft:mob/ghast/scream3",
+      "minecraft:mob/ghast/scream4",
+      "minecraft:mob/ghast/scream5"
+    ],
+    "subtitle": "subtitles.entity.ghast.hurt"
+  },
+  "mob.ghast.scream1": {
+    "sounds": [
+      "minecraft:mob/ghast/scream1"
+    ],
+    "subtitle": "subtitles.entity.ghast.hurt"
+  },
+  "mob.ghast.scream2": {
+    "sounds": [
+      "minecraft:mob/ghast/scream2"
+    ],
+    "subtitle": "subtitles.entity.ghast.hurt"
+  },
+  "mob.ghast.scream3": {
+    "sounds": [
+      "minecraft:mob/ghast/scream3"
+    ],
+    "subtitle": "subtitles.entity.ghast.hurt"
+  },
+  "mob.ghast.scream4": {
+    "sounds": [
+      "minecraft:mob/ghast/scream4"
+    ],
+    "subtitle": "subtitles.entity.ghast.hurt"
+  },
+  "mob.ghast.scream5": {
+    "sounds": [
+      "minecraft:mob/ghast/scream5"
+    ],
+    "subtitle": "subtitles.entity.ghast.hurt"
+  },
+  "mob.irongolem.death": {
+    "sounds": [
+      "minecraft:mob/irongolem/death"
+    ],
+    "subtitle": "subtitles.entity.iron_golem.death"
+  },
+  "mob.irongolem.hit": {
+    "sounds": [
+      "minecraft:mob/irongolem/hit1",
+      "minecraft:mob/irongolem/hit2",
+      "minecraft:mob/irongolem/hit3",
+      "minecraft:mob/irongolem/hit4"
+    ],
+    "subtitle": "subtitles.entity.iron_golem.hurt"
+  },
+  "mob.irongolem.hit1": {
+    "sounds": [
+      "minecraft:mob/irongolem/hit1"
+    ],
+    "subtitle": "subtitles.entity.iron_golem.hurt"
+  },
+  "mob.irongolem.hit2": {
+    "sounds": [
+      "minecraft:mob/irongolem/hit2"
+    ],
+    "subtitle": "subtitles.entity.iron_golem.hurt"
+  },
+  "mob.irongolem.hit3": {
+    "sounds": [
+      "minecraft:mob/irongolem/hit3"
+    ],
+    "subtitle": "subtitles.entity.iron_golem.hurt"
+  },
+  "mob.irongolem.hit4": {
+    "sounds": [
+      "minecraft:mob/irongolem/hit4"
+    ],
+    "subtitle": "subtitles.entity.iron_golem.hurt"
+  },
+  "mob.irongolem.throw": {
+    "sounds": [
+      "minecraft:mob/irongolem/throw"
+    ],
+    "subtitle": "subtitles.entity.iron_golem.attack"
+  },
+  "mob.irongolem.walk": {
+    "sounds": [
+      "minecraft:mob/irongolem/walk1",
+      "minecraft:mob/irongolem/walk2",
+      "minecraft:mob/irongolem/walk3",
+      "minecraft:mob/irongolem/walk4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.irongolem.walk1": {
+    "sounds": [
+      "minecraft:mob/irongolem/walk1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.irongolem.walk2": {
+    "sounds": [
+      "minecraft:mob/irongolem/walk2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.irongolem.walk3": {
+    "sounds": [
+      "minecraft:mob/irongolem/walk3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.irongolem.walk4": {
+    "sounds": [
+      "minecraft:mob/irongolem/walk4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.magmacube.big": {
+    "sounds": [
+      "minecraft:mob/magmacube/big1",
+      "minecraft:mob/magmacube/big2",
+      "minecraft:mob/magmacube/big3",
+      "minecraft:mob/magmacube/big4"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.big1": {
+    "sounds": [
+      "minecraft:mob/magmacube/big1"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.big2": {
+    "sounds": [
+      "minecraft:mob/magmacube/big2"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.big3": {
+    "sounds": [
+      "minecraft:mob/magmacube/big3"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.big4": {
+    "sounds": [
+      "minecraft:mob/magmacube/big4"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.jump": {
+    "sounds": [
+      "minecraft:mob/magmacube/jump1",
+      "minecraft:mob/magmacube/jump2",
+      "minecraft:mob/magmacube/jump3",
+      "minecraft:mob/magmacube/jump4"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.jump1": {
+    "sounds": [
+      "minecraft:mob/magmacube/jump1"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.jump2": {
+    "sounds": [
+      "minecraft:mob/magmacube/jump2"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.jump3": {
+    "sounds": [
+      "minecraft:mob/magmacube/jump3"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.jump4": {
+    "sounds": [
+      "minecraft:mob/magmacube/jump4"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.small": {
+    "sounds": [
+      "minecraft:mob/magmacube/small1",
+      "minecraft:mob/magmacube/small2",
+      "minecraft:mob/magmacube/small3",
+      "minecraft:mob/magmacube/small4",
+      "minecraft:mob/magmacube/small5"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.small1": {
+    "sounds": [
+      "minecraft:mob/magmacube/small1"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.small2": {
+    "sounds": [
+      "minecraft:mob/magmacube/small2"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.small3": {
+    "sounds": [
+      "minecraft:mob/magmacube/small3"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.small4": {
+    "sounds": [
+      "minecraft:mob/magmacube/small4"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.magmacube.small5": {
+    "sounds": [
+      "minecraft:mob/magmacube/small5"
+    ],
+    "subtitle": "subtitles.entity.magma_cube.squish"
+  },
+  "mob.pig.death": {
+    "sounds": [
+      "minecraft:mob/pig/death"
+    ],
+    "subtitle": "subtitles.entity.pig.death"
+  },
+  "mob.pig.say": {
+    "sounds": [
+      "minecraft:mob/pig/say1",
+      "minecraft:mob/pig/say2",
+      "minecraft:mob/pig/say3"
+    ],
+    "subtitle": "subtitles.entity.pig.ambient"
+  },
+  "mob.pig.say1": {
+    "sounds": [
+      "minecraft:mob/pig/say1"
+    ],
+    "subtitle": "subtitles.entity.pig.ambient"
+  },
+  "mob.pig.say2": {
+    "sounds": [
+      "minecraft:mob/pig/say2"
+    ],
+    "subtitle": "subtitles.entity.pig.ambient"
+  },
+  "mob.pig.say3": {
+    "sounds": [
+      "minecraft:mob/pig/say3"
+    ],
+    "subtitle": "subtitles.entity.pig.ambient"
+  },
+  "mob.pig.step": {
+    "sounds": [
+      "minecraft:mob/pig/step1",
+      "minecraft:mob/pig/step2",
+      "minecraft:mob/pig/step3",
+      "minecraft:mob/pig/step4",
+      "minecraft:mob/pig/step5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.pig.step1": {
+    "sounds": [
+      "minecraft:mob/pig/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.pig.step2": {
+    "sounds": [
+      "minecraft:mob/pig/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.pig.step3": {
+    "sounds": [
+      "minecraft:mob/pig/step3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.pig.step4": {
+    "sounds": [
+      "minecraft:mob/pig/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.pig.step5": {
+    "sounds": [
+      "minecraft:mob/pig/step5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.sheep.say": {
+    "sounds": [
+      "minecraft:mob/sheep/say1",
+      "minecraft:mob/sheep/say2",
+      "minecraft:mob/sheep/say3"
+    ],
+    "subtitle": "subtitles.entity.sheep.ambient"
+  },
+  "mob.sheep.say1": {
+    "sounds": [
+      "minecraft:mob/sheep/say1"
+    ],
+    "subtitle": "subtitles.entity.sheep.ambient"
+  },
+  "mob.sheep.say2": {
+    "sounds": [
+      "minecraft:mob/sheep/say2"
+    ],
+    "subtitle": "subtitles.entity.sheep.ambient"
+  },
+  "mob.sheep.say3": {
+    "sounds": [
+      "minecraft:mob/sheep/say3"
+    ],
+    "subtitle": "subtitles.entity.sheep.ambient"
+  },
+  "mob.sheep.shear": {
+    "sounds": [
+      "minecraft:mob/sheep/shear"
+    ],
+    "subtitle": "subtitles.item.shears.shear"
+  },
+  "mob.sheep.step": {
+    "sounds": [
+      "minecraft:mob/sheep/step1",
+      "minecraft:mob/sheep/step2",
+      "minecraft:mob/sheep/step3",
+      "minecraft:mob/sheep/step4",
+      "minecraft:mob/sheep/step5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.sheep.step1": {
+    "sounds": [
+      "minecraft:mob/sheep/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.sheep.step2": {
+    "sounds": [
+      "minecraft:mob/sheep/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.sheep.step3": {
+    "sounds": [
+      "minecraft:mob/sheep/step3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.sheep.step4": {
+    "sounds": [
+      "minecraft:mob/sheep/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.sheep.step5": {
+    "sounds": [
+      "minecraft:mob/sheep/step5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.silverfish.hit": {
+    "sounds": [
+      "minecraft:mob/silverfish/hit1",
+      "minecraft:mob/silverfish/hit2",
+      "minecraft:mob/silverfish/hit3"
+    ],
+    "subtitle": "subtitles.entity.silverfish.hurt"
+  },
+  "mob.silverfish.hit1": {
+    "sounds": [
+      "minecraft:mob/silverfish/hit1"
+    ],
+    "subtitle": "subtitles.entity.silverfish.hurt"
+  },
+  "mob.silverfish.hit2": {
+    "sounds": [
+      "minecraft:mob/silverfish/hit2"
+    ],
+    "subtitle": "subtitles.entity.silverfish.hurt"
+  },
+  "mob.silverfish.hit3": {
+    "sounds": [
+      "minecraft:mob/silverfish/hit3"
+    ],
+    "subtitle": "subtitles.entity.silverfish.hurt"
+  },
+  "mob.silverfish.kill": {
+    "sounds": [
+      "minecraft:mob/silverfish/kill"
+    ],
+    "subtitle": "subtitles.entity.silverfish.death"
+  },
+  "mob.silverfish.say": {
+    "sounds": [
+      "minecraft:mob/silverfish/say1",
+      "minecraft:mob/silverfish/say2",
+      "minecraft:mob/silverfish/say3",
+      "minecraft:mob/silverfish/say4"
+    ],
+    "subtitle": "subtitles.entity.silverfish.ambient"
+  },
+  "mob.silverfish.say1": {
+    "sounds": [
+      "minecraft:mob/silverfish/say1"
+    ],
+    "subtitle": "subtitles.entity.silverfish.ambient"
+  },
+  "mob.silverfish.say2": {
+    "sounds": [
+      "minecraft:mob/silverfish/say2"
+    ],
+    "subtitle": "subtitles.entity.silverfish.ambient"
+  },
+  "mob.silverfish.say3": {
+    "sounds": [
+      "minecraft:mob/silverfish/say3"
+    ],
+    "subtitle": "subtitles.entity.silverfish.ambient"
+  },
+  "mob.silverfish.say4": {
+    "sounds": [
+      "minecraft:mob/silverfish/say4"
+    ],
+    "subtitle": "subtitles.entity.silverfish.ambient"
+  },
+  "mob.silverfish.step": {
+    "sounds": [
+      "minecraft:mob/silverfish/step1",
+      "minecraft:mob/silverfish/step2",
+      "minecraft:mob/silverfish/step3",
+      "minecraft:mob/silverfish/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.silverfish.step1": {
+    "sounds": [
+      "minecraft:mob/silverfish/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.silverfish.step2": {
+    "sounds": [
+      "minecraft:mob/silverfish/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.silverfish.step3": {
+    "sounds": [
+      "minecraft:mob/silverfish/step3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.silverfish.step4": {
+    "sounds": [
+      "minecraft:mob/silverfish/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.skeleton.death": {
+    "sounds": [
+      "minecraft:mob/skeleton/death"
+    ],
+    "subtitle": "subtitles.entity.skeleton.death"
+  },
+  "mob.skeleton.hurt": {
+    "sounds": [
+      "minecraft:mob/skeleton/hurt1",
+      "minecraft:mob/skeleton/hurt2",
+      "minecraft:mob/skeleton/hurt3",
+      "minecraft:mob/skeleton/hurt4"
+    ],
+    "subtitle": "subtitles.entity.skeleton.hurt"
+  },
+  "mob.skeleton.hurt1": {
+    "sounds": [
+      "minecraft:mob/skeleton/hurt1"
+    ],
+    "subtitle": "subtitles.entity.skeleton.hurt"
+  },
+  "mob.skeleton.hurt2": {
+    "sounds": [
+      "minecraft:mob/skeleton/hurt2"
+    ],
+    "subtitle": "subtitles.entity.skeleton.hurt"
+  },
+  "mob.skeleton.hurt3": {
+    "sounds": [
+      "minecraft:mob/skeleton/hurt3"
+    ],
+    "subtitle": "subtitles.entity.skeleton.hurt"
+  },
+  "mob.skeleton.hurt4": {
+    "sounds": [
+      "minecraft:mob/skeleton/hurt4"
+    ],
+    "subtitle": "subtitles.entity.skeleton.hurt"
+  },
+  "mob.skeleton.say": {
+    "sounds": [
+      "minecraft:mob/skeleton/say1",
+      "minecraft:mob/skeleton/say2",
+      "minecraft:mob/skeleton/say3"
+    ],
+    "subtitle": "subtitles.entity.skeleton.ambient"
+  },
+  "mob.skeleton.say1": {
+    "sounds": [
+      "minecraft:mob/skeleton/say1"
+    ],
+    "subtitle": "subtitles.entity.skeleton.ambient"
+  },
+  "mob.skeleton.say2": {
+    "sounds": [
+      "minecraft:mob/skeleton/say2"
+    ],
+    "subtitle": "subtitles.entity.skeleton.ambient"
+  },
+  "mob.skeleton.say3": {
+    "sounds": [
+      "minecraft:mob/skeleton/say3"
+    ],
+    "subtitle": "subtitles.entity.skeleton.ambient"
+  },
+  "mob.skeleton.step": {
+    "sounds": [
+      "minecraft:mob/skeleton/step1",
+      "minecraft:mob/skeleton/step2",
+      "minecraft:mob/skeleton/step3",
+      "minecraft:mob/skeleton/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.skeleton.step1": {
+    "sounds": [
+      "minecraft:mob/skeleton/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.skeleton.step2": {
+    "sounds": [
+      "minecraft:mob/skeleton/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.skeleton.step3": {
+    "sounds": [
+      "minecraft:mob/skeleton/step3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.skeleton.step4": {
+    "sounds": [
+      "minecraft:mob/skeleton/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.slime.attack": {
+    "sounds": [
+      "minecraft:mob/slime/attack1",
+      "minecraft:mob/slime/attack2"
+    ],
+    "subtitle": "subtitles.entity.slime.attack"
+  },
+  "mob.slime.attack1": {
+    "sounds": [
+      "minecraft:mob/slime/attack1"
+    ],
+    "subtitle": "subtitles.entity.slime.attack"
+  },
+  "mob.slime.attack2": {
+    "sounds": [
+      "minecraft:mob/slime/attack2"
+    ],
+    "subtitle": "subtitles.entity.slime.attack"
+  },
+  "mob.slime.big": {
+    "sounds": [
+      "minecraft:mob/slime/big1",
+      "minecraft:mob/slime/big2",
+      "minecraft:mob/slime/big3",
+      "minecraft:mob/slime/big4"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.big1": {
+    "sounds": [
+      "minecraft:mob/slime/big1"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.big2": {
+    "sounds": [
+      "minecraft:mob/slime/big2"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.big3": {
+    "sounds": [
+      "minecraft:mob/slime/big3"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.big4": {
+    "sounds": [
+      "minecraft:mob/slime/big4"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.small": {
+    "sounds": [
+      "minecraft:mob/slime/small1",
+      "minecraft:mob/slime/small2",
+      "minecraft:mob/slime/small3",
+      "minecraft:mob/slime/small4",
+      "minecraft:mob/slime/small5"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.small1": {
+    "sounds": [
+      "minecraft:mob/slime/small1"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.small2": {
+    "sounds": [
+      "minecraft:mob/slime/small2"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.small3": {
+    "sounds": [
+      "minecraft:mob/slime/small3"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.small4": {
+    "sounds": [
+      "minecraft:mob/slime/small4"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.slime.small5": {
+    "sounds": [
+      "minecraft:mob/slime/small5"
+    ],
+    "subtitle": "subtitles.entity.slime.squish"
+  },
+  "mob.spider.death": {
+    "sounds": [
+      "minecraft:mob/spider/death"
+    ],
+    "subtitle": "subtitles.entity.spider.death"
+  },
+  "mob.spider.say": {
+    "sounds": [
+      "minecraft:mob/spider/say1",
+      "minecraft:mob/spider/say2",
+      "minecraft:mob/spider/say3",
+      "minecraft:mob/spider/say4"
+    ],
+    "subtitle": "subtitles.entity.spider.ambient"
+  },
+  "mob.spider.say1": {
+    "sounds": [
+      "minecraft:mob/spider/say1"
+    ],
+    "subtitle": "subtitles.entity.spider.ambient"
+  },
+  "mob.spider.say2": {
+    "sounds": [
+      "minecraft:mob/spider/say2"
+    ],
+    "subtitle": "subtitles.entity.spider.ambient"
+  },
+  "mob.spider.say3": {
+    "sounds": [
+      "minecraft:mob/spider/say3"
+    ],
+    "subtitle": "subtitles.entity.spider.ambient"
+  },
+  "mob.spider.say4": {
+    "sounds": [
+      "minecraft:mob/spider/say4"
+    ],
+    "subtitle": "subtitles.entity.spider.ambient"
+  },
+  "mob.spider.step": {
+    "sounds": [
+      "minecraft:mob/spider/step1",
+      "minecraft:mob/spider/step2",
+      "minecraft:mob/spider/step3",
+      "minecraft:mob/spider/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.spider.step1": {
+    "sounds": [
+      "minecraft:mob/spider/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.spider.step2": {
+    "sounds": [
+      "minecraft:mob/spider/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.spider.step3": {
+    "sounds": [
+      "minecraft:mob/spider/step3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.spider.step4": {
+    "sounds": [
+      "minecraft:mob/spider/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.wither.death": {
+    "sounds": [
+      "minecraft:mob/wither/death"
+    ],
+    "subtitle": "subtitles.entity.wither.death"
+  },
+  "mob.wither.hurt": {
+    "sounds": [
+      "minecraft:mob/wither/hurt1",
+      "minecraft:mob/wither/hurt2",
+      "minecraft:mob/wither/hurt3",
+      "minecraft:mob/wither/hurt4"
+    ],
+    "subtitle": "subtitles.entity.wither.hurt"
+  },
+  "mob.wither.hurt1": {
+    "sounds": [
+      "minecraft:mob/wither/hurt1"
+    ],
+    "subtitle": "subtitles.entity.wither.hurt"
+  },
+  "mob.wither.hurt2": {
+    "sounds": [
+      "minecraft:mob/wither/hurt2"
+    ],
+    "subtitle": "subtitles.entity.wither.hurt"
+  },
+  "mob.wither.hurt3": {
+    "sounds": [
+      "minecraft:mob/wither/hurt3"
+    ],
+    "subtitle": "subtitles.entity.wither.hurt"
+  },
+  "mob.wither.hurt4": {
+    "sounds": [
+      "minecraft:mob/wither/hurt4"
+    ],
+    "subtitle": "subtitles.entity.wither.hurt"
+  },
+  "mob.wither.idle": {
+    "sounds": [
+      "minecraft:mob/wither/idle1",
+      "minecraft:mob/wither/idle2",
+      "minecraft:mob/wither/idle3",
+      "minecraft:mob/wither/idle4"
+    ],
+    "subtitle": "subtitles.entity.wither.ambient"
+  },
+  "mob.wither.idle1": {
+    "sounds": [
+      "minecraft:mob/wither/idle1"
+    ],
+    "subtitle": "subtitles.entity.wither.ambient"
+  },
+  "mob.wither.idle2": {
+    "sounds": [
+      "minecraft:mob/wither/idle2"
+    ],
+    "subtitle": "subtitles.entity.wither.ambient"
+  },
+  "mob.wither.idle3": {
+    "sounds": [
+      "minecraft:mob/wither/idle3"
+    ],
+    "subtitle": "subtitles.entity.wither.ambient"
+  },
+  "mob.wither.idle4": {
+    "sounds": [
+      "minecraft:mob/wither/idle4"
+    ],
+    "subtitle": "subtitles.entity.wither.ambient"
+  },
+  "mob.wither.shoot": {
+    "sounds": [
+      "minecraft:mob/wither/shoot"
+    ],
+    "subtitle": "subtitles.entity.wither.shoot"
+  },
+  "mob.wither.spawn": {
+    "sounds": [
+      "minecraft:mob/wither/spawn"
+    ],
+    "subtitle": "subtitles.entity.wither.spawn"
+  },
+  "mob.wolf.bark": {
+    "sounds": [
+      "minecraft:mob/wolf/bark1",
+      "minecraft:mob/wolf/bark2",
+      "minecraft:mob/wolf/bark3"
+    ],
+    "subtitle": "subtitles.entity.wolf.ambient"
+  },
+  "mob.wolf.bark1": {
+    "sounds": [
+      "minecraft:mob/wolf/bark1"
+    ],
+    "subtitle": "subtitles.entity.wolf.ambient"
+  },
+  "mob.wolf.bark2": {
+    "sounds": [
+      "minecraft:mob/wolf/bark2"
+    ],
+    "subtitle": "subtitles.entity.wolf.ambient"
+  },
+  "mob.wolf.bark3": {
+    "sounds": [
+      "minecraft:mob/wolf/bark3"
+    ],
+    "subtitle": "subtitles.entity.wolf.ambient"
+  },
+  "mob.wolf.death": {
+    "sounds": [
+      "minecraft:mob/wolf/death"
+    ],
+    "subtitle": "subtitles.entity.wolf.death"
+  },
+  "mob.wolf.growl": {
+    "sounds": [
+      "minecraft:mob/wolf/growl1",
+      "minecraft:mob/wolf/growl2",
+      "minecraft:mob/wolf/growl3"
+    ],
+    "subtitle": "subtitles.entity.wolf.growl"
+  },
+  "mob.wolf.growl1": {
+    "sounds": [
+      "minecraft:mob/wolf/growl1"
+    ],
+    "subtitle": "subtitles.entity.wolf.growl"
+  },
+  "mob.wolf.growl2": {
+    "sounds": [
+      "minecraft:mob/wolf/growl2"
+    ],
+    "subtitle": "subtitles.entity.wolf.growl"
+  },
+  "mob.wolf.growl3": {
+    "sounds": [
+      "minecraft:mob/wolf/growl3"
+    ],
+    "subtitle": "subtitles.entity.wolf.growl"
+  },
+  "mob.wolf.howl": {
+    "sounds": [
+      "minecraft:mob/wolf/howl1",
+      "minecraft:mob/wolf/howl2"
+    ]
+  },
+  "mob.wolf.howl1": {
+    "sounds": [
+      "minecraft:mob/wolf/howl1"
+    ]
+  },
+  "mob.wolf.howl2": {
+    "sounds": [
+      "minecraft:mob/wolf/howl2"
+    ]
+  },
+  "mob.wolf.hurt": {
+    "sounds": [
+      "minecraft:mob/wolf/hurt1",
+      "minecraft:mob/wolf/hurt2",
+      "minecraft:mob/wolf/hurt3"
+    ],
+    "subtitle": "subtitles.entity.wolf.hurt"
+  },
+  "mob.wolf.hurt1": {
+    "sounds": [
+      "minecraft:mob/wolf/hurt1"
+    ],
+    "subtitle": "subtitles.entity.wolf.hurt"
+  },
+  "mob.wolf.hurt2": {
+    "sounds": [
+      "minecraft:mob/wolf/hurt2"
+    ],
+    "subtitle": "subtitles.entity.wolf.hurt"
+  },
+  "mob.wolf.hurt3": {
+    "sounds": [
+      "minecraft:mob/wolf/hurt3"
+    ],
+    "subtitle": "subtitles.entity.wolf.hurt"
+  },
+  "mob.wolf.panting": {
+    "sounds": [
+      "minecraft:mob/wolf/panting"
+    ],
+    "subtitle": "subtitles.entity.wolf.ambient"
+  },
+  "mob.wolf.shake": {
+    "sounds": [
+      "minecraft:mob/wolf/shake"
+    ],
+    "subtitle": "subtitles.entity.wolf.shake"
+  },
+  "mob.wolf.step": {
+    "sounds": [
+      "minecraft:mob/wolf/step1",
+      "minecraft:mob/wolf/step2",
+      "minecraft:mob/wolf/step3",
+      "minecraft:mob/wolf/step4",
+      "minecraft:mob/wolf/step5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.wolf.step1": {
+    "sounds": [
+      "minecraft:mob/wolf/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.wolf.step2": {
+    "sounds": [
+      "minecraft:mob/wolf/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.wolf.step3": {
+    "sounds": [
+      "minecraft:mob/wolf/step3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.wolf.step4": {
+    "sounds": [
+      "minecraft:mob/wolf/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.wolf.step5": {
+    "sounds": [
+      "minecraft:mob/wolf/step5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.wolf.whine": {
+    "sounds": [
+      "minecraft:mob/wolf/whine"
+    ],
+    "subtitle": "subtitles.entity.wolf.ambient"
+  },
+  "mob.zombie.death": {
+    "sounds": [
+      "minecraft:mob/zombie/death"
+    ],
+    "subtitle": "subtitles.entity.zombie.death"
+  },
+  "mob.zombie.hurt": {
+    "sounds": [
+      "minecraft:mob/zombie/hurt1",
+      "minecraft:mob/zombie/hurt2"
+    ],
+    "subtitle": "subtitles.entity.zombie.hurt"
+  },
+  "mob.zombie.hurt1": {
+    "sounds": [
+      "minecraft:mob/zombie/hurt1"
+    ],
+    "subtitle": "subtitles.entity.zombie.hurt"
+  },
+  "mob.zombie.hurt2": {
+    "sounds": [
+      "minecraft:mob/zombie/hurt2"
+    ],
+    "subtitle": "subtitles.entity.zombie.hurt"
+  },
+  "mob.zombie.infect": {
+    "sounds": [
+      "minecraft:mob/zombie/infect"
+    ],
+    "subtitle": "subtitles.entity.zombie.infect"
+  },
+  "mob.zombie.metal": {
+    "sounds": [
+      "minecraft:mob/zombie/metal1",
+      "minecraft:mob/zombie/metal2",
+      "minecraft:mob/zombie/metal3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "mob.zombie.metal1": {
+    "sounds": [
+      "minecraft:mob/zombie/metal1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "mob.zombie.metal2": {
+    "sounds": [
+      "minecraft:mob/zombie/metal2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "mob.zombie.metal3": {
+    "sounds": [
+      "minecraft:mob/zombie/metal3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "mob.zombie.remedy": {
+    "sounds": [
+      "minecraft:mob/zombie/remedy"
+    ],
+    "subtitle": "subtitles.entity.zombie_villager.cure"
+  },
+  "mob.zombie.say": {
+    "sounds": [
+      "minecraft:mob/zombie/say1",
+      "minecraft:mob/zombie/say2",
+      "minecraft:mob/zombie/say3"
+    ],
+    "subtitle": "subtitles.entity.zombie.ambient"
+  },
+  "mob.zombie.say1": {
+    "sounds": [
+      "minecraft:mob/zombie/say1"
+    ],
+    "subtitle": "subtitles.entity.zombie.ambient"
+  },
+  "mob.zombie.say2": {
+    "sounds": [
+      "minecraft:mob/zombie/say2"
+    ],
+    "subtitle": "subtitles.entity.zombie.ambient"
+  },
+  "mob.zombie.say3": {
+    "sounds": [
+      "minecraft:mob/zombie/say3"
+    ],
+    "subtitle": "subtitles.entity.zombie.ambient"
+  },
+  "mob.zombie.step": {
+    "sounds": [
+      "minecraft:mob/zombie/step1",
+      "minecraft:mob/zombie/step2",
+      "minecraft:mob/zombie/step3",
+      "minecraft:mob/zombie/step4",
+      "minecraft:mob/zombie/step5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.zombie.step1": {
+    "sounds": [
+      "minecraft:mob/zombie/step1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.zombie.step2": {
+    "sounds": [
+      "minecraft:mob/zombie/step2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.zombie.step3": {
+    "sounds": [
+      "minecraft:mob/zombie/step3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.zombie.step4": {
+    "sounds": [
+      "minecraft:mob/zombie/step4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.zombie.step5": {
+    "sounds": [
+      "minecraft:mob/zombie/step5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "mob.zombie.unfect": {
+    "sounds": [
+      "minecraft:mob/zombie/unfect"
+    ],
+    "subtitle": "subtitles.entity.zombie_villager.converted"
+  },
+  "mob.zombie.wood": {
+    "sounds": [
+      "minecraft:mob/zombie/wood1",
+      "minecraft:mob/zombie/wood2",
+      "minecraft:mob/zombie/wood3",
+      "minecraft:mob/zombie/wood4"
+    ],
+    "subtitle": "subtitles.entity.zombie.attack_wooden_door"
+  },
+  "mob.zombie.wood1": {
+    "sounds": [
+      "minecraft:mob/zombie/wood1"
+    ],
+    "subtitle": "subtitles.entity.zombie.attack_wooden_door"
+  },
+  "mob.zombie.wood2": {
+    "sounds": [
+      "minecraft:mob/zombie/wood2"
+    ],
+    "subtitle": "subtitles.entity.zombie.attack_wooden_door"
+  },
+  "mob.zombie.wood3": {
+    "sounds": [
+      "minecraft:mob/zombie/wood3"
+    ],
+    "subtitle": "subtitles.entity.zombie.attack_wooden_door"
+  },
+  "mob.zombie.wood4": {
+    "sounds": [
+      "minecraft:mob/zombie/wood4"
+    ],
+    "subtitle": "subtitles.entity.zombie.attack_wooden_door"
+  },
+  "mob.zombie.woodbreak": {
+    "sounds": [
+      "minecraft:mob/zombie/woodbreak"
+    ],
+    "subtitle": "subtitles.entity.zombie.break_wooden_door"
+  },
+  "mob.zombiepig.zpig": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpig1",
+      "minecraft:mob/zombified_piglin/zpig2",
+      "minecraft:mob/zombified_piglin/zpig3",
+      "minecraft:mob/zombified_piglin/zpig4"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.ambient"
+  },
+  "mob.zombiepig.zpig1": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpig1"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.ambient"
+  },
+  "mob.zombiepig.zpig2": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpig2"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.ambient"
+  },
+  "mob.zombiepig.zpig3": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpig3"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.ambient"
+  },
+  "mob.zombiepig.zpig4": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpig4"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.ambient"
+  },
+  "mob.zombiepig.zpigangry": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpigangry1",
+      "minecraft:mob/zombified_piglin/zpigangry2",
+      "minecraft:mob/zombified_piglin/zpigangry3",
+      "minecraft:mob/zombified_piglin/zpigangry4"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.angry"
+  },
+  "mob.zombiepig.zpigangry1": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpigangry1"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.angry"
+  },
+  "mob.zombiepig.zpigangry2": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpigangry2"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.angry"
+  },
+  "mob.zombiepig.zpigangry3": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpigangry3"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.angry"
+  },
+  "mob.zombiepig.zpigangry4": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpigangry4"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.angry"
+  },
+  "mob.zombiepig.zpigdeath": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpigdeath"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.death"
+  },
+  "mob.zombiepig.zpighurt": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpighurt1",
+      "minecraft:mob/zombified_piglin/zpighurt2"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.hurt"
+  },
+  "mob.zombiepig.zpighurt1": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpighurt1"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.hurt"
+  },
+  "mob.zombiepig.zpighurt2": {
+    "sounds": [
+      "minecraft:mob/zombified_piglin/zpighurt2"
+    ],
+    "subtitle": "subtitles.entity.zombified_piglin.hurt"
+  },
+  "note.bass": {
+    "sounds": [
+      "minecraft:note/bass"
+    ],
+    "subtitle": "subtitles.block.note_block.note"
+  },
+  "note.bassattack": {
+    "sounds": [
+      "minecraft:note/bassattack"
+    ],
+    "subtitle": "subtitles.block.note_block.note"
+  },
+  "note.bd": {
+    "sounds": [
+      "minecraft:note/bd"
+    ],
+    "subtitle": "subtitles.block.note_block.note"
+  },
+  "note.harp": {
+    "sounds": [
+      "minecraft:note/harp"
+    ],
+    "subtitle": "subtitles.block.note_block.note"
+  },
+  "note.hat": {
+    "sounds": [
+      "minecraft:note/hat"
+    ],
+    "subtitle": "subtitles.block.note_block.note"
+  },
+  "note.pling": {
+    "sounds": [
+      "minecraft:note/pling"
+    ],
+    "subtitle": "subtitles.block.note_block.note"
+  },
+  "note.snare": {
+    "sounds": [
+      "minecraft:note/snare"
+    ],
+    "subtitle": "subtitles.block.note_block.note"
+  },
+  "portal.portal": {
+    "sounds": [
+      "minecraft:portal/portal"
+    ],
+    "subtitle": "subtitles.block.portal.ambient"
+  },
+  "portal.travel": {
+    "sounds": [
+      "minecraft:portal/travel"
+    ]
+  },
+  "portal.trigger": {
+    "sounds": [
+      "minecraft:portal/trigger"
+    ],
+    "subtitle": "subtitles.block.portal.trigger"
+  },
+  "random.anvil_break": {
+    "sounds": [
+      "minecraft:random/anvil_break"
+    ],
+    "subtitle": "subtitles.block.anvil.destroy"
+  },
+  "random.anvil_land": {
+    "sounds": [
+      "minecraft:random/anvil_land"
+    ],
+    "subtitle": "subtitles.block.anvil.land"
+  },
+  "random.anvil_use": {
+    "sounds": [
+      "minecraft:random/anvil_use"
+    ],
+    "subtitle": "subtitles.block.anvil.use"
+  },
+  "random.bow": {
+    "sounds": [
+      "minecraft:random/bow"
+    ],
+    "subtitle": "subtitles.entity.arrow.shoot"
+  },
+  "random.bowhit": {
+    "sounds": [
+      "minecraft:random/bowhit1",
+      "minecraft:random/bowhit2",
+      "minecraft:random/bowhit3",
+      "minecraft:random/bowhit4"
+    ],
+    "subtitle": "subtitles.entity.arrow.hit"
+  },
+  "random.bowhit1": {
+    "sounds": [
+      "minecraft:random/bowhit1"
+    ],
+    "subtitle": "subtitles.entity.arrow.hit"
+  },
+  "random.bowhit2": {
+    "sounds": [
+      "minecraft:random/bowhit2"
+    ],
+    "subtitle": "subtitles.entity.arrow.hit"
+  },
+  "random.bowhit3": {
+    "sounds": [
+      "minecraft:random/bowhit3"
+    ],
+    "subtitle": "subtitles.entity.arrow.hit"
+  },
+  "random.bowhit4": {
+    "sounds": [
+      "minecraft:random/bowhit4"
+    ],
+    "subtitle": "subtitles.entity.arrow.hit"
+  },
+  "random.break": {
+    "sounds": [
+      "minecraft:random/break"
+    ],
+    "subtitle": "subtitles.entity.item.break"
+  },
+  "random.breath": {
+    "sounds": [
+      "minecraft:random/breath"
+    ]
+  },
+  "random.burp": {
+    "sounds": [
+      "minecraft:random/burp"
+    ],
+    "subtitle": "subtitles.entity.player.burp"
+  },
+  "random.chestclosed": {
+    "sounds": [
+      "minecraft:random/chestclosed"
+    ],
+    "subtitle": "subtitles.block.chest.close"
+  },
+  "random.chestopen": {
+    "sounds": [
+      "minecraft:random/chestopen"
+    ],
+    "subtitle": "subtitles.block.chest.open"
+  },
+  "random.classic_hurt": {
+    "sounds": [
+      "minecraft:random/classic_hurt"
+    ],
+    "subtitle": "subtitles.entity.generic.hurt"
+  },
+  "random.click": {
+    "sounds": [
+      "minecraft:random/click"
+    ]
+  },
+  "random.door_close": {
+    "sounds": [
+      "minecraft:random/door_close"
+    ],
+    "subtitle": "subtitles.block.door.toggle"
+  },
+  "random.door_open": {
+    "sounds": [
+      "minecraft:random/door_open"
+    ],
+    "subtitle": "subtitles.block.door.toggle"
+  },
+  "random.drink": {
+    "sounds": [
+      "minecraft:random/drink"
+    ],
+    "subtitle": "subtitles.entity.generic.drink"
+  },
+  "random.eat": {
+    "sounds": [
+      "minecraft:random/eat1",
+      "minecraft:random/eat2",
+      "minecraft:random/eat3"
+    ],
+    "subtitle": "subtitles.entity.generic.eat"
+  },
+  "random.eat1": {
+    "sounds": [
+      "minecraft:random/eat1"
+    ],
+    "subtitle": "subtitles.entity.generic.eat"
+  },
+  "random.eat2": {
+    "sounds": [
+      "minecraft:random/eat2"
+    ],
+    "subtitle": "subtitles.entity.generic.eat"
+  },
+  "random.eat3": {
+    "sounds": [
+      "minecraft:random/eat3"
+    ],
+    "subtitle": "subtitles.entity.generic.eat"
+  },
+  "random.explode": {
+    "sounds": [
+      "minecraft:random/explode1",
+      "minecraft:random/explode2",
+      "minecraft:random/explode3",
+      "minecraft:random/explode4"
+    ],
+    "subtitle": "subtitles.entity.generic.explode"
+  },
+  "random.explode1": {
+    "sounds": [
+      "minecraft:random/explode1"
+    ],
+    "subtitle": "subtitles.entity.generic.explode"
+  },
+  "random.explode2": {
+    "sounds": [
+      "minecraft:random/explode2"
+    ],
+    "subtitle": "subtitles.entity.generic.explode"
+  },
+  "random.explode3": {
+    "sounds": [
+      "minecraft:random/explode3"
+    ],
+    "subtitle": "subtitles.entity.generic.explode"
+  },
+  "random.explode4": {
+    "sounds": [
+      "minecraft:random/explode4"
+    ],
+    "subtitle": "subtitles.entity.generic.explode"
+  },
+  "random.fizz": {
+    "sounds": [
+      "minecraft:random/fizz"
+    ],
+    "subtitle": "subtitles.block.fire.extinguish"
+  },
+  "random.fuse": {
+    "sounds": [
+      "minecraft:random/fuse"
+    ],
+    "subtitle": "subtitles.entity.tnt.primed"
+  },
+  "random.glass": {
+    "sounds": [
+      "minecraft:random/glass1",
+      "minecraft:random/glass2",
+      "minecraft:random/glass3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "random.glass1": {
+    "sounds": [
+      "minecraft:random/glass1"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "random.glass2": {
+    "sounds": [
+      "minecraft:random/glass2"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "random.glass3": {
+    "sounds": [
+      "minecraft:random/glass3"
+    ],
+    "subtitle": "subtitles.block.generic.break"
+  },
+  "random.levelup": {
+    "sounds": [
+      "minecraft:random/levelup"
+    ],
+    "subtitle": "subtitles.entity.player.levelup"
+  },
+  "random.orb": {
+    "sounds": [
+      "minecraft:random/orb"
+    ],
+    "subtitle": "subtitles.entity.experience_orb.pickup"
+  },
+  "random.pop": {
+    "sounds": [
+      "minecraft:random/pop"
+    ],
+    "subtitle": "subtitles.entity.item.pickup"
+  },
+  "random.splash": {
+    "sounds": [
+      "minecraft:random/splash"
+    ],
+    "subtitle": "subtitles.entity.fishing_bobber.splash"
+  },
+  "random.successful_hit": {
+    "sounds": [
+      "minecraft:random/successful_hit"
+    ],
+    "subtitle": "subtitles.entity.arrow.hit_player"
+  },
+  "random.wood_click": {
+    "sounds": [
+      "minecraft:random/wood_click"
+    ],
+    "subtitle": "subtitles.block.button.click"
+  },
+  "step.cloth": {
+    "sounds": [
+      "minecraft:step/cloth1",
+      "minecraft:step/cloth2",
+      "minecraft:step/cloth3",
+      "minecraft:step/cloth4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.cloth1": {
+    "sounds": [
+      "minecraft:step/cloth1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.cloth2": {
+    "sounds": [
+      "minecraft:step/cloth2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.cloth3": {
+    "sounds": [
+      "minecraft:step/cloth3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.cloth4": {
+    "sounds": [
+      "minecraft:step/cloth4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.grass": {
+    "sounds": [
+      "minecraft:step/grass1",
+      "minecraft:step/grass2",
+      "minecraft:step/grass3",
+      "minecraft:step/grass4",
+      "minecraft:step/grass5",
+      "minecraft:step/grass6"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.grass1": {
+    "sounds": [
+      "minecraft:step/grass1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.grass2": {
+    "sounds": [
+      "minecraft:step/grass2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.grass3": {
+    "sounds": [
+      "minecraft:step/grass3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.grass4": {
+    "sounds": [
+      "minecraft:step/grass4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.grass5": {
+    "sounds": [
+      "minecraft:step/grass5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.grass6": {
+    "sounds": [
+      "minecraft:step/grass6"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.gravel": {
+    "sounds": [
+      "minecraft:step/gravel1",
+      "minecraft:step/gravel2",
+      "minecraft:step/gravel3",
+      "minecraft:step/gravel4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.gravel1": {
+    "sounds": [
+      "minecraft:step/gravel1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.gravel2": {
+    "sounds": [
+      "minecraft:step/gravel2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.gravel3": {
+    "sounds": [
+      "minecraft:step/gravel3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.gravel4": {
+    "sounds": [
+      "minecraft:step/gravel4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.ladder": {
+    "sounds": [
+      "minecraft:step/ladder1",
+      "minecraft:step/ladder2",
+      "minecraft:step/ladder3",
+      "minecraft:step/ladder4",
+      "minecraft:step/ladder5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.ladder1": {
+    "sounds": [
+      "minecraft:step/ladder1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.ladder2": {
+    "sounds": [
+      "minecraft:step/ladder2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.ladder3": {
+    "sounds": [
+      "minecraft:step/ladder3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.ladder4": {
+    "sounds": [
+      "minecraft:step/ladder4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.ladder5": {
+    "sounds": [
+      "minecraft:step/ladder5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.sand": {
+    "sounds": [
+      "minecraft:step/sand1",
+      "minecraft:step/sand2",
+      "minecraft:step/sand3",
+      "minecraft:step/sand4",
+      "minecraft:step/sand5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.sand1": {
+    "sounds": [
+      "minecraft:step/sand1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.sand2": {
+    "sounds": [
+      "minecraft:step/sand2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.sand3": {
+    "sounds": [
+      "minecraft:step/sand3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.sand4": {
+    "sounds": [
+      "minecraft:step/sand4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.sand5": {
+    "sounds": [
+      "minecraft:step/sand5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.snow": {
+    "sounds": [
+      "minecraft:step/snow1",
+      "minecraft:step/snow2",
+      "minecraft:step/snow3",
+      "minecraft:step/snow4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.snow1": {
+    "sounds": [
+      "minecraft:step/snow1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.snow2": {
+    "sounds": [
+      "minecraft:step/snow2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.snow3": {
+    "sounds": [
+      "minecraft:step/snow3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.snow4": {
+    "sounds": [
+      "minecraft:step/snow4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.stone": {
+    "sounds": [
+      "minecraft:step/stone1",
+      "minecraft:step/stone2",
+      "minecraft:step/stone3",
+      "minecraft:step/stone4",
+      "minecraft:step/stone5",
+      "minecraft:step/stone6"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.stone1": {
+    "sounds": [
+      "minecraft:step/stone1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.stone2": {
+    "sounds": [
+      "minecraft:step/stone2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.stone3": {
+    "sounds": [
+      "minecraft:step/stone3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.stone4": {
+    "sounds": [
+      "minecraft:step/stone4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.stone5": {
+    "sounds": [
+      "minecraft:step/stone5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.stone6": {
+    "sounds": [
+      "minecraft:step/stone6"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.wood": {
+    "sounds": [
+      "minecraft:step/wood1",
+      "minecraft:step/wood2",
+      "minecraft:step/wood3",
+      "minecraft:step/wood4",
+      "minecraft:step/wood5",
+      "minecraft:step/wood6"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.wood1": {
+    "sounds": [
+      "minecraft:step/wood1"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.wood2": {
+    "sounds": [
+      "minecraft:step/wood2"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.wood3": {
+    "sounds": [
+      "minecraft:step/wood3"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.wood4": {
+    "sounds": [
+      "minecraft:step/wood4"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.wood5": {
+    "sounds": [
+      "minecraft:step/wood5"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "step.wood6": {
+    "sounds": [
+      "minecraft:step/wood6"
+    ],
+    "subtitle": "subtitles.block.generic.footsteps"
+  },
+  "tile.piston.in": {
+    "sounds": [
+      "minecraft:tile/piston/in"
+    ],
+    "subtitle": "subtitles.block.piston.move"
+  },
+  "tile.piston.out": {
+    "sounds": [
+      "minecraft:tile/piston/out"
+    ],
+    "subtitle": "subtitles.block.piston.move"
+  }
+}

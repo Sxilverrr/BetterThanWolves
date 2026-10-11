@@ -183,7 +183,10 @@ task extractNatives(type: Copy) {
 task runClient(type: JavaExec) {
     group = 'run'
     description = 'Runs the Minecraft client with BTW (using remapped + vanilla code)'
-    dependsOn remapFcCode, 'compileClientJava', extractNatives, ':extractBtwResources'
+    // ':downloadMinecraftJars' restores the vanilla client jar below if the .gradle/ cache lost it;
+    // ':downloadLegacyResources' puts 1.5.2's sounds and music in run/resources.
+    dependsOn remapFcCode, 'compileClientJava', extractNatives, ':extractBtwResources',
+            ':downloadMinecraftJars', ':downloadLegacyResources'
 
     def btwRes = file("${rootDir}/build/btw-resources")
 
@@ -198,7 +201,10 @@ task runClient(type: JavaExec) {
         sourceSets.client.runtimeClasspath +                     // third-party libs (no compileOnly)
         files(btwRes)
 
-    main = 'net.minecraft.client.Minecraft'
+    // MCP's Start (vanilla/client/Start.java) points Minecraft.minecraftDir at the working dir, then calls
+    // Minecraft.main. Launching Minecraft directly used %APPDATA%\.minecraft (the real launcher folder),
+    // sharing options.txt and saves/ with modern Minecraft.
+    main = 'Start'
 
     def nativesDir = file("$buildDir/natives")
     systemProperty 'java.library.path', nativesDir.absolutePath
@@ -207,8 +213,13 @@ task runClient(type: JavaExec) {
 
     workingDir = file("${rootDir}/run")
     doFirst { workingDir.mkdirs() }
-    jvmArgs '-Xmx1G', '-Xms512M'
+    // Java 9+ AWT is DPI-aware: with Windows display scaling the applet canvas reports scaled sizes,
+    // and 1.5.2 sizes its GL viewport from them, so the game drew into a corner (1/1.5 of each axis
+    // at 150%). uiScale=1 makes AWT use physical pixels, as Java 8 did.
+    jvmArgs '-Xmx1G', '-Xms512M', '-Dsun.java2d.uiScale=1'
 
+    // 1.5.2 Minecraft.main is positional: args[0] = username, args[1] = session id ("-" = offline);
+    // named flags are only read from args[2] on (vanilla/client Minecraft.java:2219-2233).
     def username = project.hasProperty('mcUsername') ? project.property('mcUsername') : 'Dev'
-    args '--username', username, '--session', '-'
+    args username, '-'
 }

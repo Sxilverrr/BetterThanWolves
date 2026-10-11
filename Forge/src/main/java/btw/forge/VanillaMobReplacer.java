@@ -14,6 +14,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.animal.Pig;
 import net.minecraft.world.entity.animal.Sheep;
@@ -31,6 +32,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.living.MobSpawnEvent;
+import net.minecraftforge.event.server.ServerAboutToStartEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.EventPriority;
@@ -72,6 +74,9 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  *       mob's state over instead (name, persistence, health, age, colours, saddle, size, tame state,
  *       profession, equipment), as 1.5.2 loading a vanilla save through FC readEntityFromNBT did.</li>
  * </ul>
+ *
+ * <p>Every proxy made here counts for natural-spawn caps in the replaced vanilla mob's MobCategory
+ * (W7, see ProxyMob.getClassification): a glow squid stays UNDERGROUND_WATER_CREATURE as an fc_squid.</p>
  *
  * <p>Proxy entities ({@link ProxyMob}, {@link ProxyAnimal}, {@link ProxyPathfinderMob},
  * {@link ProxyEntity}) are never replaced.</p>
@@ -267,6 +272,31 @@ public final class VanillaMobReplacer {
         return type == null ? 0 : level.getEntities(type, box, EntitySelector.NO_SPECTATORS).size();
     }
 
+    /**
+     * W7: logs once which REPLACEMENTS cross MobCategories (today glow_squid UNDERGROUND_WATER_CREATURE ->
+     * fc_squid WATER_CREATURE). Such a replacement keeps counting in its vanilla category for natural-spawn
+     * caps (setReplacedCategory below), so the line is information, not an error. Registries are frozen
+     * by server start.
+     */
+    @SubscribeEvent
+    public static void onServerAboutToStart(ServerAboutToStartEvent event) {
+        if (!LOGGED.add("categories")) return;
+        try {
+            for (Map.Entry<EntityType<?>, ResourceLocation> e : REPLACEMENTS.entrySet()) {
+                if (!ForgeRegistries.ENTITY_TYPES.containsKey(e.getValue())) continue;
+                EntityType<?> fcType = ForgeRegistries.ENTITY_TYPES.getValue(e.getValue());
+                MobCategory vanillaCategory = e.getKey().getCategory();
+                if (fcType != null && fcType.getCategory() != vanillaCategory) {
+                    LOGGER.info("[MobReplacer] {} ({}) -> {} ({}): replacements count as {} for natural-spawn caps",
+                            EntityType.getKey(e.getKey()), vanillaCategory.getName(), e.getValue(),
+                            fcType.getCategory().getName(), vanillaCategory.getName());
+                }
+            }
+        } catch (Throwable t) {
+            LOGGER.warn("Replacement spawn-category check failed: {}", t.toString());
+        }
+    }
+
     @SubscribeEvent
     public static void onServerTick(TickEvent.ServerTickEvent event) {
         if (event.phase == TickEvent.Phase.END) drain();
@@ -348,6 +378,9 @@ public final class VanillaMobReplacer {
         if (proxy == null) return;
         proxy.moveTo(vanilla.getX(), vanilla.getY(), vanilla.getZ(), vanilla.getYRot(), vanilla.getXRot());
         proxy.setUUID(vanilla.getUUID()); // the cancelled copy never reached addEntityUuid
+        // W7: every origin (natural, worldgen, disk, spawner, egg...) counts in the vanilla mob's category,
+        // set before addFreshEntity so the next NaturalSpawner.createState already sees it.
+        setReplacedCategory(proxy, vanilla.getType().getCategory());
 
         // getFcEntity() -> ensureFcEntity seeds the FC entity's position/rotation from moveTo above.
         btw.modern.EntityLiving fc = fcEntityOf(proxy);
@@ -385,6 +418,13 @@ public final class VanillaMobReplacer {
         if (proxy instanceof ProxyMob pm) return pm.getFcEntity();
         if (proxy instanceof ProxyPathfinderMob pp) return pp.getFcEntity();
         return null;
+    }
+
+    /** W7: the replaced category the proxy reports for spawn counting — see ProxyMob.getClassification. */
+    private static void setReplacedCategory(Entity proxy, MobCategory category) {
+        if (proxy instanceof ProxyAnimal pa) pa.setReplacedCategory(category);
+        else if (proxy instanceof ProxyMob pm) pm.setReplacedCategory(category);
+        else if (proxy instanceof ProxyPathfinderMob pp) pp.setReplacedCategory(category);
     }
 
     /** setFcEntity re-seeds MC MAX_HEALTH/Health from FC and marks the health link (same FC entity). */

@@ -9,10 +9,13 @@ import mezz.jei.api.IModPlugin;
 import mezz.jei.api.JeiPlugin;
 import mezz.jei.api.constants.RecipeTypes;
 import mezz.jei.api.helpers.IGuiHelper;
+import mezz.jei.api.ingredients.subtypes.IIngredientSubtypeInterpreter;
+import mezz.jei.api.ingredients.subtypes.UidContext;
 import mezz.jei.api.recipe.RecipeType;
 import mezz.jei.api.registration.IRecipeCatalystRegistration;
 import mezz.jei.api.registration.IRecipeCategoryRegistration;
 import mezz.jei.api.registration.IRecipeRegistration;
+import mezz.jei.api.registration.ISubtypeRegistration;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
@@ -99,6 +102,50 @@ public class BTWJeiPlugin implements IModPlugin {
     @Override
     public ResourceLocation getPluginUid() {
         return PLUGIN_ID;
+    }
+
+    /**
+     * One rule for every item this mod registered for FC (each {@code betterthanwolves} item ProxyRegistry maps a
+     * legacy id to: the block items of FC blocks and FC's standalone items): the FC metadata a non-damageable stack
+     * carries in its Damage tag (ItemStackHelper.toMcStack) is its JEI subtype, so FC's subtypes are separate
+     * entries -- the 22 arcane scrolls, 16 wool / candle / knit wool colours, the aesthetic blocks, the wool slab
+     * colours -- instead of collapsing into the first one JEI saw (it de-duplicates by registry name plus subtype).
+     * Which subtypes exist is still FC's: JEI lists the BTW creative tab, built from FC's getSubItems. A damageable
+     * item's Damage is durability, never a subtype.
+     */
+    @Override
+    public void registerItemSubtypes(ISubtypeRegistration reg) {
+        int registered = 0;
+        try {
+            java.util.Set<net.minecraft.world.item.Item> seen =
+                    java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            for (int id = 1; id < btw.modern.Item.itemsList.length; id++) {
+                net.minecraft.world.item.Item item = ProxyRegistry.getModernItem(id);
+                if (item == null || item == Items.AIR || !seen.add(item)) continue;
+                ResourceLocation key = net.minecraftforge.registries.ForgeRegistries.ITEMS.getKey(item);
+                if (key == null || !BTWForgeMod.MOD_ID.equals(key.getNamespace())) continue;
+                reg.registerSubtypeInterpreter(item, BTWJeiPlugin::fcMetadataSubtype);
+                registered++;
+            }
+        } catch (Throwable e) {
+            LOGGER.warn("FC subtype interpreters not (all) registered: {}", e.toString());
+        }
+        LOGGER.debug("Registered the FC metadata subtype interpreter for {} items", registered);
+    }
+
+    /**
+     * The FC metadata of a non-damageable btw stack ("" for metadata 0, which carries no Damage tag), for the
+     * ingredient list only. Recipe lookups keep one uid per item: JEI indexes and looks recipes up by the exact
+     * UidContext.Recipe uid (InternalRecipeManagerPlugin.getRecipes, RecipeMap.addRecipe), and
+     * RecipeBridge.fcStackAlternatives turns FC's "any metadata" wildcard on a btw item into its metadata-0 stack, so a
+     * subtype uid there hid every wildcard recipe from a non-zero subtype's uses (red knit wool -> the wool armour,
+     * FCRecipes.java:913-931). Recipe lookups therefore merge an item's subtypes, as they did before this interpreter.
+     */
+    private static String fcMetadataSubtype(ItemStack stack, UidContext context) {
+        if (context == UidContext.Recipe) return IIngredientSubtypeInterpreter.NONE;
+        if (stack.isEmpty() || stack.getItem().isDamageable(stack)) return IIngredientSubtypeInterpreter.NONE;
+        int metadata = stack.getDamageValue();
+        return metadata == 0 ? IIngredientSubtypeInterpreter.NONE : Integer.toString(metadata);
     }
 
     @Override

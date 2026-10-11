@@ -6,6 +6,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.pathfinder.PathComputationType;
 import net.minecraft.world.phys.AABB;
@@ -14,6 +15,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -45,6 +47,9 @@ final class ModernBlockStandIn extends btw.modern.Block {
     private static int colliderId;             // any other colliding shape (slab, stair, wall, fence, glass, carpet, mud)
     private static final Set<net.minecraft.world.level.block.Block> LOGGED = ConcurrentHashMap.newKeySet();
     private static volatile boolean idForFailureLogged;
+    /** One FC StepSound per 1.20.1 SoundType (identity keys: SoundType has no equals; the instances are shared). */
+    private static final Map<SoundType, btw.modern.StepSound> STEP_SOUNDS = new ConcurrentHashMap<>();
+    private static volatile boolean stepSoundFailureLogged;
 
     private final boolean m_bSolidCube;
 
@@ -234,6 +239,53 @@ final class ModernBlockStandIn extends btw.modern.Block {
             } catch (Throwable ignored) { }
         }
         return super.getExplosionResistance(entity, world, i, j, k);
+    }
+
+    // ---- footsteps: frozen Entity.playStepSound plays GetStepSound(world, x, y, z).getStepSound() at
+    // getVolume() * 0.15F, getPitch() (vanilla/client Entity.java:1016-1044), the formula 1.20.1
+    // Entity.playStepSound applies to a SoundType. The constructor's stone made every FC puppet walking on
+    // deepslate, new woods, concrete, copper, mud, ... step on stone; the live block's own SoundType is
+    // reported instead, as namespaced 1.20.1 ids that WorldBridge.resolveSoundEvent passes straight through.
+    @Override
+    public btw.modern.StepSound GetStepSound(btw.modern.World world, int i, int j, int k) {
+        ServerLevel level = levelOf(world, null);
+        if (level != null) {
+            try {
+                BlockPos pos = new BlockPos(i, j, k);
+                SoundType type = level.getBlockState(pos).getSoundType(level, pos, null);
+                if (type != null) {
+                    return STEP_SOUNDS.computeIfAbsent(type, ModernStepSound::new);
+                }
+            } catch (Throwable t) {
+                // Read inside FC entity movement: never throw out of it.
+                if (!stepSoundFailureLogged) {
+                    stepSoundFailureLogged = true;
+                    LOGGER.warn("[STAND-IN] step sound lookup failed at {},{},{}; stone is used (logged once)",
+                            i, j, k, t);
+                }
+            }
+        }
+        return super.GetStepSound(world, i, j, k);
+    }
+
+    /** A 1.20.1 SoundType seen as a 1.5.2 StepSound: same volume / pitch, the events as namespaced ids. */
+    private static final class ModernStepSound extends btw.modern.StepSound {
+        private final String m_sStep;
+        private final String m_sBreak;
+        private final String m_sPlace;
+
+        ModernStepSound(SoundType type) {
+            // the name only feeds the default "dig." / "step." getters, all overridden below
+            super("stone", type.getVolume(), type.getPitch());
+            m_sStep = type.getStepSound().getLocation().toString();
+            m_sBreak = type.getBreakSound().getLocation().toString();
+            m_sPlace = type.getPlaceSound().getLocation().toString();
+        }
+
+        @Override public String getStepSound() { return m_sStep; }
+        @Override public String getStepResourcePath() { return m_sStep; }
+        @Override public String getBreakSound() { return m_sBreak; }
+        @Override public String getPlaceSound() { return m_sPlace; }
     }
 
     // ---- never mint FC stacks for a phantom id; FC-destroyed modern blocks (FCExplosionMining.DestroyBlock,

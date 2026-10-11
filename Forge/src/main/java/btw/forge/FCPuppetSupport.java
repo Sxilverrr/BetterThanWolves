@@ -344,7 +344,7 @@ final class FCPuppetSupport {
     // ------------------------------------------------------------------
 
     /**
-     * Ground contact for the post-onUpdate onGround patch (71d3df0: FC's moveEntity can miss the
+     * Ground contact for the post-onUpdate onGround patch (9e9cb23: FC's moveEntity can miss the
      * floor when an entity-collision push produces large horizontal motion). Only a block whose
      * collision shape reaches the feet counts: water, lava, grass, flowers, single snow layers and
      * other shape-less blocks are not ground (1.5.2 sets onGround only from moveEntity's vertical
@@ -407,7 +407,7 @@ final class FCPuppetSupport {
 
     /**
      * Render-safe stand-in for the 1.5.2 client tick of an FC mob. Client FC mobs are never ticked
-     * (re-simulating FC physics client-side fought MC's position interpolation, 7c2a417), so this
+     * (re-simulating FC physics client-side fought MC's position interpolation, 5030245), so this
      * only advances the fields the FC renderers read, once per client tick, after MC has moved the
      * proxy: position from MC's interpolation, body/head yaw and swing from the server snapshot,
      * limbs computed from the interpolated motion as the 1.5.2 client did, and the hurt/death

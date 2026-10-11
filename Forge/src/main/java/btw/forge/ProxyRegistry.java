@@ -278,6 +278,16 @@ public class ProxyRegistry {
     }
 
     /**
+     * Legacy id FC's onNeighborBlockChange sees for the block that notified it. 1.20.1 neighborChanged passes the
+     * source Block (the old block for a setBlock, as 1.5.2 World.setBlock passes the old id, World.java:461-478);
+     * a ProxyBlock or legacy-id vanilla block reports its id, any other solid block its stand-in id (the
+     * getWorldBlockId rule), so FCBlockBuddyBlock (which ignores id 0) trips on vanilla and post-1.5.2 changes too.
+     */
+    public static int getNeighbourSourceId(Block block, BlockGetter level, BlockPos pos) {
+        return getWorldBlockId(block.defaultBlockState(), level, pos);
+    }
+
+    /**
      * Returns the FC block for a given modern block, or null if unmapped.
      */
     public static btw.modern.Block getFcBlock(Block block) {

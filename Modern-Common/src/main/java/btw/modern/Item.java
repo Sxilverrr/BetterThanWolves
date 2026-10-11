@@ -250,6 +250,13 @@ public class Item {
         return this;
     }
 
+    // 1.5.2 Item.getCreativeTab (vanilla/client Item.java:900-903): the tab CreativeTabs.displayAllReleventItems
+    // (CreativeTabs.java:134-147) and GuiContainerCreative's search (:340-344) list this item under; null hides it from
+    // creative. ItemBlock overrides it with its block's tab. Read by BTWCreativeTab.
+    public CreativeTabs getCreativeTab() {
+        return this.creativeTab;
+    }
+
     public Item setPotionEffect(String potionEffect) {
         return this;
     }

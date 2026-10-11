@@ -9,6 +9,8 @@ public class ItemSword extends Item {
         super(id);
         this.toolMaterial = material;
         this.maxStackSize = 1;
+        // vanilla/client ItemSword.java:30; FCItemSword (the refined sword) sets no tab of its own
+        this.setCreativeTab(CreativeTabs.tabCombat);
         this.weaponDamage = 4 + material.getDamageVsEntity();
     }
 

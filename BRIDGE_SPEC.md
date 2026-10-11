@@ -10,6 +10,45 @@ Mixins on real MC classes hook into btw.modern at the right points.
 
 ### Key Principles
 
+**FC code is read-only. Never modify it** (user directive, 2026-10-10). "FC code" means:
+FlowerChild's BTW sources (`net.minecraft.src.btw.*` under `Common/`, `Client/`, `Server/`), the
+1.5.2 vanilla sources carrying FC's FCMOD edits under `vanilla/`, the frozen compiled 1.5.2/FC
+classes in root `build/classes/java/{main,server}`, FlowerChild's original 4.B release files kept in
+the repo (`Src/`, `SrcServer/` and `SrcClient/`, holding the flat sources and the `patch.txt` files
+that `setupVanilla` applies to build `vanilla/`, plus `BTWMod4-B0000003.zip`), and FlowerChild's own
+files such as `Readme.txt`. Nobody edits them, ever: no "small fixes", no tagged edits. When FC
+behaviour has to change, the change goes outside FC code:
+
+- **the Forge bridge** (`Forge/src/main/java/btw/forge`, mixins on 1.20.1 classes, data packs);
+- **Modern-Common** (`btw.modern`), the port's own pure-Java stand-ins for 1.5.2 vanilla classes.
+  They are port code, not FC code. At runtime they share the `btw.modern` package with the remapped
+  frozen classes, so the package name alone does not tell you whether a class may be edited: check
+  which side it comes from;
+- **a planned subproject** (name not chosen yet) that *extends* FC code (subclasses, registries,
+  event hooks, replacement classes) and *patches* it (bytecode transforms or mixins applied at build
+  or load time). Patches never write back to FC sources. The build-time ASM transforms in
+  `Forge/build.gradle` (`widenFcHookDescriptors`, `openUpEntityAccess`,
+  `extendFcPathingBuildRange`) are its precursors and are expected to move into it.
+
+Legacy port edits that predate this rule:
+
+- the restructure of FC's flat `Src/` and `SrcServer/` sources into `net.minecraft.src.btw.*` under
+  `Common/`, `Client/` and `Server/`, including hook-signature widening in `Server/` (e.g.
+  `FCEntityCreeper.OnKickedByCow( Entity cow )` against FC's `OnKickedByCow( FCEntityCow cow )`,
+  `SrcServer/net/minecraft/src/FCEntityCreeper.java:173`);
+- `applyFixups` in the root `build.gradle`, which text-edits `vanilla/` during `setupVanilla`
+  (landing BTW patch hunks that fail to apply, adding `btw` subpackage imports, widening access
+  modifiers, adding `Api` interface clauses);
+- the 27 manual `vanilla/` edits captured in `patches/vanilla-manual-edits.patch`, also applied by
+  `setupVanilla` (see `STUB_CATALOGUE.md`, "`vanilla/` is now fully reproducible");
+- three vanilla classes added under `Client/src/main/java/net/minecraft/src/` in 5257461
+  (`ModelChest`, `ModelLargeChest`, `TileEntityChestRenderer`).
+
+They stay so the tree keeps building. Nothing new is ever added to them, and they are candidates to
+move into the extension/patch subproject. Player-facing claims that the port runs FC code
+"verbatim" (`CURSEFORGE.md`, the `mods.toml` description quoted in `VERSIONING.md`) are overstated
+while these edits exist; rewording them is the maintainer's call.
+
 1. **FC code runs natively** in the btw.modern layer — not replicated in mixins.
 2. **btw.modern is the FC game engine** — it holds FC state, FC logic, FC methods.
 3. **Bridges are narrow** — only sync engine-level state (position, health, blocks, inventory).
@@ -315,26 +354,39 @@ fcFoodLevelAdjusted            | (migration flag)                   | boolean
 
 ## CATALOGUE 3: EVENT HOOKS (btw.modern → MC)
 
-### 3.1 World Actions (22 hooks) — implement in WorldBridge
+### 3.1 World Actions (22 hooks, plus rows 15a-15m added 2026-10-11) — implement in WorldBridge
 
 ```
 # | FC Method                                    | MC 1.20.1 Implementation                    | Status
 ──┼────────────────────────────────────────────────┼──────────────────────────────────────────────┼────────
-1  | World.playSoundEffect(x,y,z,name,vol,pitch)  | level.playSound(null, x,y,z, SoundEvent, ..) | TODO: sound name→SoundEvent mapping
+1  | World.playSoundEffect(x,y,z,name,vol,pitch)    | level.playSound(except, x,y,z, SoundEvent,..)| EXISTS: name via LegacySounds.resolve (S4); except: 15l
 2  | World.playSoundAtEntity(entity,name,vol,pitch)| level.playSound(null, player, SoundEvent, ..) | TODO
 3  | World.playSoundToNearExcept(pl,name,vol,pitch)| level.playSound(player, x,y,z, SoundEvent,..)| TODO
 4  | World.spawnParticle(type,x,y,z,vx,vy,vz)     | level.sendParticles(ParticleOptions, ...)     | TODO: particle mapping
 5  | World.spawnEntityInWorld(entity)               | level.addFreshEntity(proxy)                  | EXISTS (EntityProxyFactory)
 6  | World.removeEntity(entity)                     | proxy.discard()                              | EXISTS
 7  | World.createExplosion(entity,x,y,z,str,fire)  | level.explode(...)                           | EXISTS
-8  | World.playAuxSFX(effectID,x,y,z,data)         | level.levelEvent(effectID, pos, data)        | EXISTS (FC custom IDs need mapping)
+8  | World.playAuxSFX(effectID,x,y,z,data)          | = playAuxSFXAtEntity(null, ...): 15j / 15k   | EXISTS (ids < 2222 through AuxSfxMapping)
 9  | World.getEntitiesWithinAABB(class,aabb)        | level.getEntities(null, aabb, predicate)     | EXISTS
 10 | World.setBlock(x,y,z,id,meta,flags)           | level.setBlock(pos, state, flags)            | EXISTS
 11 | World.getBlockId(x,y,z)                        | state→ProxyRegistry.getBlockId(block)        | EXISTS
 12 | World.getBlockMetadata(x,y,z)                  | state.getValue(META) or 0                   | EXISTS
 13 | World.getBlockMaterial(x,y,z)                  | blocksList[id].blockMaterial                 | EXISTS
 14 | World.scheduleBlockUpdate(x,y,z,id,delay)      | level.scheduleTick(pos, block, delay)        | EXISTS
-15 | World.notifyBlockChange(x,y,z,id)              | level.sendBlockUpdated(...)                  | EXISTS
+15 | World.notifyBlockChange(x,y,z,id)              | level.updateNeighborsAt(pos, source)         | EXISTS (2026-10-11, F3; was sendBlockUpdated)
+15a| World.notifyBlocksOfNeighborChange(x,y,z,id)   | level.updateNeighborsAt(pos, source)         | EXISTS (source: see the note on 15)
+15b| Block.onNeighborBlockChange(..., neighbourId)  | ProxyRegistry.getNeighbourSourceId(block,..) | EXISTS (ProxyBlock, BlockBehaviorMixin)
+15c| World.markBlockForUpdate(x,y,z)                | level.sendBlockUpdated(pos, s, s, 3)         | EXISTS (the only sendBlockUpdated)
+15d| World.setBlockAndMetadata(x,y,z,id,meta)       | setBlock(x,y,z,id,meta, 2)                   | EXISTS (Modern-Common World, flag 2)
+15e| World.isBlockGettingPowered(x,y,z)             | level.getDirectSignalTo(pos) > 0             | EXISTS (strong power only, F4)
+15f| World.isBlockIndirectlyGettingPowered(x,y,z)   | level.hasNeighborSignal(pos)                 | EXISTS
+15g| World.isBlockTickScheduled(x,y,z,id)           | level.getBlockTicks().willTickThisTick(..)   | EXISTS (this tick's drained ticks)
+15h| World.IsUpdatePendingThisTickForBlock(..)      | = isBlockTickScheduled (15g)                 | EXISTS
+15i| World.IsUpdateScheduledForBlock(x,y,z,id)      | level.getBlockTicks().hasScheduledTick(..)   | EXISTS (future ticks only)
+15j| World.playAuxSFXAtEntity(player,id,x,y,z,data) | id < 2222: AuxSfxMapping -> levelEvent       | EXISTS; actor left out only for 2001 or off a ProxyBlock
+15k| FC aux id >= 2222 (playAuxSFX*, func_82739_e)  | BTWNetwork.sendFcAuxSfx -> FcAuxSfx message  | EXISTS; client: FC ClientPlayCustomAuxFX
+15l| World.playSoundEffect in a predicted placement | playSoundEffectExcept(PREDICTING_ACTOR, ..)  | EXISTS (BlockBehaviorMixin stage 2, BlockItem)
+15m| client World.playSound / playAuxSFX*           | LegacyClientSound.playLocal / playAux        | EXISTS (server playSound: no-op, as 1.5.2)
 16 | World.ModSpecificTick()                         | @Inject on ServerLevel.tick() TAIL           | TODO
 17 | World.isRaining()/isThundering()                | level.isRaining()/isThundering()             | EXISTS
 18 | World.IsRainingAtPos(x,y,z)                    | level.isRainingAt(pos) + biome check         | TODO
@@ -343,6 +395,56 @@ fcFoodLevelAdjusted            | (migration flag)                   | boolean
 21 | World.GetSpawnLocationList()                     | FC-only: held on WorldBridge                | TODO
 22 | World.ComputeOverworldSunBrightness...()        | level.getTimeOfDay() + moon phase            | TODO
 ```
+
+Rows 1, 8 and 15-15m were re-mapped on 2026-10-11 (`STUB_CATALOGUE.md` (an), (ao), (aq)). The rule
+for this table: a row maps the 1.5.2 *body* of the FC primitive (vanilla/server and vanilla/client,
+FC-edited), never its name.
+
+- **15, 15a:** 1.5.2 `notifyBlockChange` is `notifyBlocksOfNeighborChange` (vanilla/server
+  World.java:649-652, :694-702), a neighbour update, not a client resync. The source block is air for
+  id 0 (FC passes 0 after clearing a cell, FCEntityUrn.java:315-317), the variant at `pos` when it
+  reads as that id, else the id's canonical block, and for an unmapped id whatever is at `pos`
+  (`WorldBridge.neighbourSource`, WorldBridge.java:966-980).
+- **15b:** the id FC's `onNeighborBlockChange` receives is `getWorldBlockId` of the source block's
+  default state: a ProxyBlock or legacy-id vanilla block gives its legacy id, a colliding post-1.5.2
+  block its stand-in id (160/161), air 0 (ProxyRegistry.java:280-288; ProxyBlock.java:379,
+  BlockBehaviorMixin.java:178). 1.5.2 passes the notifying id through, the old id for `setBlock`
+  (World.java:461-478), as 1.20.1 `neighborChanged` passes the old block. FCBlockBuddyBlock ignores
+  id 0 (Client FCBlockBuddyBlock.java:78-80), so a 0 here makes buddy blocks blind.
+- **15d:** vanilla/server World.java:4152-4155. With flag 0, 1.20.1 `Level.setBlock` never calls
+  `sendBlockUpdated`, so FCBlockNetherGrowth's and FCBlockSapling's changes never reached clients.
+- **15e, 15f:** `isBlockGettingPowered` is `getBlockPowerInput > 0` (World.java:4157-4160), the
+  strongest `isProvidingStrongPower` of the six neighbours (:3452-3510); a 1.5.2 redstone block gives
+  weak power only. `isBlockIndirectlyGettingPowered` (:3558-3561) relays strong power through normal
+  cubes, which is `hasNeighborSignal`. Side order matches (1.5.2 sides 0-5 = `Direction`
+  `get3DDataValue`).
+- **15g-15i:** `isBlockTickScheduled` checks this tick's drained list (WorldServer.java:421-425),
+  `IsUpdateScheduledForBlock` the future set (:1258-1263). `LevelChunkTicks.poll` drops a drained
+  tick from `ticksPerPosition`, so `hasScheduledTick` cannot answer the first.
+- **15j:** 1.5.2 `WorldManager.playAuxSFX` sends Packet61 to everyone within 64 blocks except the
+  actor (WorldManager.java:103-106), whose client played the event itself. The bridge leaves the
+  actor out only where its 1.20.1 client really predicted it: 2001 (the break, predicted by
+  `MultiPlayerGameMode.destroyBlock`), and any id raised off a ProxyBlock, whose `use()` runs FC on
+  the server only (the FC wood door, Client FCBlockDoor.java:63) (WorldBridge.java:2059-2085).
+  `playAuxSFX` = `playAuxSFXAtEntity(null, ...)` (World.java:3912-3915).
+- **15k:** FC ids are played by FC's own client handler, never re-implemented on the server:
+  `WorldBridge.sendFcAuxSfx` -> `BTWNetwork.sendFcAuxSfx` (BTWNetwork.java:168-185, network protocol
+  4) -> `LegacyClientSound.playAux` -> `FCAddOnHandler.ClientPlayCustomAuxFX`. Non-global: players
+  within 64 blocks except the actor (15j). Global (`func_82739_e`): every player on the server, as 1.5.2
+  `broadcastSound` (WorldManager.java:108-111).
+  `tools/BridgeAudit.java` check [2] fails if a link of this chain disappears.
+- **15l:** 1.5.2 clients predicted placement silently (`RenderGlobal.playSound` is a no-op,
+  vanilla/client RenderGlobal.java:1812). A 1.20.1 client that got PASS from a block's `use()`
+  predicts `BlockItem.useOn` and plays the place sound itself, so while BlockBehaviorMixin stage 2
+  places for a held BlockItem, `WorldBridge.withPredictingActor` makes `playSoundEffect` leave that
+  player out (WorldBridge.java:1770-1793, BlockBehaviorMixin.java:255-266). `ProxyBlock.use` needs no
+  scope: its client returns SUCCESS and predicts nothing.
+- **15m:** every client-side FC world (ProxyEntity, ProxyBlockEntity, ProxyBlock's client view,
+  ClientFcWorld) implements 1.5.2 WorldClient + RenderGlobal through
+  `btw.forge.client.LegacyClientSound`: `playSound` plays locally (WorldClient.java:483-505),
+  `playAuxSFX*` plays vanilla ids as local level events and FC ids through `ClientPlayCustomAuxFX`,
+  and `playSoundEffect` / `playSoundAtEntity` do nothing (RenderGlobal.java:1812/:1817). Names resolve
+  through `LegacySounds.resolve` on both sides (row 1).
 
 ### 3.2 Player Actions (28 hooks) — implement in PlayerBridge
 

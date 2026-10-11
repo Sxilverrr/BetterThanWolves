@@ -87,19 +87,14 @@ public class BTWRegistration {
             if (proxy == null) continue;
 
             try {
-                // Get FC display name from the FC block
+                // Last-resort name only: ProxyBlockItem names each stack through FC (getItemDisplayName,
+                // localized and per metadata) and places the block FC's ItemBlock names for it.
                 btw.modern.Block fcBlock = proxy.getFcBlock();
                 String fcName = fcBlock != null ? fcBlock.getUnlocalizedName() : "";
                 String displayName = formatFcName(fcName, "Block " + id);
 
                 net.minecraft.world.item.BlockItem blockItem =
-                        new net.minecraft.world.item.BlockItem(proxy, new Item.Properties()) {
-                            @Override
-                            public net.minecraft.network.chat.Component getName(
-                                    net.minecraft.world.item.ItemStack stack) {
-                                return net.minecraft.network.chat.Component.literal(displayName);
-                            }
-                        };
+                        new ProxyBlockItem(proxy, new Item.Properties(), id, displayName);
 
                 ResourceLocation key = new ResourceLocation(
                         BTWForgeMod.MOD_ID, "block_" + id);
@@ -185,6 +180,8 @@ public class BTWRegistration {
     /**
      * Formats an FC unlocalized name into a human-readable display name.
      * E.g. "fcBlockGear" → "Gear", "tile.dirt" → "Dirt", "item.helmetPlate" → "Helmet Plate"
+     * Only the fallback of ProxyItem / ProxyArmorItem / ProxyBlockItem, which name stacks through FC's
+     * getItemDisplayName (the loaded lang, per metadata) as 1.5.2 did.
      */
     private static String formatFcName(String fcName, String fallback) {
         if (fcName == null || fcName.isEmpty()) return fallback;

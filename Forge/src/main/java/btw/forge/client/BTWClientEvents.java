@@ -34,11 +34,10 @@ import org.apache.logging.log4j.Logger;
  * for all BTW ProxyBlocks at runtime.
  *
  * <p>During model baking (worker thread), we create lightweight FCBakedModel
- * shells that store only a reference to the FC block. On the first
- * {@code getQuads()} call (render thread, with GL context), each model
- * captures FC's actual vertex output via the Tessellator and converts
- * it to BakedQuads. This ensures FC's RenderBlockAsItem runs with full
- * GL support and produces correct geometry for non-cube blocks.
+ * shells that store only a reference to the FC block. On first use each model
+ * captures FC's actual vertex output via the Tessellator and converts it to
+ * BakedQuads: FC's RenderBlock for the block states, and FC's RenderBlockAsItem
+ * per item damage for the block's item (served through the model's item overrides).
  */
 @Mod.EventBusSubscriber(modid = BTWForgeMod.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public class BTWClientEvents {
@@ -234,11 +233,13 @@ public class BTWClientEvents {
             LOGGER.error("BTW: Block placeholder model not found!");
             // No FCBakedModels are created on this path, so the lazy fallback in
             // FCBakedModel.ensureIconsRegistered never runs; the icon pass needs no placeholder.
-            // (FCItemSubtypeModel only visits ids >= 478, so no FC ItemBlock is affected by
-            // later reloads injecting subtype models after this pass.)
+            // (FCItemSubtypeModel leaves FCBakedModel block items alone, so no FC ItemBlock is
+            // affected by later reloads injecting subtype models after this pass.)
             registerBlockIconsEagerly();
             return;
         }
+        // item/generated: the display transforms of the block-item damages 1.5.2 drew as flat icons.
+        BakedModel flatItemTemplate = itemPlaceholder;
         if (itemPlaceholder == null) {
             itemPlaceholder = blockPlaceholder;
         }
@@ -264,7 +265,7 @@ public class BTWClientEvents {
             BakedModel modelToUse;
             if (fcBlock != null) {
                 // Create a deferred-capture model — capture happens on render thread
-                modelToUse = FCBakedModel.deferred(fcBlock, proxyBlock.getLegacyId());
+                modelToUse = FCBakedModel.deferred(fcBlock, proxyBlock.getLegacyId(), flatItemTemplate);
                 generatedFCModels++;
             } else {
                 modelToUse = blockPlaceholder;
@@ -276,6 +277,8 @@ public class BTWClientEvents {
                 injectedBlockStates++;
             }
 
+            // The same model: FCBakedModel.getOverrides resolves the stack's damage to FC's
+            // RenderBlockAsItem capture (or flat icon) for that damage (1.5.2 RenderItem.java:374-398).
             ModelResourceLocation itemMrl =
                     new ModelResourceLocation(blockRegName, "inventory");
             models.put(itemMrl, modelToUse);
@@ -343,10 +346,11 @@ public class BTWClientEvents {
      * Block icons, eagerly (triage MC3-R1): 1.5.2 registered every block's icons before anything drew
      * (TextureMap.refreshTextures). Until this pass, held/worn block items (ItemBlock sprite number 0,
      * ItemRenderer's 3D branch) drew with null face icons, textured with the mob's own skin, and flat
-     * ones (torches, flowers) fell back to the item icon. Called AFTER injectSubtypeModels: an FC
-     * ItemBlock whose getIconFromDamage returns per-damage block icons would otherwise get a flat
-     * subtype model in place of its 3D FCBakedModel. Runs once per session (NamedIcons hold names
-     * only, so a resource reload needs no re-registration). Never throws.
+     * ones (torches, flowers) fell back to the item icon. Called AFTER injectSubtypeModels, which
+     * also skips FCBakedModel block items: an FC ItemBlock whose getIconFromDamage returns per-damage
+     * block icons must keep its FCBakedModel, whose item overrides already draw each damage as 1.5.2
+     * did. Runs once per session (NamedIcons hold names only, so a resource reload needs no
+     * re-registration). Never throws.
      */
     private static void registerBlockIconsEagerly() {
         try {

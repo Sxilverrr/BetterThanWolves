@@ -2,8 +2,11 @@ package btw.modern;
 
 public abstract class BlockBasePressurePlate extends Block {
 
+    // vanilla/client BlockBasePressurePlate.java:27 sets tabRedstone in the constructor (BlockPressurePlate chains to it):
+    // FC's soulforged pressure plate 230 (FCBlockPressurePlate, no tab of its own) is listed under Redstone through it.
     protected BlockBasePressurePlate(int id, Material material) {
         super(id, material);
+        this.setCreativeTab(CreativeTabs.tabRedstone);
     }
 
     // 1.5.2 BlockBasePressurePlate.getCollisionBoundingBoxFromPool (vanilla/client BlockBasePressurePlate.java:67-70):

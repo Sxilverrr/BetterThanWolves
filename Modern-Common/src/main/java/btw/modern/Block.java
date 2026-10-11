@@ -16,12 +16,13 @@ public abstract class Block {
     public static final StepSound soundGrassFootstep = new StepSound("grass", 1.0F, 1.0F);
     public static final StepSound soundStoneFootstep = new StepSound("stone", 1.0F, 1.0F);
     public static final StepSound soundMetalFootstep = new StepSound("stone", 1.0F, 1.5F);
-    public static final StepSound soundGlassFootstep = new StepSound("stone", 1.0F, 1.0F);
+    // glass / ladder / anvil use the 1.5.2 StepSound subclasses (vanilla/client Block.java:37, 41-42)
+    public static final StepSound soundGlassFootstep = new StepSound.StepSoundStone("stone", 1.0F, 1.0F);
     public static final StepSound soundClothFootstep = new StepSound("cloth", 1.0F, 1.0F);
     public static final StepSound soundSandFootstep = new StepSound("sand", 1.0F, 1.0F);
     public static final StepSound soundSnowFootstep = new StepSound("snow", 1.0F, 1.0F);
-    public static final StepSound soundLadderFootstep = new StepSound("ladder", 1.0F, 1.0F);
-    public static final StepSound soundAnvilFootstep = new StepSound("anvil", 0.3F, 1.0F);
+    public static final StepSound soundLadderFootstep = new StepSound.StepSoundSand("ladder", 1.0F, 1.0F);
+    public static final StepSound soundAnvilFootstep = new StepSound.StepSoundAnvil("anvil", 0.3F, 1.0F);
 
     // --- Static block registry ---
     public static final Block[] blocksList = new Block[4096];
@@ -723,16 +724,28 @@ public abstract class Block {
     public boolean HasFallingBlockRestingOn(IBlockAccess blockAccess, int i, int j, int k) { return false; }
 
     // --- BTW-added: Facing methods ---
+    // Ported line for line from the FCMOD "Block Facing Functionality" section (vanilla/server
+    // Block.java:2833-2948). The previous stand-ins were re-derived: SetFacing(World) wrote with flag 2
+    // (no neighbour update) unconditionally and ToggleFacing returned false.
 
     public int GetFacing(IBlockAccess blockAccess, int i, int j, int k) { return GetFacing(blockAccess.getBlockMetadata(i, j, k)); }
     public int GetFacing(int iMetadata) { return 0; }
+    // vanilla/server Block.java:2845-2855: notify (flag 3) only when the metadata actually changes
     public void SetFacing(World world, int i, int j, int k, int iFacing) {
-        int metadata = world.getBlockMetadata(i, j, k);
-        int newMetadata = SetFacing(metadata, iFacing);
-        world.setBlockMetadataWithClient(i, j, k, newMetadata);
+        int iMetadata = world.getBlockMetadata(i, j, k);
+        int iNewMetadata = SetFacing(iMetadata, iFacing);
+        if (iNewMetadata != iMetadata) {
+            world.setBlockMetadataWithNotify(i, j, k, iNewMetadata);
+        }
     }
     public int SetFacing(int iMetadata, int iFacing) { return iMetadata; }
-    public boolean ToggleFacing(World world, int i, int j, int k, boolean bReverse) { return false; }
+    /**
+     * Cycle through all the possible facings for a block; true if the facing actually changed
+     * (vanilla/server Block.java:2866-2869).
+     */
+    public boolean ToggleFacing(World world, int i, int j, int k, boolean bReverse) {
+        return RotateAroundJAxis(world, i, j, k, bReverse);
+    }
 
     // --- BTW-added: Turntable methods ---
 
@@ -749,24 +762,41 @@ public abstract class Block {
         return iCraftingCounter;
     }
     public int GetRotationsToCraftOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return 1; }
+    // vanilla/server Block.java:3025-3029: FC's own "block destroy, respect particle settings" aux-FX
+    // (FCBetterThanWolves.m_iBlockDestroyRespectParticleSettingsAuxFXID), not vanilla 2001
     public void OnCraftedOnTurntable(World world, int i, int j, int k) {
-        world.playAuxSFX(2001, i, j, k, world.getBlockId(i, j, k) + (world.getBlockMetadata(i, j, k) << 12));
+        world.playAuxSFX(BLOCK_DESTROY_RESPECT_PARTICLE_SETTINGS_AUX_FX_ID,
+                i, j, k, world.getBlockId(i, j, k) + (world.getBlockMetadata(i, j, k) << 12));
     }
     public int GetNewBlockIDCraftedOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return 0; }
     public int GetNewMetadataCraftedOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return 0; }
-    public int GetItemIDCraftedOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return 0; }
-    public int GetItemCountCraftedOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return 0; }
+    // vanilla/server Block.java:3041-3049: one clay item by default (FCBlockUnfiredClay relies on it when it
+    // is shaped into a crucible; the stand-in's 0 / 0 lost that clay)
+    public int GetItemIDCraftedOnTurntable(IBlockAccess blockAccess, int i, int j, int k) {
+        return Item.clay != null ? Item.clay.itemID : 0;
+    }
+    public int GetItemCountCraftedOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return 1; }
     public int GetItemDamageCraftedOnTurntable(IBlockAccess blockAccess, int i, int j, int k) { return 0; }
+    /**
+     * Returns true if the facing has actually changed as a result of this call
+     * (vanilla/server Block.java:3059-3073: setBlockMetadataWithNotify, flag 3).
+     */
     public boolean RotateAroundJAxis(World world, int i, int j, int k, boolean bReverse) {
-        int oldMeta = world.getBlockMetadata(i, j, k);
-        int newMeta = RotateMetadataAroundJAxis(oldMeta, bReverse);
-        if (newMeta != oldMeta) {
-            world.setBlockMetadataWithClient(i, j, k, newMeta);
+        int iMetadata = world.getBlockMetadata(i, j, k);
+        int iNewMetadata = RotateMetadataAroundJAxis(iMetadata, bReverse);
+        if (iNewMetadata != iMetadata) {
+            world.setBlockMetadataWithNotify(i, j, k, iNewMetadata);
             return true;
         }
         return false;
     }
-    public int RotateMetadataAroundJAxis(int iMetadata, boolean bReverse) { return iMetadata; }
+    // vanilla/server Block.java:3075-3082. Was `return iMetadata`, so every block that only overrides
+    // GetFacing/SetFacing (saw, bellows, block dispenser, screw pump, buddy block, lens, ...) never turned.
+    public int RotateMetadataAroundJAxis(int iMetadata, boolean bReverse) {
+        int iFacing = GetFacing(iMetadata);
+        int iNewFacing = RotateFacingAroundJ(iFacing, bReverse);
+        return SetFacing(iMetadata, iNewFacing);
+    }
     protected void OnRotatedOnTurntable(World world, int i, int j, int k) {}
     protected int TurntableCraftingRotation(World world, int i, int j, int k, boolean bReverse, int iCraftingCounter) {
         iCraftingCounter++;
@@ -796,8 +826,40 @@ public abstract class Block {
     public boolean CanRotateAroundBlockOnTurntableToFacing(World world, int i, int j, int k, int iFacing) { return false; }
     public boolean OnRotatedAroundBlockOnTurntableToFacing(World world, int i, int j, int k, int iFacing) { return true; }
     public int GetNewMetadataRotatedAroundBlockOnTurntableToFacing(World world, int i, int j, int k, int iInitialFacing, int iRotatedFacing) { return 0; }
-    public int ConvertFacingToTopTextureRotation(int iFacing) { return 0; }
-    public int ConvertFacingToBottomTextureRotation(int iFacing) { return 0; }
+    // vanilla/server Block.java:2871-2924 (FCBlockAnvil / FCBlockBasketWicker / FCBlockHamper RenderBlock and
+    // FCTileEntityBasketRenderer feed these to SetUvRotateTop/Bottom; the stand-ins returned 0 for every facing)
+    public int ConvertFacingToTopTextureRotation(int iFacing) {
+        if (iFacing >= 2) {
+            if (iFacing <= 3) {
+                if (iFacing == 3) {
+                    return 3;
+                }
+            } else {
+                if (iFacing == 4) {
+                    return 2;
+                } else { // iFacing == 5
+                    return 1;
+                }
+            }
+        }
+        return 0;
+    }
+    public int ConvertFacingToBottomTextureRotation(int iFacing) {
+        if (iFacing >= 2) {
+            if (iFacing <= 3) {
+                if (iFacing == 3) {
+                    return 3;
+                }
+            } else {
+                if (iFacing == 4) {
+                    return 1;
+                } else { // iFacing == 5
+                    return 2;
+                }
+            }
+        }
+        return 0;
+    }
 
     // --- BTW-added: Block dispenser methods ---
 
@@ -1764,19 +1826,41 @@ public abstract class Block {
     public boolean IsFallingBlock() { return false; }
 
     // --- BTW-added: Static facing helpers ---
+    // FCMOD tables and helpers verbatim from vanilla/server Block.java:1460-1471 and :2925-2948. The hand-written
+    // stand-ins had clockwise and counter-clockwise swapped (a turntable turned gearboxes / clutches / stairs
+    // N->E while FC's own tables -- pumpkin, repeater, piston, log -- turned N->W) and cycled (f+1)%6.
+    // Only addition: an out-of-range facing is returned unchanged where 1.5.2 would throw, so a bad facing
+    // read from a derived vanilla metadata cannot abort the turntable / block tick that asked.
+
+    private static final int[] m_iRotatedFacingsAroundJClockwise =
+            new int[] { 0, 1, 4, 5, 3, 2 };
+
+    private static final int[] m_iRotatedFacingsAroundJCounterclockwise =
+            new int[] { 0, 1, 5, 4, 2, 3 };
+
+    private static final int[] m_iCycledFacings =
+            new int[] { 4, 0, 1, 5, 3, 2 };
+
+    private static final int[] m_iCycledFacingsReversed =
+            new int[] { 1, 2, 5, 4, 0, 3 };
+
+    /** FCBetterThanWolves.m_iBlockDestroyRespectParticleSettingsAuxFXID (Client FCBetterThanWolves.java:733). */
+    private static final int BLOCK_DESTROY_RESPECT_PARTICLE_SETTINGS_AUX_FX_ID = 2252;
 
     public static int GetOppositeFacing(int iFacing) { return iFacing ^ 1; }
     public static int RotateFacingAroundJ(int iFacing, boolean bReverse) {
-        if (iFacing < 2) return iFacing; // up/down unchanged
+        if (iFacing < 0 || iFacing > 5) return iFacing;
         if (bReverse) {
-            return switch (iFacing) { case 2 -> 4; case 4 -> 3; case 3 -> 5; case 5 -> 2; default -> iFacing; };
-        } else {
-            return switch (iFacing) { case 2 -> 5; case 5 -> 3; case 3 -> 4; case 4 -> 2; default -> iFacing; };
+            return m_iRotatedFacingsAroundJCounterclockwise[iFacing];
         }
+        return m_iRotatedFacingsAroundJClockwise[iFacing];
     }
     public static int CycleFacing(int iFacing, boolean bReverse) {
-        if (bReverse) return (iFacing + 5) % 6;
-        return (iFacing + 1) % 6;
+        if (iFacing < 0 || iFacing > 5) return iFacing;
+        if (bReverse) {
+            return m_iCycledFacingsReversed[iFacing];
+        }
+        return m_iCycledFacings[iFacing];
     }
 
     // --- BTW-added: Conversion/combined block ---

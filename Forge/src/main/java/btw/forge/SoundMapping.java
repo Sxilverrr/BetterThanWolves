@@ -1,222 +1,197 @@
 package btw.forge;
 
 import net.minecraft.sounds.SoundEvent;
-import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Maps FC legacy sound names (e.g., "random.pop", "step.grass") to MC 1.20.1
- * {@link SoundEvent} instances. Used by {@link EntityBridge}, {@link LivingEntityBridge},
- * and {@link PlayerBridge} to play sounds when FC code calls playSound(String, float, float).
+ * Plays FC legacy sound names (e.g., "random.pop", "step.grass") on MC 1.20.1. Used by
+ * {@link EntityBridge}, {@link LivingEntityBridge} and {@link PlayerBridge} when FC code calls
+ * playSound(String, float, float), and by WorldBridge to resolve names.
  *
- * <p>FC used a flat string-based sound system where names like "random.pop" or
- * "dig.stone" mapped directly to sound resources. MC 1.20.1 uses registry-based
- * SoundEvent objects. This class provides the translation layer.</p>
+ * <p>Name resolution is {@link LegacySounds}' job: every 1.5.2 sound name plays its 1.5.2 file pool
+ * through a registered betterthanwolves sound event. This class used to keep its own hand table of
+ * 1.20.1 replacement events, which picked wrong files (minecart.base -> minecart/inside, creeper hurt
+ * -> fuse hiss, numbered cow moos -> random moos, ...) and missed names entirely (audit S4).</p>
  */
 public class SoundMapping {
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-SoundMapping");
 
-    private static final Map<String, SoundEvent> SOUND_MAP = new HashMap<>();
+    private static final AtomicBoolean PLAY_FAILURE_LOGGED = new AtomicBoolean();
+
+    /** Marks a {@link #SOUND_MAP} entry that is not a sound name (see "fcwhitesmoke"). */
+    private static final String NOT_A_SOUND = "not a sound";
+
+    /**
+     * Coverage manifest, not a lookup table: every 1.5.2 sound name that FC code (Common/Client/Server)
+     * or the frozen 1.5.2 entity classes play as a literal, with where it is played. tools/BridgeAudit
+     * reads these put() lines for its static sound-coverage check, and {@link #verifyCoverage()} checks
+     * at startup that each one still resolves through {@link LegacySounds}. LegacySounds itself covers
+     * every 1.5.2 sound, including names built at runtime ("step." + step sound, "note." + instrument).
+     */
+    private static final Map<String, String> SOUND_MAP = new LinkedHashMap<>();
 
     static {
-        // ---- random.* ----
-        SOUND_MAP.put("random.pop", SoundEvents.ITEM_PICKUP);
-        SOUND_MAP.put("random.break", SoundEvents.ITEM_BREAK);
-        SOUND_MAP.put("random.click", SoundEvents.UI_BUTTON_CLICK.value());
-        SOUND_MAP.put("random.fizz", SoundEvents.FIRE_EXTINGUISH);
-        SOUND_MAP.put("random.explode", SoundEvents.GENERIC_EXPLODE);
-        SOUND_MAP.put("random.splash", SoundEvents.GENERIC_SPLASH);
-        SOUND_MAP.put("random.bow", SoundEvents.ARROW_SHOOT);
-        SOUND_MAP.put("random.eat", SoundEvents.GENERIC_EAT);
-        SOUND_MAP.put("random.drink", SoundEvents.GENERIC_DRINK);
-        SOUND_MAP.put("random.anvil_break", SoundEvents.ANVIL_BREAK);
-        SOUND_MAP.put("random.anvil_land", SoundEvents.ANVIL_LAND);
-        SOUND_MAP.put("random.anvil_use", SoundEvents.ANVIL_USE);
-        SOUND_MAP.put("random.chestclosed", SoundEvents.CHEST_CLOSE);
-        SOUND_MAP.put("random.chestopen", SoundEvents.CHEST_OPEN);
-        SOUND_MAP.put("random.door_open", SoundEvents.WOODEN_DOOR_OPEN);
-        SOUND_MAP.put("random.door_close", SoundEvents.WOODEN_DOOR_CLOSE);
-        SOUND_MAP.put("random.fuse", SoundEvents.TNT_PRIMED);
-        SOUND_MAP.put("random.levelup", SoundEvents.PLAYER_LEVELUP);
-        SOUND_MAP.put("random.orb", SoundEvents.EXPERIENCE_ORB_PICKUP);
-        SOUND_MAP.put("random.burp", SoundEvents.PLAYER_BURP);
-        SOUND_MAP.put("random.hurt", SoundEvents.PLAYER_HURT);
-        SOUND_MAP.put("random.classic_hurt", SoundEvents.PLAYER_HURT);
-        SOUND_MAP.put("random.splash", SoundEvents.GENERIC_SPLASH);
-        SOUND_MAP.put("random.successful_hit", SoundEvents.PLAYER_ATTACK_STRONG);
-        SOUND_MAP.put("random.wood_click", SoundEvents.WOODEN_BUTTON_CLICK_ON);
-        SOUND_MAP.put("random.bowhit", SoundEvents.ARROW_HIT);
-        SOUND_MAP.put("random.glass", SoundEvents.GLASS_BREAK);
-
-        // ---- dig.* (block break sounds) ----
-        SOUND_MAP.put("dig.stone", SoundEvents.STONE_BREAK);
-        SOUND_MAP.put("dig.wood", SoundEvents.WOOD_BREAK);
-        SOUND_MAP.put("dig.gravel", SoundEvents.GRAVEL_BREAK);
-        SOUND_MAP.put("dig.grass", SoundEvents.GRASS_BREAK);
-        SOUND_MAP.put("dig.cloth", SoundEvents.WOOL_BREAK);
-        SOUND_MAP.put("dig.sand", SoundEvents.SAND_BREAK);
-        SOUND_MAP.put("dig.snow", SoundEvents.SNOW_BREAK);
-        SOUND_MAP.put("dig.glass", SoundEvents.GLASS_BREAK);
-
-        // ---- step.* (footstep sounds) ----
-        SOUND_MAP.put("step.stone", SoundEvents.STONE_STEP);
-        SOUND_MAP.put("step.wood", SoundEvents.WOOD_STEP);
-        SOUND_MAP.put("step.gravel", SoundEvents.GRAVEL_STEP);
-        SOUND_MAP.put("step.grass", SoundEvents.GRASS_STEP);
-        SOUND_MAP.put("step.cloth", SoundEvents.WOOL_STEP);
-        SOUND_MAP.put("step.sand", SoundEvents.SAND_STEP);
-        SOUND_MAP.put("step.snow", SoundEvents.SNOW_STEP);
-        SOUND_MAP.put("step.ladder", SoundEvents.LADDER_STEP);
-
-        // ---- mob.* ----
-        SOUND_MAP.put("mob.sheep.shear", SoundEvents.SHEEP_SHEAR);
-        SOUND_MAP.put("mob.sheep.say", SoundEvents.SHEEP_AMBIENT);
-        SOUND_MAP.put("mob.sheep.step", SoundEvents.SHEEP_STEP);
-        SOUND_MAP.put("mob.slime.attack", SoundEvents.SLIME_ATTACK);
-        // FC saw grinding uses the minecart rumble as its "base" grind sound.
-        SOUND_MAP.put("minecart.base", SoundEvents.MINECART_INSIDE);
-        SOUND_MAP.put("mob.slime.big", SoundEvents.SLIME_SQUISH);
-        SOUND_MAP.put("mob.slime.small", SoundEvents.SLIME_SQUISH_SMALL);
-        SOUND_MAP.put("mob.ghast.fireball", SoundEvents.GHAST_SHOOT);
-        SOUND_MAP.put("mob.ghast.moan", SoundEvents.GHAST_AMBIENT);
-        SOUND_MAP.put("mob.ghast.scream", SoundEvents.GHAST_HURT);
-        // BTW "affectionate scream" (FCEntityWitch.playLivingSound, Common FCEntityWitch.java:84-93;
-        // possession transforms, FCBetterThanWolves.java:3558): 1.5.2 played the
-        // mob/ghast/affectionate_scream file, which 1.20.1 ships as entity.ghast.scream; GHAST_AMBIENT
-        // is the moan1-7 set (GH2).
-        SOUND_MAP.put("mob.ghast.affectionate scream", SoundEvents.GHAST_SCREAM);
-        SOUND_MAP.put("mob.zombie.wood", SoundEvents.ZOMBIE_ATTACK_WOODEN_DOOR);
-        SOUND_MAP.put("mob.zombie.woodbreak", SoundEvents.ZOMBIE_BREAK_WOODEN_DOOR);
-        SOUND_MAP.put("mob.zombie.say", SoundEvents.ZOMBIE_AMBIENT);
-        SOUND_MAP.put("mob.zombie.hurt", SoundEvents.ZOMBIE_HURT);
-        SOUND_MAP.put("mob.zombie.death", SoundEvents.ZOMBIE_DEATH);
-        SOUND_MAP.put("mob.zombie.step", SoundEvents.ZOMBIE_STEP);
-        SOUND_MAP.put("mob.zombiepig.zpigangry", SoundEvents.ZOMBIFIED_PIGLIN_ANGRY);
-        SOUND_MAP.put("mob.wolf.bark", SoundEvents.WOLF_AMBIENT);
-        SOUND_MAP.put("mob.wolf.step", SoundEvents.WOLF_STEP);
-        SOUND_MAP.put("mob.wolf.hurt", SoundEvents.WOLF_HURT);
-        SOUND_MAP.put("mob.wolf.death", SoundEvents.WOLF_DEATH);
-        SOUND_MAP.put("mob.wolf.growl", SoundEvents.WOLF_GROWL);
-        SOUND_MAP.put("mob.wolf.panting", SoundEvents.WOLF_PANT);
-        SOUND_MAP.put("mob.wolf.whine", SoundEvents.WOLF_WHINE);
-        SOUND_MAP.put("mob.wolf.howl", SoundEvents.WOLF_HOWL);
-        SOUND_MAP.put("mob.cow.say", SoundEvents.COW_AMBIENT);
-        // BTW-added cow variant moos (FCBlockBellows / milking) — no distinct vanilla event.
-        SOUND_MAP.put("mob.cow.say2", SoundEvents.COW_AMBIENT);
-        SOUND_MAP.put("mob.cow.say4", SoundEvents.COW_AMBIENT);
-        SOUND_MAP.put("mob.cow.hurt", SoundEvents.COW_HURT);
-        SOUND_MAP.put("mob.cow.step", SoundEvents.COW_STEP);
-        SOUND_MAP.put("mob.cow.death", SoundEvents.COW_DEATH);
-        SOUND_MAP.put("mob.pig.say", SoundEvents.PIG_AMBIENT);
-        SOUND_MAP.put("mob.pig.death", SoundEvents.PIG_DEATH);
-        SOUND_MAP.put("mob.pig.step", SoundEvents.PIG_STEP);
-        SOUND_MAP.put("mob.chicken.say", SoundEvents.CHICKEN_AMBIENT);
-        SOUND_MAP.put("mob.chicken.hurt", SoundEvents.CHICKEN_HURT);
-        SOUND_MAP.put("mob.chicken.step", SoundEvents.CHICKEN_STEP);
-        SOUND_MAP.put("mob.chicken.plop", SoundEvents.CHICKEN_EGG);
-        SOUND_MAP.put("mob.creeper.say", SoundEvents.CREEPER_PRIMED);
-        SOUND_MAP.put("mob.creeper.death", SoundEvents.CREEPER_DEATH);
-        SOUND_MAP.put("mob.skeleton.say", SoundEvents.SKELETON_AMBIENT);
-        SOUND_MAP.put("mob.skeleton.hurt", SoundEvents.SKELETON_HURT);
-        SOUND_MAP.put("mob.skeleton.death", SoundEvents.SKELETON_DEATH);
-        SOUND_MAP.put("mob.skeleton.step", SoundEvents.SKELETON_STEP);
-        SOUND_MAP.put("mob.spider.say", SoundEvents.SPIDER_AMBIENT);
-        SOUND_MAP.put("mob.spider.death", SoundEvents.SPIDER_DEATH);
-        SOUND_MAP.put("mob.spider.step", SoundEvents.SPIDER_STEP);
-        SOUND_MAP.put("mob.endermen.stare", SoundEvents.ENDERMAN_STARE);
-        SOUND_MAP.put("mob.endermen.hit", SoundEvents.ENDERMAN_HURT);
-        SOUND_MAP.put("mob.endermen.death", SoundEvents.ENDERMAN_DEATH);
-        SOUND_MAP.put("mob.endermen.portal", SoundEvents.ENDERMAN_TELEPORT);
-        SOUND_MAP.put("mob.endermen.scream", SoundEvents.ENDERMAN_SCREAM);
-        SOUND_MAP.put("mob.enderdragon.growl", SoundEvents.ENDER_DRAGON_GROWL);
-        SOUND_MAP.put("mob.wither.spawn", SoundEvents.WITHER_SPAWN);
-        SOUND_MAP.put("mob.wither.shoot", SoundEvents.WITHER_SHOOT);
-        SOUND_MAP.put("mob.wither.death", SoundEvents.WITHER_DEATH);
-        SOUND_MAP.put("mob.irongolem.hit", SoundEvents.IRON_GOLEM_HURT);
-        SOUND_MAP.put("mob.irongolem.death", SoundEvents.IRON_GOLEM_DEATH);
-        SOUND_MAP.put("mob.irongolem.walk", SoundEvents.IRON_GOLEM_STEP);
-        SOUND_MAP.put("mob.cat.meow", SoundEvents.CAT_AMBIENT);
-        SOUND_MAP.put("mob.cat.hiss", SoundEvents.CAT_HISS);
-        SOUND_MAP.put("mob.cat.purr", SoundEvents.CAT_PURR);
-        SOUND_MAP.put("mob.villager.idle", SoundEvents.VILLAGER_AMBIENT);
-        SOUND_MAP.put("mob.villager.haggle", SoundEvents.VILLAGER_TRADE);
-        SOUND_MAP.put("mob.villager.hit", SoundEvents.VILLAGER_HURT);
-        SOUND_MAP.put("mob.villager.death", SoundEvents.VILLAGER_DEATH);
-        SOUND_MAP.put("mob.villager.yes", SoundEvents.VILLAGER_YES);
-        SOUND_MAP.put("mob.villager.no", SoundEvents.VILLAGER_NO);
-        SOUND_MAP.put("mob.blaze.breathe", SoundEvents.BLAZE_AMBIENT);
-        SOUND_MAP.put("mob.blaze.hit", SoundEvents.BLAZE_HURT);
-        SOUND_MAP.put("mob.blaze.death", SoundEvents.BLAZE_DEATH);
-        SOUND_MAP.put("mob.bat.idle", SoundEvents.BAT_AMBIENT);
-        SOUND_MAP.put("mob.bat.hurt", SoundEvents.BAT_HURT);
-        SOUND_MAP.put("mob.bat.death", SoundEvents.BAT_DEATH);
-        SOUND_MAP.put("mob.bat.takeoff", SoundEvents.BAT_TAKEOFF);
-        SOUND_MAP.put("mob.magmacube.big", SoundEvents.MAGMA_CUBE_SQUISH);
-        SOUND_MAP.put("mob.magmacube.small", SoundEvents.MAGMA_CUBE_SQUISH_SMALL);
-        SOUND_MAP.put("mob.magmacube.jump", SoundEvents.MAGMA_CUBE_JUMP);
-        SOUND_MAP.put("mob.silverfish.say", SoundEvents.SILVERFISH_AMBIENT);
-        SOUND_MAP.put("mob.silverfish.hit", SoundEvents.SILVERFISH_HURT);
-        SOUND_MAP.put("mob.silverfish.kill", SoundEvents.SILVERFISH_DEATH);
-        SOUND_MAP.put("mob.silverfish.step", SoundEvents.SILVERFISH_STEP);
-        SOUND_MAP.put("mob.witch.idle", SoundEvents.WITCH_AMBIENT);
-        SOUND_MAP.put("mob.witch.hurt", SoundEvents.WITCH_HURT);
-        SOUND_MAP.put("mob.witch.death", SoundEvents.WITCH_DEATH);
-
-        // ---- fire / liquid / portal / ambient ----
-        SOUND_MAP.put("fire.fire", SoundEvents.FIRE_AMBIENT);
-        SOUND_MAP.put("fire.ignite", SoundEvents.FLINTANDSTEEL_USE);
-        SOUND_MAP.put("liquid.splash", SoundEvents.GENERIC_SPLASH);
-        SOUND_MAP.put("liquid.swim", SoundEvents.GENERIC_SWIM);
-        SOUND_MAP.put("liquid.water", SoundEvents.WATER_AMBIENT);
-        SOUND_MAP.put("liquid.lava", SoundEvents.LAVA_AMBIENT);
-        SOUND_MAP.put("liquid.lavapop", SoundEvents.LAVA_POP);
-        SOUND_MAP.put("portal.portal", SoundEvents.PORTAL_AMBIENT);
-        SOUND_MAP.put("portal.trigger", SoundEvents.PORTAL_TRIGGER);
-        SOUND_MAP.put("portal.travel", SoundEvents.PORTAL_TRAVEL);
-        SOUND_MAP.put("ambient.cave.cave", SoundEvents.AMBIENT_CAVE.value());
-        SOUND_MAP.put("ambient.cave.cave4", SoundEvents.AMBIENT_CAVE.value());
-        SOUND_MAP.put("ambient.weather.rain", SoundEvents.WEATHER_RAIN);
-        SOUND_MAP.put("ambient.weather.thunder", SoundEvents.LIGHTNING_BOLT_THUNDER);
-
-        // ---- note.* (note block) ----
-        SOUND_MAP.put("note.harp", SoundEvents.NOTE_BLOCK_HARP.value());
-        SOUND_MAP.put("note.bass", SoundEvents.NOTE_BLOCK_BASS.value());
-        SOUND_MAP.put("note.bassattack", SoundEvents.NOTE_BLOCK_BASEDRUM.value());
-        SOUND_MAP.put("note.bd", SoundEvents.NOTE_BLOCK_BASEDRUM.value());
-        SOUND_MAP.put("note.hat", SoundEvents.NOTE_BLOCK_HAT.value());
-        SOUND_MAP.put("note.snare", SoundEvents.NOTE_BLOCK_SNARE.value());
-        SOUND_MAP.put("note.pling", SoundEvents.NOTE_BLOCK_PLING.value());
-
-        // ---- damage.* ----
-        SOUND_MAP.put("damage.hit", SoundEvents.PLAYER_HURT);
-        SOUND_MAP.put("damage.fallbig", SoundEvents.PLAYER_BIG_FALL);
-        SOUND_MAP.put("damage.fallsmall", SoundEvents.PLAYER_SMALL_FALL);
-
-        // ---- tile.* (block place/break) ----
-        SOUND_MAP.put("tile.piston.out", SoundEvents.PISTON_EXTEND);
-        SOUND_MAP.put("tile.piston.in", SoundEvents.PISTON_CONTRACT);
-
-        // ---- FC custom — map to closest vanilla equivalent ----
-        SOUND_MAP.put("fcwhitesmoke", SoundEvents.FIRE_EXTINGUISH);
+        SOUND_MAP.put("ambient.cave.cave4", "FCEntityVillager, FCItemNetherStar");
+        SOUND_MAP.put("ambient.weather.thunder", "FCBetterThanWolves, FCContainerInfernalEnchanter, FCEntityVillager");
+        SOUND_MAP.put("damage.fallbig", "1.5.2 EntityLiving");
+        SOUND_MAP.put("damage.fallsmall", "1.5.2 EntityLiving");
+        SOUND_MAP.put("damage.hit", "1.5.2 EntityLiving");
+        SOUND_MAP.put("damage.thorns", "1.5.2 EnchantmentThorns (no 1.5.2 file: silent there too)");
+        SOUND_MAP.put("dig.sand", "FCBetterThanWolves");
+        SOUND_MAP.put("fire.fire", "FCBlockCampfire, FCBlockFurnace, FCBlockLadderOnFire");
+        SOUND_MAP.put("fire.ignite", "FCItemFlintAndSteel");
+        SOUND_MAP.put("fireworks.launch", "1.5.2 EntityFireworkRocket");
+        SOUND_MAP.put("liquid.lavapop", "FCBetterThanWolves");
+        SOUND_MAP.put("liquid.splash", "FCEntitySquid, 1.5.2 Entity");
+        SOUND_MAP.put("liquid.swim", "FCEntitySlime, 1.5.2 Entity");
+        SOUND_MAP.put("minecart.base", "FCBetterThanWolves, FCBlockMillStone, FCBlockPulley, FCBlockSaw");
+        SOUND_MAP.put("mob.attack", "1.5.2 EntitySlime (no 1.5.2 file: silent there too)");
+        SOUND_MAP.put("mob.bat.death", "1.5.2 EntityBat");
+        SOUND_MAP.put("mob.bat.hurt", "1.5.2 EntityBat");
+        SOUND_MAP.put("mob.bat.idle", "1.5.2 EntityBat");
+        SOUND_MAP.put("mob.blaze.breathe", "1.5.2 EntityBlaze");
+        SOUND_MAP.put("mob.blaze.death", "1.5.2 EntityBlaze");
+        SOUND_MAP.put("mob.blaze.hit", "1.5.2 EntityBlaze");
+        SOUND_MAP.put("mob.cat.hitt", "1.5.2 EntityOcelot");
+        SOUND_MAP.put("mob.cat.meow", "1.5.2 EntityOcelot");
+        SOUND_MAP.put("mob.cat.purr", "1.5.2 EntityOcelot");
+        SOUND_MAP.put("mob.cat.purreow", "1.5.2 EntityOcelot");
+        SOUND_MAP.put("mob.chicken.hurt", "FCBetterThanWolves, FCEntityChicken, 1.5.2 EntityChicken");
+        SOUND_MAP.put("mob.chicken.plop", "1.5.2 EntityChicken");
+        SOUND_MAP.put("mob.chicken.say", "FCEntityChicken, 1.5.2 EntityChicken");
+        SOUND_MAP.put("mob.chicken.step", "1.5.2 EntityChicken");
+        SOUND_MAP.put("mob.cow.hurt", "FCBetterThanWolves, FCEntityCow, 1.5.2 EntityCow");
+        SOUND_MAP.put("mob.cow.say", "FCEntityCow, 1.5.2 EntityCow");
+        SOUND_MAP.put("mob.cow.say2", "FCBlockBellows");
+        SOUND_MAP.put("mob.cow.say4", "FCBlockBellows");
+        SOUND_MAP.put("mob.cow.step", "1.5.2 EntityCow");
+        SOUND_MAP.put("mob.creeper.death", "1.5.2 EntityCreeper");
+        SOUND_MAP.put("mob.creeper.say", "FCEntityCreeper, 1.5.2 EntityCreeper");
+        SOUND_MAP.put("mob.enderdragon.growl", "FCBetterThanWolves, FCEntityVillager, 1.5.2 EntityDragon");
+        SOUND_MAP.put("mob.enderdragon.hit", "1.5.2 EntityDragon");
+        SOUND_MAP.put("mob.enderdragon.wings", "1.5.2 EntityDragon");
+        SOUND_MAP.put("mob.endermen.death", "1.5.2 EntityEnderman");
+        SOUND_MAP.put("mob.endermen.hit", "FCBetterThanWolves, 1.5.2 EntityEnderman");
+        SOUND_MAP.put("mob.endermen.idle", "1.5.2 EntityEnderman");
+        SOUND_MAP.put("mob.endermen.portal", "FCBetterThanWolves, 1.5.2 EntityEnderman");
+        SOUND_MAP.put("mob.endermen.scream", "1.5.2 EntityEnderman");
+        SOUND_MAP.put("mob.endermen.stare", "FCBlockEnderChest, FCEntityEnderman, 1.5.2 EntityEnderman");
+        SOUND_MAP.put("mob.ghast.affectionate scream", "FCBetterThanWolves, FCEntityWitch");
+        SOUND_MAP.put("mob.ghast.death", "1.5.2 EntityGhast");
+        SOUND_MAP.put("mob.ghast.fireball", "FCBetterThanWolves, FCBlockBBQ, FCBlockCampfire");
+        SOUND_MAP.put("mob.ghast.moan", "FCBetterThanWolves, FCBlockBucketCement, FCBlockCement");
+        SOUND_MAP.put("mob.ghast.scream", "FCBetterThanWolves, FCBlockMillStone, FCTileEntityBeacon");
+        SOUND_MAP.put("mob.irongolem.death", "FCBetterThanWolves, 1.5.2 EntityIronGolem");
+        SOUND_MAP.put("mob.irongolem.hit", "1.5.2 EntityIronGolem");
+        SOUND_MAP.put("mob.irongolem.throw", "1.5.2 EntityIronGolem");
+        SOUND_MAP.put("mob.irongolem.walk", "FCBetterThanWolves, 1.5.2 EntityIronGolem");
+        SOUND_MAP.put("mob.magmacube.big", "1.5.2 EntityMagmaCube");
+        SOUND_MAP.put("mob.magmacube.small", "1.5.2 EntityMagmaCube");
+        SOUND_MAP.put("mob.pig.death", "FCBetterThanWolves, FCEntityPig, 1.5.2 EntityPig");
+        SOUND_MAP.put("mob.pig.say", "FCEntityPig, 1.5.2 EntityPig");
+        SOUND_MAP.put("mob.pig.step", "1.5.2 EntityPig");
+        SOUND_MAP.put("mob.sheep.say", "1.5.2 EntitySheep");
+        SOUND_MAP.put("mob.sheep.shear", "FCBetterThanWolves, FCEntitySheep, FCItemShears");
+        SOUND_MAP.put("mob.sheep.step", "1.5.2 EntitySheep");
+        SOUND_MAP.put("mob.silverfish.hit", "1.5.2 EntitySilverfish");
+        SOUND_MAP.put("mob.silverfish.kill", "1.5.2 EntitySilverfish");
+        SOUND_MAP.put("mob.silverfish.say", "1.5.2 EntitySilverfish");
+        SOUND_MAP.put("mob.silverfish.step", "FCBlockSilverfish, 1.5.2 EntitySilverfish");
+        SOUND_MAP.put("mob.skeleton.death", "1.5.2 EntitySkeleton");
+        SOUND_MAP.put("mob.skeleton.hurt", "1.5.2 EntitySkeleton");
+        SOUND_MAP.put("mob.skeleton.say", "1.5.2 EntitySkeleton");
+        SOUND_MAP.put("mob.skeleton.step", "1.5.2 EntitySkeleton");
+        SOUND_MAP.put("mob.slime.attack", "FCBetterThanWolves, FCEntityChicken, FCEntitySheep");
+        SOUND_MAP.put("mob.slime.big", "FCEntitySquid");
+        SOUND_MAP.put("mob.slime.small", "FCStepSoundSquish");
+        SOUND_MAP.put("mob.spider.death", "1.5.2 EntitySpider");
+        SOUND_MAP.put("mob.spider.say", "1.5.2 EntitySpider");
+        SOUND_MAP.put("mob.spider.step", "1.5.2 EntitySpider");
+        SOUND_MAP.put("mob.villager.default", "1.5.2 EntityVillager (no 1.5.2 file: silent there too)");
+        SOUND_MAP.put("mob.villager.defaultdeath", "1.5.2 EntityVillager (no 1.5.2 file: silent there too)");
+        SOUND_MAP.put("mob.villager.defaulthurt", "1.5.2 EntityVillager (no 1.5.2 file: silent there too)");
+        SOUND_MAP.put("mob.witch.death", "1.5.2 EntityWitch (no 1.5.2 file: silent there too)");
+        SOUND_MAP.put("mob.witch.hurt", "1.5.2 EntityWitch (no 1.5.2 file: silent there too)");
+        SOUND_MAP.put("mob.witch.idle", "1.5.2 EntityWitch (no 1.5.2 file: silent there too)");
+        SOUND_MAP.put("mob.wither.death", "FCBetterThanWolves, FCBlockBeacon, FCTileEntityBeacon");
+        SOUND_MAP.put("mob.wither.hurt", "1.5.2 EntityWither");
+        SOUND_MAP.put("mob.wither.idle", "1.5.2 EntityWither");
+        SOUND_MAP.put("mob.wither.shoot", "FCEntityWitch");
+        SOUND_MAP.put("mob.wither.spawn", "FCBlockBeacon, FCTileEntityBeacon");
+        SOUND_MAP.put("mob.wolf.bark", "FCEntityWolf, 1.5.2 EntityWolf");
+        SOUND_MAP.put("mob.wolf.death", "FCEntityWolfDire, 1.5.2 EntityWolf");
+        SOUND_MAP.put("mob.wolf.growl", "FCBetterThanWolves, FCEntityWolf, FCEntityWolfDire");
+        SOUND_MAP.put("mob.wolf.howl", "FCBetterThanWolves");
+        SOUND_MAP.put("mob.wolf.hurt", "FCBetterThanWolves, FCBlockCompanionCube, FCBlockMillStone");
+        SOUND_MAP.put("mob.wolf.panting", "FCEntityWolf, 1.5.2 EntityWolf");
+        SOUND_MAP.put("mob.wolf.shake", "1.5.2 EntityWolf");
+        SOUND_MAP.put("mob.wolf.step", "FCEntityWolfDire, 1.5.2 EntityWolf");
+        SOUND_MAP.put("mob.wolf.whine", "FCBetterThanWolves, FCBlockCompanionCube, FCEntityWolf");
+        SOUND_MAP.put("mob.zombie.death", "1.5.2 EntityZombie");
+        SOUND_MAP.put("mob.zombie.hurt", "1.5.2 EntityZombie");
+        SOUND_MAP.put("mob.zombie.remedy", "1.5.2 EntityZombie");
+        SOUND_MAP.put("mob.zombie.say", "FCEntityZombie, 1.5.2 EntityZombie");
+        SOUND_MAP.put("mob.zombie.step", "1.5.2 EntityZombie");
+        SOUND_MAP.put("mob.zombie.wood", "FCBetterThanWolves, FCItemAxe");
+        SOUND_MAP.put("mob.zombie.woodbreak", "FCBetterThanWolves, FCItemAxe, FCItemCarvingBone");
+        SOUND_MAP.put("mob.zombiepig.zpig", "1.5.2 EntityPigZombie");
+        SOUND_MAP.put("mob.zombiepig.zpigangry", "FCBetterThanWolves, 1.5.2 EntityPigZombie");
+        SOUND_MAP.put("mob.zombiepig.zpigdeath", "1.5.2 EntityPigZombie");
+        SOUND_MAP.put("mob.zombiepig.zpighurt", "1.5.2 EntityPigZombie");
+        SOUND_MAP.put("note.bass", "FCBlockStakeString");
+        SOUND_MAP.put("portal.portal", "FCEntityWolf");
+        SOUND_MAP.put("random.anvil_break", "FCItemBlockMillStone");
+        SOUND_MAP.put("random.anvil_land", "FCBetterThanWolves, FCEntityVillager, FCItemBlockDeadWeight");
+        SOUND_MAP.put("random.anvil_use", "FCItemArmor, FCItemBlockDeadWeight, FCItemShears");
+        SOUND_MAP.put("random.bow", "FCBlockStake, FCBlockWeb, FCEntityCow");
+        SOUND_MAP.put("random.bowhit", "1.5.2 EntityArrow");
+        SOUND_MAP.put("random.break", "FCItemAxe, FCItemChiselIron, FCItemCompositeBow");
+        SOUND_MAP.put("random.breath", "1.5.2 EntityPlayer");
+        SOUND_MAP.put("random.burp", "FCBetterThanWolves");
+        SOUND_MAP.put("random.chestclosed", "FCEntityWindMill, FCEntityWindMillVertical");
+        SOUND_MAP.put("random.chestopen", "FCBlockAxle, FCBlockGearBox");
+        SOUND_MAP.put("random.classic_hurt", "FCBetterThanWolves, FCEntityAIVillagerMate, FCEntityVillager");
+        SOUND_MAP.put("random.click", "FCBetterThanWolves, FCBlockHandCrank, FCTileEntityTurntable");
+        SOUND_MAP.put("random.drink", "FCBlockSoulforgedSteel, 1.5.2 EntityPlayer");
+        SOUND_MAP.put("random.eat", "FCBetterThanWolves, FCEntitySquid, FCItemCarvingBone");
+        SOUND_MAP.put("random.explode", "FCBetterThanWolves, FCEntityWolf, 1.5.2 EntityLightningBolt");
+        SOUND_MAP.put("random.fizz", "FCBetterThanWolves, FCBlockBBQ, FCBlockIce");
+        SOUND_MAP.put("random.fuse", "FCBetterThanWolves, FCBlockMiningCharge, FCEntityDynamite");
+        SOUND_MAP.put("random.glass", "FCBetterThanWolves");
+        SOUND_MAP.put("random.levelup", "FCEntityVillager, 1.5.2 EntityPlayer");
+        SOUND_MAP.put("random.orb", "1.5.2 EntityXPOrb");
+        SOUND_MAP.put("random.pop", "FCBetterThanWolves, FCBlockAnchor, FCBlockCampfire");
+        SOUND_MAP.put("random.splash", "1.5.2 EntityFishHook");
+        SOUND_MAP.put("step.cloth", "FCItemArmor, FCItemKnitting");
+        SOUND_MAP.put("step.grass", "FCItemWickerWeaving");
+        SOUND_MAP.put("step.gravel", "FCBetterThanWolves, FCBlockBasketWicker, FCBlockPulley");
+        SOUND_MAP.put("step.wood", "FCItemKnitting");
+        // FC's white smoke particle (FCBlockKiln, FCBlockCampfire, FCBlockLogSmouldering spawnParticle).
+        // Listed only because BridgeAudit's sound-literal pattern also matches it.
+        SOUND_MAP.put("fcwhitesmoke", NOT_A_SOUND);
     }
 
     /**
-     * Returns the MC SoundEvent for the given FC sound name, or null if unmapped.
+     * Returns the MC SoundEvent for the given FC sound name, or null if 1.5.2 had no such sound.
+     * Delegates to {@link LegacySounds#resolve}.
      */
     public static SoundEvent get(String fcSoundName) {
-        return SOUND_MAP.get(fcSoundName);
+        return LegacySounds.resolve(fcSoundName);
     }
 
     /**
-     * Plays an FC-named sound at the given entity's position.
-     * If the sound name is not in the map, logs a debug message and does nothing.
+     * Plays an FC-named sound at the given entity's position, for every nearby player.
+     * A name 1.5.2 had no sound for plays nothing (LegacySounds logs it once).
      *
      * @param entity the MC entity at whose position the sound should play
      * @param fcSoundName the FC legacy sound name (e.g., "random.pop")
@@ -226,18 +201,48 @@ public class SoundMapping {
     public static void playAtEntity(Entity entity, String fcSoundName, float volume, float pitch) {
         if (fcSoundName == null || entity == null) return;
 
-        SoundEvent event = SOUND_MAP.get(fcSoundName);
-        if (event == null) {
-            LOGGER.debug("Unmapped FC sound: '{}' — skipping playback", fcSoundName);
-            return;
-        }
+        SoundEvent event = LegacySounds.resolve(fcSoundName);
+        if (event == null) return;
 
-        entity.level().playSound(
-                null, // null = play for all nearby players
-                entity.getX(), entity.getY(), entity.getZ(),
-                event,
-                SoundSource.PLAYERS,
-                volume,
-                pitch);
+        try {
+            entity.level().playSound(
+                    null, // null = play for all nearby players
+                    entity.getX(), entity.getY(), entity.getZ(),
+                    event,
+                    SoundSource.PLAYERS,
+                    volume,
+                    pitch);
+        } catch (Throwable t) {
+            if (PLAY_FAILURE_LOGGED.compareAndSet(false, true)) {
+                LOGGER.warn("Could not play FC sound '{}' at {} (further failures not logged): {}",
+                        fcSoundName, entity, t.toString());
+            }
+        }
+    }
+
+    /**
+     * Startup check, run once from FMLCommonSetupEvent (registries are populated by then): every
+     * sound name in {@link #SOUND_MAP} resolves, except names 1.5.2 had no sound file for. Never throws.
+     */
+    public static void verifyCoverage() {
+        try {
+            List<String> unresolved = new ArrayList<>();
+            int checked = 0;
+            for (Map.Entry<String, String> e : SOUND_MAP.entrySet()) {
+                String name = e.getKey();
+                if (NOT_A_SOUND.equals(e.getValue()) || LegacySounds.isSilentIn152(name)) continue;
+                checked++;
+                if (!LegacySounds.isKnown(name)) unresolved.add(name);
+            }
+            if (unresolved.isEmpty()) {
+                LOGGER.info("Legacy sounds: all {} 1.5.2 sound names FC plays resolve ({} sound events)",
+                        checked, LegacySounds.eventCount());
+            } else {
+                LOGGER.warn("Legacy sounds: {} of {} 1.5.2 sound names FC plays have no sound event and stay "
+                        + "silent: {}", unresolved.size(), checked, unresolved);
+            }
+        } catch (Throwable t) {
+            LOGGER.warn("Legacy sound coverage check failed: {}", t.toString());
+        }
     }
 }

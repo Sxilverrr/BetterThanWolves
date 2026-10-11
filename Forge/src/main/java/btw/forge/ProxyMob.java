@@ -5,6 +5,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.level.Level;
@@ -70,6 +71,15 @@ public class ProxyMob extends Mob
     private final FCPuppetSupport.AnimSender animSender = new FCPuppetSupport.AnimSender();
     /** RE7: set while readAdditionalSaveData runs, so ensureFcEntity keeps the loaded Health. */
     private boolean loadingSaveData = false;
+    /**
+     * W7: category of the vanilla mob this proxy replaced (set by VanillaMobReplacer, saved as
+     * {@link #SPAWN_CATEGORY_TAG}); null for FC-spawned proxies, spawn eggs of fc_* types and saves
+     * without the tag, which keep their registered category. See {@link #getClassification}.
+     */
+    private MobCategory replacedCategory;
+
+    /** W7: NBT key of the replaced category (MobCategory.getName()), saved next to FCClassName. */
+    static final String SPAWN_CATEGORY_TAG = "BTWSpawnCategory";
 
     public ProxyMob(EntityType<? extends Mob> type, Level level) {
         super(type, level);
@@ -109,6 +119,41 @@ public class ProxyMob extends Mob
             fcClassName = BTWEntityRegistration.getFcClassName(getType());
         }
         return fcClassName;
+    }
+
+    /** W7: VanillaMobReplacer passes the replaced vanilla type's category before adding the proxy. */
+    public void setReplacedCategory(MobCategory category) {
+        this.replacedCategory = category;
+    }
+
+    /**
+     * W7: a replacement counts for natural-spawn caps in the category of the vanilla mob it replaced.
+     * Forge's NaturalSpawner.createState (NaturalSpawner.java:67-90) counts every loaded mob under
+     * getClassification(true); a glow squid (UNDERGROUND_WATER_CREATURE, cap 5) made into fc_squid
+     * (registered WATER_CREATURE) left its own category's count at ~0, so glow squids spawned, and were
+     * converted, without limit. 1.5.2 counted each cap by the creature class it spawns
+     * (vanilla/server SpawnerAnimals.java:107, EnumCreatureType.java:25), so a mob always counted where
+     * it spawned. Every other caller gets the registered category.
+     */
+    @Override
+    public MobCategory getClassification(boolean forSpawnCount) {
+        if (forSpawnCount && replacedCategory != null) return replacedCategory;
+        return super.getClassification(forSpawnCount);
+    }
+
+    /**
+     * W7: the saved replaced category, or {@code current} when the tag is absent. An unknown name (an
+     * extended category whose mod is gone) reads as null, i.e. the registered category. Shared by the
+     * three proxies.
+     */
+    static MobCategory readSpawnCategory(CompoundTag tag, MobCategory current, Logger logger) {
+        if (!tag.contains(SPAWN_CATEGORY_TAG, net.minecraft.nbt.Tag.TAG_STRING)) return current;
+        String name = tag.getString(SPAWN_CATEGORY_TAG);
+        MobCategory category = MobCategory.byName(name);
+        if (category == null && FCPuppetSupport.firstFailure("spawncategory|" + name)) {
+            logger.warn("Unknown saved spawn category '{}'; the registered category is used", name);
+        }
+        return category;
     }
 
     private void ensureFcEntity() {
@@ -207,7 +252,11 @@ public class ProxyMob extends Mob
         if (fcEntity == null) return;
         fcEntity.entityId = getId();
         fcEntity.ticksExisted = tickCount;
-        fcEntity.inWater = isInWater();
+        // S8: on the server FC's own Entity.handleWaterMovement (vanilla/server Entity.java:1079-1123) owns
+        // inWater; its !inWater -> inWater edge plays the 1.5.2 'liquid.splash' (:1092), and seeding it from
+        // MC's looser water check pre-empted that edge. The client FC entity does not simulate, so MC's
+        // state stands in there.
+        if (level().isClientSide) fcEntity.inWater = isInWater();
         // Two-way fire sync (1.5.2 Entity.onEntityUpdate is the decrementer):
         // only RAISE fire on external MC ignition. Blind assignment wiped any
         // setFire() done inside FC code (frozen EntitySkeleton/EntityZombie
@@ -321,7 +370,10 @@ public class ProxyMob extends Mob
             setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
             fcEntity.entityId = getId();
             fcEntity.ticksExisted = tickCount;
-            fcEntity.inWater = isInWater();
+            // S8: inWater keeps FC's own previous-tick value (handleWaterMovement runs first in
+            // onEntityUpdate, vanilla/server Entity.java:461, before any AI reads it), so FC sees the
+            // water-entry edge and plays its splash; see syncToFc. FC's air logic reads
+            // isInsideOfMaterial, not this flag, so D1 is unaffected.
             // Two-way fire sync — only raise on external MC ignition; FC's
             // onEntityUpdate decrements. See syncToFc for full rationale.
             int mcFire = getRemainingFireTicks();
@@ -540,6 +592,24 @@ public class ProxyMob extends Mob
 
     @Override
     protected net.minecraft.sounds.SoundEvent getDeathSound() { return null; }
+
+    /**
+     * S8: FC's Entity.handleWaterMovement owns the puppet's whole 1.5.2 water-entry splash (vanilla/server
+     * Entity.java:1081-1110): 'liquid.splash' with its volume from FC's motion, and the 1 + width*20 'bubble' and
+     * 'splash' particles, which reach clients through WorldBridge.spawnParticle. MC's own splash detects the
+     * water first (its check is looser than FC's box shrunk by 0.4) and, with the puppet's zeroed deltaMovement,
+     * played an inaudible zero-volume splash. One owner: on the server MC keeps only its SPLASH game event (no
+     * 1.5.2 equivalent); the client puppet, whose FC entity does not simulate, draws none of MC's particles, which
+     * would double FC's.
+     */
+    @Override
+    protected void doWaterSplashEffect() {
+        if (fcEntity == null) {
+            super.doWaterSplashEffect();
+            return;
+        }
+        if (!level().isClientSide) gameEvent(net.minecraft.world.level.gameevent.GameEvent.SPLASH);
+    }
 
     /**
      * D1: MC must not drown a puppet. FC's EntityLiving.onEntityUpdate (vanilla/client
@@ -818,6 +888,7 @@ public class ProxyMob extends Mob
                 }
             }
         }
+        replacedCategory = readSpawnCategory(tag, replacedCategory, LOGGER); // W7
         if (fcEntity != null && tag.contains("FCData")) {
             CompoundTag fcCompound = tag.getCompound("FCData");
             ForgeNBTCompound wrapper = new ForgeNBTCompound(fcCompound);
@@ -848,6 +919,7 @@ public class ProxyMob extends Mob
     public void addAdditionalSaveData(CompoundTag tag) {
         super.addAdditionalSaveData(tag);
         tag.putString("FCClassName", fcClassName);
+        if (replacedCategory != null) tag.putString(SPAWN_CATEGORY_TAG, replacedCategory.getName()); // W7
         if (fcEntity != null) {
             CompoundTag fcCompound = new CompoundTag();
             ForgeNBTCompound wrapper = new ForgeNBTCompound(fcCompound);

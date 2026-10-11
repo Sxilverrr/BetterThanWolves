@@ -85,6 +85,48 @@ public class ItemBlock extends Item {
         }
     }
 
+    /** Block class + hook group pairs that threw in onItemUse; only the log is once per pair. */
+    private static final java.util.Set<String> LOGGED_PLACE_FAILURES =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private static void logPlaceFailureOnce(Block block, String hooks, Throwable t) {
+        if (LOGGED_PLACE_FAILURES.add(block.getClass().getName() + '/' + hooks)) {
+            org.apache.logging.log4j.LogManager.getLogger("BTW-ItemBlock").warn(
+                    "{} {} failed while placing it from an item: {}", block.getClass().getSimpleName(), hooks, t.toString());
+        }
+    }
+
+    // The metadata onItemUse / OnItemUsedByBlockDispenser place. An FC ItemBlock is FCItemPlacesAsBlock.getMetadata
+    // (Common FCItemPlacesAsBlock.java:126, m_iBlockMetadata = 0) unless its FC subclass overrides it (FCItemBlockDirtSlab:
+    // damage << 1). The 1.5.2 vanilla ItemBlock subclasses return the damage (vanilla/client ItemCloth.java:37,
+    // ItemMultiTextureTile.java:42, ItemBlockWithMetadata.java:40, ItemSlab.java:48, ItemColored.java:50) or, for leaves,
+    // damage | 4 (ItemLeaves.java:29). Port: the ItemMultiTextureTile / ItemBlockWithMetadata / ItemColored stubs
+    // (FCBetterThanWolves.java:1880-1896 registers them at planks, stone, cobble and the ores; FCItemBlockLog,
+    // FCItemBlockSnow and FCItemBlockLilyPad extend them) have no override, and the Block constructor registers a plain
+    // ItemBlock at the ids where vanilla/client Block.java:1546-1565 registered ItemCloth, ItemSlab, ItemLeaves,
+    // ItemColored and ItemMultiTextureTile. Both get the 1.5.2 rule here; with Item's 0 every wool colour, wood species,
+    // slab, sandstone, stone brick and strata stone placed through onItemUse came out as its meta-0 variant.
+    // Not ported: ItemPiston's 7 (BlockPistonBase.onBlockPlacedBy sets the facing; the port placed 0 before) and
+    // ItemAnvilBlock's damage << 2 (FC registers FCItemBlockDeadWeight at the anvil, FCBetterThanWolves.java:1899).
+    @Override
+    public int getMetadata(int damage) {
+        if (this instanceof ItemMultiTextureTile || this instanceof ItemBlockWithMetadata || this instanceof ItemColored) {
+            return damage;
+        }
+        if (this.getClass() == ItemBlock.class) {
+            switch (this.blockID) {
+                case 5: case 6: case 17: case 24: case 31: case 35: case 43: case 44: case 97: case 98:
+                case 106: case 125: case 126: case 139: case 155:
+                    return damage;
+                case 18:
+                    return damage | 4;
+                default:
+                    break;
+            }
+        }
+        return super.getMetadata(damage);
+    }
+
     /**
      * Returns the block ID to place. Subclasses like FCItemBlockLegacySubstitution
      * override this to place a different block than the one this item represents.
@@ -93,46 +135,138 @@ public class ItemBlock extends Item {
         return this.blockID;
     }
 
+    // 1.5.2 ItemBlock inherits FCItemPlacesAsBlock.onItemUse (Common FCItemPlacesAsBlock.java:60-123; FC removed vanilla's
+    // own, vanilla/client ItemBlock.java:62-143). ProxyBlock.tryPlaceHeldItem runs it for every block item placed against
+    // an FC block or an FC-replaced vanilla block, i.e. most placement. The old stand-in passed the raw item damage as the
+    // metadata instead of getMetadata(damage) (a packed-earth or grass slab, FCItemBlockDirtSlab.getMetadata = damage << 1,
+    // placed the wrong subtype), always placed beside the clicked block (never into replaceable ground cover), and
+    // skipped PreBlockPlacedBy, onPostBlockPlaced and the animal-spooking notification.
     @Override
     public boolean onItemUse(ItemStack stack, EntityPlayer player, World world,
                               int x, int y, int z, int side, float hitX, float hitY, float hitZ) {
-        // Offset the target position based on the clicked face
-        int targetX = x, targetY = y, targetZ = z;
-        switch (side) {
-            case 0: targetY--; break; // bottom
-            case 1: targetY++; break; // top
-            case 2: targetZ--; break; // north
-            case 3: targetZ++; break; // south
-            case 4: targetX--; break; // west
-            case 5: targetX++; break; // east
-        }
+        int newBlockID = GetBlockIDToPlace(stack.getItemDamage(), side, hitX, hitY, hitZ);
+        // port guard: 1.5.2 dereferences Block.blocksList[newBlockID] unguarded
+        Block newBlock = newBlockID > 0 && newBlockID < Block.blocksList.length ? Block.blocksList[newBlockID] : null;
+        if (newBlock == null) return false;
 
-        if (stack.stackSize <= 0) return false;
-        if (!player.canPlayerEdit(targetX, targetY, targetZ, side, stack)) return false;
-
-        int placeBlockID = GetBlockIDToPlace(stack.getItemDamage(), side, hitX, hitY, hitZ);
-        Block placeBlock = Block.blocksList[placeBlockID];
-        if (placeBlock == null) return false;
-
-        if (!world.canPlaceEntityOnSide(placeBlockID, targetX, targetY, targetZ, false, side, null, stack)) {
+        // 1.5.2 refuses a solid block clicked against the top layer (j == 255, World.getHeight() - 1); the port world's
+        // top is WorldBridge.getHeight() (the level's max build height).
+        // (material null-guards: this runs in the use-item packet handler, which rethrows)
+        if (stack.stackSize == 0
+                || (player != null && !player.canPlayerEdit(x, y, z, side, stack))
+                || (y == world.getHeight() - 1 && newBlock.blockMaterial != null && newBlock.blockMaterial.isSolid())) {
             return false;
         }
 
-        if (world.setBlockAndMetadataWithNotify(targetX, targetY, targetZ, placeBlockID,
-                placeBlock.onBlockPlaced(world, targetX, targetY, targetZ, side, hitX, hitY, hitZ, stack.getItemDamage()))) {
-            placeBlock.onBlockPlacedBy(world, targetX, targetY, targetZ, player, stack);
-            PlayPlaceSound(world, targetX, targetY, targetZ, placeBlock);
-            stack.stackSize--;
+        FCUtilsBlockPos targetPos = new FCUtilsBlockPos(x, y, z);
+
+        int oldBlockID = world.getBlockId(x, y, z);
+        Block oldBlock = oldBlockID > 0 && oldBlockID < Block.blocksList.length ? Block.blocksList[oldBlockID] : null;
+
+        if (oldBlock != null) {
+            if (oldBlock.IsGroundCover()) {
+                side = 1;
+            } else if (oldBlock.blockMaterial == null || !oldBlock.blockMaterial.isReplaceable()) {
+                targetPos.AddFacingAsOffset(side);
+            }
+        } else if (!world.isAirBlock(x, y, z)) {
+            // port: id 0 is also a block with no legacy id (1.5.2 id 0 was only air, which cannot be clicked)
+            targetPos.AddFacingAsOffset(side);
+        }
+
+        // 1.5.2 passes the player here, which World.canPlaceEntityOnSide excludes from the entity check, but the 1.5.2
+        // client never sent the request when its own pre-check failed (PlayerControllerMP.java:419-426 ->
+        // FCItemPlacesAsBlock.canPlaceItemBlockOnSide, which passes a null entity). The 1.20.1 client sends it anyway,
+        // so the server applies the client's null-entity check: no block placed into the player's own space.
+        if (world.canPlaceEntityOnSide(newBlockID, targetPos.i, targetPos.j, targetPos.k, false, side, null, stack)) {
+            // port guards (this runs in the use-item packet handler, which rethrows, and its callers do not catch):
+            // an FC hook that throws before the block is set places nothing and uses nothing; one that throws after
+            // it still leaves the placement and the stackSize-- below paired, so a failing hook gives no free blocks.
+            int newMetadata;
+            try {
+                newMetadata = getMetadata(stack.getItemDamage());
+
+                newMetadata = newBlock.onBlockPlaced(world, targetPos.i, targetPos.j, targetPos.k, side, hitX, hitY, hitZ, newMetadata);
+
+                newMetadata = newBlock.PreBlockPlacedBy(world, targetPos.i, targetPos.j, targetPos.k, newMetadata, player);
+            } catch (Throwable t) {
+                logPlaceFailureOnce(newBlock, "onBlockPlaced / PreBlockPlacedBy", t);
+                return false;
+            }
+
+            if (world.setBlockAndMetadataWithNotify(targetPos.i, targetPos.j, targetPos.k, newBlockID, newMetadata)) {
+                try {
+                    if (world.getBlockId(targetPos.i, targetPos.j, targetPos.k) == newBlockID) {
+                        newBlock.onBlockPlacedBy(world, targetPos.i, targetPos.j, targetPos.k, player, stack);
+
+                        newBlock.onPostBlockPlaced(world, targetPos.i, targetPos.j, targetPos.k, newMetadata);
+
+                        // Panick animals when blocks are placed near them (guarded: it reads player.capabilities and the
+                        // block's material)
+                        if (player != null && newBlock.blockMaterial != null) {
+                            world.NotifyNearbyAnimalsOfPlayerBlockAddOrRemove(player, newBlock, targetPos.i, targetPos.j, targetPos.k);
+                        }
+                    }
+                } catch (Throwable t) {
+                    logPlaceFailureOnce(newBlock, "onBlockPlacedBy / onPostBlockPlaced", t);
+                }
+
+                PlayPlaceSound(world, targetPos.i, targetPos.j, targetPos.k, newBlock);
+
+                stack.stackSize--;
+            }
+
             return true;
         }
 
         return false;
     }
 
+    // 1.5.2 FCItemPlacesAsBlock.PlayPlaceSound (Common FCItemPlacesAsBlock.java:225-229; vanilla/client ItemBlock.java:131):
+    // the place sound at (volume + 1) / 2 and pitch * 0.8. The stand-in played the step sound at full volume and pitch.
     public void PlayPlaceSound(World world, int x, int y, int z, Block block) {
         if (block.stepSound != null) {
-            world.playSoundEffect(x + 0.5, y + 0.5, z + 0.5,
-                    block.stepSound.getStepSound(), 1.0F, block.stepSound.getPitch());
+            world.playSoundEffect((double) x + 0.5D, (double) y + 0.5D, (double) z + 0.5D, block.stepSound.getPlaceSound(),
+                    (block.stepSound.getVolume() + 1F) / 2F, block.stepSound.getPitch() * 0.8F);
+        }
+    }
+
+    // 1.5.2 ItemBlock.getUnlocalizedName(ItemStack) / getUnlocalizedName() (vanilla/client ItemBlock.java:200-211): the
+    // block's name, which 1.5.2 Block.getUnlocalizedName returns as "tile." + name (vanilla/client Block.java:1352-1355).
+    // Modern-Common Block.getUnlocalizedName returns the bare name (other callers rely on that), so the prefix is added
+    // here to getUnlocalizedName2, the bare name. With Item's inherited "item." + the item's own name, FC's per-subtype
+    // names (FCItemBlockAestheticOpaque.getUnlocalizedName: super.getUnlocalizedName() + ".soap") missed every lang key
+    // (tile.fcBlockAestheticOpaque.soap.name, BTW_en_US.lang).
+    @Override
+    public String getUnlocalizedName(ItemStack stack) {
+        Block block = this.getBlockForItem();
+        return block != null ? "tile." + block.getUnlocalizedName2() : super.getUnlocalizedName(stack);
+    }
+
+    @Override
+    public String getUnlocalizedName() {
+        Block block = this.getBlockForItem();
+        return block != null ? "tile." + block.getUnlocalizedName2() : super.getUnlocalizedName();
+    }
+
+    // 1.5.2 ItemBlock.getCreativeTab (vanilla/client ItemBlock.java:216-219): the block's tab. FC hides its technical
+    // blocks by leaving it null (FCBlockAxlePowerSource.java:32, FCBlockTorchFiniteBurning.java:39, ...).
+    @Override
+    public CreativeTabs getCreativeTab() {
+        Block block = this.getBlockForItem();
+        return block != null ? block.getCreativeTabToDisplayOn() : super.getCreativeTab();
+    }
+
+    // 1.5.2 ItemBlock.getSubItems (vanilla/client ItemBlock.java:224-227): the block's getSubBlocks lists the creative
+    // subtypes (11 FCBlockAestheticOpaque subtypes without meta 0, 16 wool slab colours, none for FCBlockAestheticNonOpaque).
+    @SuppressWarnings("rawtypes")
+    @Override
+    public void getSubItems(int itemID, CreativeTabs creativeTabs, java.util.List list) {
+        Block block = this.getBlockForItem();
+        if (block != null) {
+            block.getSubBlocks(itemID, creativeTabs, list);
+        } else {
+            super.getSubItems(itemID, creativeTabs, list);
         }
     }
 

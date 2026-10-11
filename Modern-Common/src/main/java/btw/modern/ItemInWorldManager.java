@@ -38,10 +38,15 @@ public class ItemInWorldManager {
         }
 
         int iMetadata = theWorld.getBlockMetadata(i, j, k);
-        // NOTE: break particles/sound are handled by the vanilla client when
-        // the block state changes. We do NOT call playAuxSFX(2001,...) here
-        // because the data format differs between FC (legacy ID) and MC 1.20.1
-        // (modern registry ID), which causes wrong particle textures.
+
+        // 1.5.2 emits the break event (sound + particles) for everyone near except the breaker, whose client
+        // plays its own, in both branches before anything is removed or converted (vanilla/server
+        // ItemInWorldManager.java:432 creative, :458 SurvivalTryHarvestBlock). The bridge cancels 1.20.1's
+        // ServerPlayerGameMode.destroyBlock (and with it Block.playerWillDestroy's levelEvent 2001) for every
+        // block that reaches here, so this is the only emitter: without it nobody else heard or saw a player
+        // break. The world translates the legacy payload (id + meta << 12) to the 1.20.1 state id and leaves
+        // the breaker out (1.20.1 MultiPlayerGameMode.destroyBlock already played it on that client).
+        theWorld.playAuxSFXAtEntity(thisPlayerMP, 2001, i, j, k, iBlockID + (iMetadata << 12));
 
         ItemStack currentStack = thisPlayerMP.getCurrentEquippedItem();
 

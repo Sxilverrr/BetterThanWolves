@@ -1,7 +1,9 @@
 # Changelog
 
 Notable changes to the Better Than Wolves Forge 1.20.1 port. Versions are the port's own SemVer
-(see `VERSIONING.md`); every release runs BTW **4.B0000003** (FlowerChild's 1.5.2 code).
+(see `VERSIONING.md`); every release runs BTW **4.B0000003** (FlowerChild's 1.5.2 code). The port's
+rule is that this code is read-only: the port never edits FlowerChild's code and makes its changes
+around it.
 
 > **Reconstructed 2026-10-10.** There were no tags and no changelog before this file. The history
 > below is rebuilt from the CurseForge files list and the git history. Most uploads were built from
@@ -12,12 +14,16 @@ Notable changes to the Better Than Wolves Forge 1.20.1 port. Versions are the po
 
 ## [Unreleased]
 
-Not released or committed yet. These fixes were made on 2026-10-10, in five implementation waves on
-top of 1.3.0-alpha.3 (`9569443`). They address the CurseForge feedback triage and an earlier design
-pass. `docs/curseforge-feedback-triage.md` has a status table for every finding, and the ids in
-parentheses refer to it and to the design pass. Every wave builds and passes the link and bridge
-audits, and a dedicated server boots a fresh world without errors. Nothing has been run on a client
-yet (see Known issues).
+Not released yet. These fixes were made on 2026-10-10 and 2026-10-11, in six implementation waves on
+top of 1.3.0-alpha.3 (`48e9825`). The five waves of 2026-10-10 address the CurseForge feedback
+triage and an earlier design pass; they were committed as `f6ec9be`, and `d55db5d` set the version
+to 1.4.0-alpha.5. The 2026-10-11 wave fixes bugs the maintainer found in mechanical power, sounds
+and the BTW creative tab, after an audit that proved each root cause against BTW's 1.5.2 code before
+anything was changed. `docs/curseforge-feedback-triage.md` has a status table for every triage
+finding; the ids in parentheses refer to it, to the design pass and to the 2026-10-11 audit
+(`STUB_CATALOGUE.md` entries (an) to (aq)). Every wave builds and passes the link and bridge audits,
+and a dedicated server boots a fresh world without errors. None of the client-side fixes has been
+checked in game yet (see Known issues).
 
 ### Fixed
 
@@ -92,6 +98,107 @@ Reported on CurseForge:
   made it worse. JEI now covers the soulforge, the campfire, BTW's special crafting recipes and the
   processes that have no recipe list, and BTW's join messages are back (see Added). The CurseForge
   page no longer promises a "field manual". The wiki link is still to be added (CTX-3 to CTX-6).
+
+Found by the maintainer (2026-10-11):
+
+Each of these was traced to a shared part of the port that did not do what BTW's own 1.5.2 code
+does, and was fixed there rather than block by block.
+
+- **Severe server lag, and blocks breaking many seconds late.** After a few minutes a world with
+  underground water fell further and further behind (up to 28 seconds), and logs and other blocks
+  that take time to mine broke 10-30 seconds after you finished mining them. The port turns glow
+  squids into BTW squids, but counted them against the ordinary squid limit, so the game never saw
+  the underground-water limit as reached and kept spawning them: a fresh world held thousands of BTW
+  squids in cave water within ten minutes. Mobs that replace a vanilla mob now count against the
+  spawn limit of the mob they replaced. The slow block breaking was a symptom of the lag (Minecraft
+  measures mining progress in server ticks). Worlds where squids have already piled up are not
+  cleaned up; `/kill @e[type=betterthanwolves:fc_squid]` clears them.
+- **Clutches and gear boxes ignored their facing.** A clutch or gear box always showed its input face
+  on the south side, whichever way it was placed, and never showed its output faces, so axles got
+  attached to the wrong side and the block seemed not to connect. The fronts of the bellows, saw,
+  screw pump, block dispenser, buddy block, detector block, companion cube and mining charge never
+  turned either. BTW blocks are now drawn with BTW's own per-position textures and 1.5.2's face
+  rules, so every block shows the face it really has (MPR-1, F1). The power logic itself was already
+  right.
+- **Axle textures.** Axles running east-west or up-down had their end and side textures swapped, axle
+  sides were textured the wrong way round, and no axle ever looked powered. Axles now look as in 4.B
+  on every axis, powered axles and axle power sources show their moving texture, and axles a few
+  blocks from a gear box switch their look across chunk-section borders too (MPR-2, MPR-6). The saw
+  blade and the turntable's switch faces are drawn the right way round.
+- **Animated textures.** A grinding millstone, a running saw blade, a powered axle and the water in a
+  bucket showed their whole animation strip squashed into one face. They animate again (MPR-4).
+- **Block items.** BTW block items looked like the placed block's first variant: the axle item was an
+  upright post, the saw item faced down, every siding, corner, moulding and wool slab colour looked
+  the same, and torches and crops were 3D blocks. Items now use BTW's own item drawing for each
+  variant: a horizontal axle, a saw with an upright blade, stair-shaped stairs, the gear box showing
+  its input, flat torches and crops. Held BTW block items face as in 1.5.2 (MPR-3).
+- **Placing blocks.** Placed against a non-BTW block, BTW stairs always faced the same way, and the
+  anvil, wicker basket, hamper and piston shovel ignored which way you were facing; placed against a
+  BTW block they turned correctly. BTW blocks now go through BTW's block placement steps whatever you
+  click, so they face the way you place them, variant items place their own variant and a lens sets
+  up its beam (MPR-5). Clicking ash replaces it, as in 1.5.2.
+- **Turntables.** Saws, bellows, block dispensers, screw pumps, buddy blocks, lenses and other blocks
+  never turned on a turntable, and gear boxes, clutches and stairs turned the opposite way from
+  pumpkins, repeaters and pistons. They now turn, all in 1.5.2's direction. Right-clicking an
+  unconnected clutch or gear box cycles its facing in 1.5.2's order, clay shaped on a turntable keeps
+  its clay, and the tops of anvils, baskets and hampers turn with them (F2).
+- **Redstone power.** The redstone clutch, pulley, block dispenser and turntable reacted to weak
+  redstone power that 4.B ignores: a clutch next to a redstone block, or next to a block powered by a
+  lever or by dust, stayed disengaged. They now react only to strong power, as in 4.B: a redstone
+  torch below, a repeater or dust pointing into the block, or a lever or button on it (F4).
+- **Buddy blocks** did not react when a lever next to them was flipped, a vanilla block next to them
+  was mined or a block added after 1.5.2 changed: BTW blocks were told "no block" for any neighbour
+  that was not a BTW block. They now get the neighbour's id, as in 1.5.2. BTW blocks that alert their
+  neighbours on purpose (the gear box, clutch and saw when they change facing, the BTW chest, stake
+  strings, soul urns) now actually reach them (F3).
+- **Bellows.** A player standing on a powered bellows sank into it when the power went off; the
+  bellows lifts the player again, as in 1.5.2.
+- **Sounds.** BTW sounds now play when, where and for whom 1.5.2 played them: every BTW sound name
+  plays its own 1.5.2 sound file, sounds 1.5.2 played only on the client play there again, and the
+  player who caused a sound hears it once (S1 to S11).
+  - Back after being silent: the millstone grinding and starting up, the gear box clicking and
+    smoking when powered, the bellows, the powered axle's creak, the turntable click, campfire and
+    smouldering-log crackle, the wet cement's moan, stoked fire; zombie pigmen, enderman idle, the
+    wither's idle and hurt sounds, ghast deaths, wolves shaking dry, ocelots, iron golems throwing,
+    zombie curing, the dragon's wings, firework launches, the soulforged helm's breathing; BTW's
+    crafting sounds for tools, armour, shears, cured food and other items, in the inventory grid, at
+    the BTW workbench and at the soulforge; BTW mobs splashing into water; the burp after eating;
+    the gloom ambience (cave sounds, growls, the enderman stare); grunting when walking exhausted or
+    badly hurt; soulforged boot steps; spider webs and thrown soul sand.
+  - Fixed after playing the wrong sound: the saw and millstone used a minecart loop, a hurt creeper
+    hissed its fuse, the bellows mooed at random, chests, doors, anvils, the player's "oof" and the
+    arrow-hit ding used 1.20.1's replacements, and BTW's own effects (hopper closing, redstone
+    clicks, XP, wolves eating, melons and pumpkins bursting, lightning) had the wrong sound, volume
+    or pitch and no particles.
+  - Squishy BTW blocks (unfired pottery and bricks, rotten flesh, nether growth, BTW webs) squish,
+    and glassy ones (crucible, vase, planters, light bulb) sound like glass, instead of stone. BTW
+    mobs walking on blocks added after 1.5.2 use that block's footstep sound.
+  - Other players now hear and see you break blocks. You no longer hear a block you place twice, and
+    placing plays the place sound at 1.5.2's volume and pitch. Vanilla foods that BTW feeds you end
+    with one burp and no extra eating sound.
+- **BTW creative tab.** The tab listed every BTW block and item, including technical ones 4.B never
+  showed: burning and lit blocks, crops, the axle power source, stoked fire, the milk and bucket
+  blocks, "Block 1091", 20 old "Fc ..." siding and moulding blocks, decorative blocks all named
+  "Aesthetic Opaque" (most likely the reported "Fc Opaque Generic"), and the old slats, grate and
+  wicker items. At the same time 33 variants were missing, among them the 11 decorative blocks (block
+  of soap, padding, hellfire, rope, flint, ...), 15 wool slab colours, the grass and packed earth
+  slabs and the blood wood sapling. The tab is now built from BTW's own creative-inventory rules and
+  lists what 4.B listed: 355 entries (CT1, CT2, CT4).
+  - Blocks have their BTW names, per variant: Block of Soap, Soulforge, Brick Oven, Piston Shovel
+    (CT3).
+  - Variants place the right block: a creative Block of Soap places soap, and crafted packed earth
+    and grass slabs place their own slab.
+  - The vanilla Search tab and JEI list exactly what the BTW tab lists, and JEI shows each variant
+    on its own: 22 arcane scrolls; 16 wool, candle and knit wool colours; 4 bark types (CT5).
+  - Middle-click pick block gives what 4.B gave (a stick from a shaft, seeds from a crop, the idle
+    brick oven, the kiln's drop) instead of the technical block.
+- **Placed leaves decayed.** Leaves placed against most blocks decayed like natural leaves. They now
+  keep 1.5.2's player-placed flag and stay.
+- **Blocks out of sync.** When nether growth spread over netherrack, or a sapling failed to grow
+  into a tree, the client kept showing the old block (netherrack, or nothing where the sapling
+  stood). Both now update at once.
+- **Placement errors.** An error inside BTW's placement code could crash the game or the server. It
+  is now logged once and nothing is placed.
 
 Other fixes:
 
@@ -264,8 +371,18 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
 - **Projectile damage** from BTW mobs on players is no longer scaled by difficulty, as in 1.5.2.
 - **Existing saves.** The first time an existing world loads, torches in inventories may burn out
   and fed chickens may lay at once, because BTW's world clock now runs.
+- **Mechanical builds.** More blocks turn on turntables, all in 1.5.2's direction, and the redstone
+  clutch, pulley, block dispenser and turntable ignore weak power, such as a redstone block or a
+  powered block next to them (see Fixed). Contraptions built on the old behaviour may act
+  differently.
+- **BTW creative tab and JEI follow 4.B.** BTW items that 4.B kept out of its creative inventory,
+  though they can be made in survival (Witch Wart, Mail, Steel Nugget, cut and tanned leather, Golden
+  Dung and a few more), are no longer listed in the BTW tab, the Search tab or JEI's item list.
+  Whether to list them anyway is the maintainer's decision.
+- **Block item looks.** BTW blocks that have no item drawing of their own now show 1.5.2's plain cube
+  item instead of the placed block's model, as in 4.B.
 - **Network.** The server and every client must run the same build of this port (network protocol
-  3). 1.3.0-alpha.3 clients and servers are refused.
+  4, and the same set of BTW sound events). 1.3.0-alpha.3 clients and servers are refused.
 - CurseForge description:
   - removed the "field manual" instruction;
   - filled in the issue tracker;
@@ -288,25 +405,55 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   and zombies after a reload.
 - Worlds save `data/btw_headless_items.dat`, the ids of items added after 1.5.2, so BTW containers
   keep those items across restarts (RE5).
+- BTW's 1.5.2 sounds as 508 sound events, one per 1.5.2 sound name, playing the 1.5.2 sound files
+  that Minecraft 1.20.1 still ships, with a 1.20.1 subtitle where one fits. They can be played with
+  `/playsound`, for example `/playsound betterthanwolves:mob.zombiepig.zpig master @s`.
 - Development tooling:
   - `tools/LinkAudit.java` checks the class precedence of the built jar and reports Minecraft class
     references in frozen BTW code;
   - a `jar` task guard fails the build on precedence drift;
   - `tools/BridgeAudit.java`'s texture check understands the `%blur%`/`%clamp%` prefixes and the
-    entity renderer's vanilla fallbacks.
+    entity renderer's vanilla fallbacks; its aux-effect check now follows BTW effects to BTW's own
+    client handler and fails if that forwarding chain breaks;
+  - `:Forge:generateLegacySoundsJson` (run by hand) builds `sounds.json` from the 1.5.2 and 1.20.1
+    asset indexes, and `:Forge:generateBtwTextureAnimations` (part of every build) turns BTW's 1.5.2
+    texture animation files into `.png.mcmeta` files.
 
 ### Known issues
-- **Not tested on a client yet.** Only a dedicated server has been run: a fresh world, twice. It
-  boots with no errors, BTW initialises and vanilla mobs are replaced. Every rendering fix (red tint,
-  mob renderers and animations, held items, chests and baskets) and every other client-side change
-  is checked by code review only. Multiplayer is untested too.
+- **Not checked on a client yet.** A dedicated server has been run on a fresh world three times
+  (twice on 2026-10-10, once after the 2026-10-11 wave): it boots with no errors, BTW initialises
+  and vanilla mobs are replaced. The maintainer has played development builds, which is how the
+  2026-10-11 bugs were found, and the last session ran a build from the middle of that wave (its log
+  shows the BTW tab built with 355 entries), but none of the in-game checks has been run on the
+  final code. Every rendering fix (red tint, mob renderers and animations, held items, chests and
+  baskets, block and item models, animated textures), every client-side sound, the creative tab and
+  JEI are checked by code review only. Multiplayer is untested too.
 - **Re-entering a world.** No cause was found. It has not been tested whether a world now always
   shuts down cleanly and releases its `session.lock`. If a world will not open again, please report
   it with `logs/latest.log` and any crash report.
 - **Knitting, wicker weaving and bone carving never finish.** Holding right-click makes no progress,
   because BTW's hold-to-craft progress (`FCItemCraftingProgressive.UpdateUsingItem`) is not bridged.
-  So you cannot weave wicker, knit wool or carve a bone fishing hook. 1.3.0-alpha.3 has the same
-  problem.
+  So you cannot weave wicker, knit wool or carve a bone fishing hook, and the crafting sounds BTW
+  plays while you hold right-click are missing too. 1.3.0-alpha.3 has the same problem.
+- **BTW villagers and witches make no idle, hurt or death sounds** (witches still idle with BTW's
+  quiet ghast scream). This is expected: it is how 4.B sounds, because Minecraft 1.5.2 had no
+  villager or witch sound files. 1.3.0-alpha.3 played 1.20.1's witch hurt and death sounds.
+- **The vanilla creative tabs still list Minecraft items that 4.B hid or replaced**, such as the
+  chest, cobweb and ladder (BTW's own chest, web and ladder are in the BTW tab), the crafting table,
+  music discs and the comparator. Hiding them is waiting for the maintainer's decision (CT6).
+- **BTW's own placement code is skipped in some cases.** When you place a block item while sneaking,
+  from the off hand, or against a block added after 1.5.2 (deepslate, tuff, ...) or a vanilla block
+  with its own right-click action, Minecraft's placement runs with BTW's facing and variant, but
+  without BTW's item-specific placement code: slabs do not join into a double slab, saplings ignore
+  BTW's soil rules, a burning torch does not light the block you click, and BTW's "cannot be placed
+  here" checks are not made (MISSED-1). Placing against any other block uses BTW's code.
+- JEI's recipe and usage lookups (R and U) treat all variants of an item as one: looking up red knit
+  wool shows the recipes of every knit wool colour (CI-3). The item list itself shows each variant.
+- The BTW chest's item shows as a planks-textured cube, and a few other BTW block items whose 1.5.2
+  item drawing is not ported yet show a plain cube.
+- Chunk rebuilds in large BTW builds may be slower: many BTW building blocks (decorative blocks,
+  slabs, sidings, mouldings, stairs) are now drawn from their live neighbours every time their chunk
+  section is rebuilt. This has not been measured (RP-R2).
 - Some mob animations and effects are still missing: squid tentacle movement, the cow's kick, the
   squid's tentacle attack, and villager and witch particles (R8).
 - BTW's Hardcore Buoy option has no effect: dropped items float as in 1.20.1. The "Obstructed"
@@ -334,42 +481,46 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   - placed tools show their 1.20.1 texture;
   - the mining charge's flash is not drawn;
   - mobs picking up items show no animation;
-  - the millstone's and wet cement's ambient sounds are silent.
+  - block-shaped items cooking on a campfire or in a brick oven are drawn turned a quarter turn;
+  - BTW sounds pitched above 2.0 (the wet cement's moan, fizzing) are capped at 2.0 by 1.20.1;
+  - some BTW sounds have a generic subtitle or none: hitting a BTW block reads "Footsteps", BTW's
+    creaking machinery reads "Chest opens";
+  - in water, soulforged boots do not change 1.20.1's swimming sounds.
 
 ## [1.3.0-alpha.3] - 2026-07-09
 
-CurseForge: `BetterThanWolves-1.20.1-1.3.0-alpha.3.jar`, uploaded 2026-07-09. Git: `9569443`
-(version bump only); the jar was built from the tree at `a832245`, seven seconds before the bump
-was committed. The version jumped from 0.4.0-alpha.3 (`2d2119f`, never uploaded) straight to
+CurseForge: `BetterThanWolves-1.20.1-1.3.0-alpha.3.jar`, uploaded 2026-07-09. Git: `48e9825`
+(version bump only); the jar was built from the tree at `b1ab3c7`, seven seconds before the bump
+was committed. The version jumped from 0.4.0-alpha.3 (`2c806c8`, never uploaded) straight to
 1.3.0-alpha.3; there are no 0.4-1.2 releases.
 
 Everything since the 0.3.0-alpha.3 upload, including the 2026-06-05 re-audit:
 
 ### Fixed
 - Bridge link crashes (including the soulforge crash), FC armor registering as real armor, and
-  FC foods that could not be eaten or gave nutrition twice (`d7e7793`).
-- Entity registry crash on start-up (missing Hopper class) (`1586ddc`).
-- Movement modifiers applied twice ("super fast" walking) (`20e5603`) and sprint "flying"
-  (`f9d9b6f`); the movement penalty is now also applied on the client (`2d2119f`).
-- FC container clicks needing two clicks, and dragging stacks across slots (`2171f6a`).
-- FC mobs rubber-banding (`7c2a417`).
-- Blocks ignoring their orientation when placed, e.g. axles (`aa978b8`).
-- Spruce, birch and jungle logs, leaves, planks and slabs dropping as oak (`a2f259b`).
-- Lightning rod collision box (`7c6ba11`).
+  FC foods that could not be eaten or gave nutrition twice (`04274c9`).
+- Entity registry crash on start-up (missing Hopper class) (`66b6fa0`).
+- Movement modifiers applied twice ("super fast" walking) (`d4a6a98`) and sprint "flying"
+  (`80d9a7c`); the movement penalty is now also applied on the client (`2c806c8`).
+- FC container clicks needing two clicks, and dragging stacks across slots (`0db375a`).
+- FC mobs rubber-banding (`5030245`).
+- Blocks ignoring their orientation when placed, e.g. axles (`fe1dd22`).
+- Spruce, birch and jungle logs, leaves, planks and slabs dropping as oak (`6b3417e`).
+- Lightning rod collision box (`6451796`).
 - Two systemic FC block render bugs: a GL11 matrix leak and invisible colour-multiplied
-  geometry (`0c6a314`); stoked-fire textures (`9f75ec5`); soul urn textures (`992f396`,
-  `996e33d`).
-- FC mobs dying at random from spurious suffocation (`ac6b20e`, `6c99d20`, `534884e`, `a832245`).
+  geometry (`974c644`); stoked-fire textures (`a121a88`); soul urn textures (`532c521`,
+  `ca0a5ed`).
+- FC mobs dying at random from spurious suffocation (`581d5a2`, `253bca0`, `85fdd2d`, `b1ab3c7`).
   The last two also targeted the red tint, but they did not fix it (see Known issues and triage R4).
 
 ### Added
-- FC melee damage modifier wired up (`992f396`).
-- Renderers for XP orbs, arrows, snowballs, eggs, TNT and the fishing hook (`bd8f23f`, `1aa697a`).
-- Animated stoked-fire flame using FC's own procedural fire (`bd22da9`, `52d6a06`).
-- Worldgen: FC lightning rod in jungle temples (`0cf6d4d`); FC bonus basket replaces the
-  bonus chest (`b5cbc43`, `a177876`, `8aeec60`).
-- Village subsystem and many verified stub implementations (`8bc4ccd`, `f96c2ec`, `35d9d96`).
-- Build/launch audit tooling (`9fda783`, `836bbf7`).
+- FC melee damage modifier wired up (`532c521`).
+- Renderers for XP orbs, arrows, snowballs, eggs, TNT and the fishing hook (`c2e15f3`, `c32cbf5`).
+- Animated stoked-fire flame using FC's own procedural fire (`35b7885`, `0c55137`).
+- Worldgen: FC lightning rod in jungle temples (`fc83664`); FC bonus basket replaces the
+  bonus chest (`edf0e1b`, `0975006`, `d3072d8`).
+- Village subsystem and many verified stub implementations (`a40ba58`, `f36f2d5`, `edd3e73`).
+- Build/launch audit tooling (`8c8aea9`, `31ec424`).
 
 ### Known issues (found after release)
 - Mobs and some textures turn dark red once an unowned XP orb has been drawn; the XP-orb
@@ -380,24 +531,24 @@ Everything since the 0.3.0-alpha.3 upload, including the 2026-06-05 re-audit:
 ## [0.3.0-alpha.3] - 2026-05-16
 
 CurseForge upload of 2026-05-16. No commit matches it: the 0.3.0-alpha.3 label was only
-committed on 2026-07-08 (`d7e7793`), together with later work. The jar was built from an
-uncommitted tree after `39471c1`; its exact contents are unknown. It does **not** contain the
+committed on 2026-07-08 (`04274c9`), together with later work. The jar was built from an
+uncommitted tree after `be8140d`; its exact contents are unknown. It does **not** contain the
 2026-06-05 bridge fixes, the June armor registration, or any 2026-07-08/09 fix.
 
 ## [0.3.0-alpha.2] - 2026-04-21
 
-CurseForge upload of 2026-04-21. Closest commit: `39471c1` (2026-04-20, "Patched some UI
+CurseForge upload of 2026-04-21. Closest commit: `be8140d` (2026-04-20, "Patched some UI
 elements"), which set this version.
 
 ## [0.2.0-alpha.2] - 2026-04-13
 
 CurseForge upload of 2026-04-13. No commit ever carried this version; the jar was built from an
-uncommitted tree between `71d3df0` (2026-04-12, "Added entity movement") and `39471c1`.
+uncommitted tree between `9e9cb23` (2026-04-12, "Added entity movement") and `be8140d`.
 
 ## [0.1.0-alpha.1] - 2026-04-05
 
-First CurseForge upload. The version label was only committed on 2026-04-12 (`71d3df0`); the
-jar was built from an uncommitted tree whose closest commit is `883ea4b` (2026-03-30). It is the
+First CurseForge upload. The version label was only committed on 2026-04-12 (`9e9cb23`); the
+jar was built from an uncommitted tree whose closest commit is `5257461` (2026-03-30). It is the
 first public build of BTW 4.B0000003 running on the Forge 1.20.1 bridge (server and client), with
 item textures and models, partial block models and UI, hunger and exhaustion, entity rendering
 and the furnace brick (git, 2026-03-18 to 2026-03-30).

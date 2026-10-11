@@ -1658,8 +1658,322 @@ task lowercaseModelRefs {
     }
 }
 
+// ============================================================
+// 1.5.2 texture animations -> 1.20.1 .png.mcmeta (audit MPR-4)
+// 1.5.2 animated a texture only when <name>.txt sat next to <name>.png: the PNG is cut into square
+// frames (frame size = width, frames = height / width; vanilla/client TextureManager.java:89-99) and
+// the .txt lists the frame order (TextureStitched.readAnimationInfo, TextureStitched.java:205-245).
+// 1.20.1 wants <name>.png.mcmeta instead; without one the whole strip loads as a single squashed
+// sprite (SpriteLoader falls back to AnimationMetadataSection.EMPTY: one frame of the full image).
+// The .txt and .png are read from the BTW release zip only (read-only); each .mcmeta lands next to
+// the lowercased PNG that copyBtwTextures ships.
+// 1.5.2 grammar: each trimmed, non-empty line is split on ','; "i*t" shows frame i for t ticks and a
+// bare "i" for 1 tick. The first malformed entry ends the list (1.5.2's catch is outside the loop).
+// An empty list, or one of 600+ entries, means every frame in order at 1 tick each (updateAnimation's
+// fallback), which is an mcmeta without a frame list. 1.20.1 rejects a time below 1 and a negative
+// index; 1.5.2 advanced such a frame after one tick, and for an index outside the strip it kept the
+// previous frame on screen (it only uploads 0 <= index < frames). The conversion encodes both so.
+// ============================================================
+task generateBtwTextureAnimations {
+    description = "Converts BTW's 1.5.2 texture animations (textures/{blocks,items}/*.txt) to .png.mcmeta"
+    group = 'btw'
+
+    def modZip   = file("${rootProject.projectDir}/BTWMod4-B0000003.zip")
+    def blockDst = file("src/main/resources/assets/betterthanwolves/textures/block")
+    def itemDst  = file("src/main/resources/assets/betterthanwolves/textures/item")
+
+    // Always run: cheap, and each .mcmeta is only rewritten when its content changes
+    outputs.upToDateWhen { false }
+
+    doLast {
+        if (!modZip.isFile()) {
+            logger.warn("BTW mod zip not found at ${modZip} — texture animation .mcmeta files not regenerated")
+            return
+        }
+        def destByPrefix = [
+            'MINECRAFT-JAR/textures/blocks/': blockDst,
+            'MINECRAFT-JAR/textures/items/' : itemDst
+        ]
+        int total = 0
+        int written = 0
+        new java.util.zip.ZipFile(modZip).withCloseable { zip ->
+            def entryNames = new TreeSet<String>()
+            Collections.list(zip.entries()).each { entryNames << it.name }
+            for (String entryName : entryNames) {
+                String prefix = destByPrefix.keySet().find { entryName.startsWith(it) }
+                if (prefix == null || !entryName.endsWith('.txt')) continue
+                String baseName = entryName.substring(prefix.length(), entryName.length() - '.txt'.length())
+                String pngName = prefix + baseName + '.png'
+                // 1.5.2 reads <name>.txt only for a texture it loads (TextureManager.hasAnimationTxt)
+                if (baseName.contains('/') || !entryNames.contains(pngName)) continue
+
+                // Frames as 1.5.2 cuts them: height / width square frames (PNG IHDR width and height)
+                byte[] png = zip.getInputStream(zip.getEntry(pngName)).withCloseable { it.bytes }
+                int frameCount = -1
+                if (png.length >= 24) {
+                    int w = ((png[16] & 0xFF) << 24) | ((png[17] & 0xFF) << 16) | ((png[18] & 0xFF) << 8) | (png[19] & 0xFF)
+                    int h = ((png[20] & 0xFF) << 24) | ((png[21] & 0xFF) << 16) | ((png[22] & 0xFF) << 8) | (png[23] & 0xFF)
+                    if (w > 0) frameCount = h.intdiv(w)
+                }
+
+                String text = zip.getInputStream(zip.getEntry(entryName)).withCloseable { it.getText('UTF-8') }
+                def frames = []   // [index, time], in .txt order
+                try {
+                    text.readLines().each { String rawLine ->
+                        String line = rawLine.trim()
+                        if (line.isEmpty()) return
+                        line.split(',').each { String token ->
+                            int star = token.indexOf('*')
+                            if (star > 0) {
+                                frames << [Integer.parseInt(token.substring(0, star)), Integer.parseInt(token.substring(star + 1))]
+                            } else {
+                                frames << [Integer.parseInt(token), 1]
+                            }
+                        }
+                    }
+                } catch (NumberFormatException e) {
+                    logger.warn("${entryName}: animation list stops at a malformed entry (${e.message}), as in 1.5.2")
+                }
+
+                String json
+                if (frames.isEmpty() || frames.size() >= 600) {
+                    json = '{\n  "animation": {}\n}\n'
+                } else {
+                    int shown = 0   // the frame on screen; 1.5.2 starts on frame 0
+                    def lines = frames.collect { f ->
+                        int index = f[0] as int
+                        if (index < 0 || (frameCount > 0 && index >= frameCount)) index = shown
+                        shown = index
+                        '      {"index": ' + index + ', "time": ' + Math.max(1, f[1] as int) + '}'
+                    }
+                    json = '{\n  "animation": {\n    "frames": [\n' + lines.join(',\n') + '\n    ]\n  }\n}\n'
+                }
+
+                File dest = new File(destByPrefix[prefix], baseName.toLowerCase(Locale.ROOT) + '.png.mcmeta')
+                total++
+                if (!dest.isFile() || dest.getText('UTF-8').replace('\r\n', '\n') != json) {
+                    dest.parentFile.mkdirs()
+                    dest.setText(json, 'UTF-8')
+                    written++
+                }
+            }
+        }
+        logger.lifecycle("Converted ${total} BTW texture animation(s) to .png.mcmeta (${written} written)")
+    }
+}
+
+// ============================================================
+// 1.5.2 sound names -> assets/betterthanwolves/sounds.json (audit S4)
+// One sound event per 1.5.2 sound name. btw.forge.LegacySounds registers a SoundEvent per key and
+// resolves every FC legacy sound name through them. Each event plays its 1.5.2 file pool:
+//  - every 1.5.2 sound file (pre-1.6 asset index, sound3/<path>.ogg; 1.5.2 loads only sound3 as sound
+//    effects, vanilla/client Minecraft.java:2098-2106) joins the pool named by its path with the
+//    trailing digits removed and '/' -> '.' ("mob/cow/say4.ogg" -> "mob.cow.say"), and a numbered
+//    file also gets a pool of its own ("mob.cow.say4"): vanilla/client SoundPool.addSound + FCMOD;
+//  - each file is the 1.20.1 vanilla file at the same path or, where Mojang renamed it, the 1.20.1
+//    file with the identical SHA-1: mob/zombiepig/* -> mob/zombified_piglin/*, fireworks/largeBlast*
+//    -> largeblast*, "mob/ghast/affectionate scream" and "random/wood click" -> underscores;
+//  - names 1.5.2 played without any file (mob.villager.default*, mob.witch.*, damage.thorns,
+//    mob.attack) get no event: they were silent in 1.5.2 and stay silent (LegacySounds.SILENT_IN_1_5_2);
+//  - subtitles (1.5.2 had none) reuse 1.20.1's own subtitle keys; see the rules at subtitleOverrides.
+// Keys are lower case with spaces as '_' (resource paths); LegacySounds.toKey applies the same rule.
+// Not wired into the build: the checked-in sounds.json is what ships, so builds stay offline-safe.
+// Rerun by hand after changing these rules (needs both asset indexes on disk).
+// ============================================================
+task generateLegacySoundsJson {
+    description = 'Regenerates assets/betterthanwolves/sounds.json (one sound event per 1.5.2 sound name)'
+    group = 'btw'
+
+    def legacyIndexFile = file("${rootProject.projectDir}/.gradle/mc-cache/assets/pre-1.6.json")
+    def assetsDir = new File(gradle.gradleUserHomeDir, 'caches/forge_gradle/assets')
+    def outFile = file('src/main/resources/assets/betterthanwolves/sounds.json')
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def modernIndexFile = new File(assetsDir, 'indexes/5.json')   // 1.20.1's asset index id is "5"
+        if (!legacyIndexFile.isFile() || !modernIndexFile.isFile()) {
+            throw new GradleException("generateLegacySoundsJson needs ${legacyIndexFile} (run :downloadLegacyResources) " +
+                    "and ${modernIndexFile} (run :Forge:runClient once)")
+        }
+        def slurper = new groovy.json.JsonSlurper()
+        def legacyObjects = slurper.parse(legacyIndexFile).objects
+        def modernObjects = slurper.parse(modernIndexFile).objects
+        def validPath = ~/[a-z0-9\/._-]+/
+
+        // 1.20.1 sound files by path, and by content (first path in sorted order)
+        def modernHashByPath = new TreeMap<String, String>()
+        modernObjects.each { String k, v ->
+            if (k.startsWith('minecraft/sounds/') && k.endsWith('.ogg')) {
+                modernHashByPath[k.substring('minecraft/sounds/'.length())] = v.hash as String
+            }
+        }
+        def modernPathByHash = [:]
+        modernHashByPath.each { String p, String h ->
+            if (!modernPathByHash.containsKey(h)) modernPathByHash[h] = p
+        }
+
+        // 1.5.2 pools (SoundPool.addSound): key -> 1.20.1 files
+        def pools = new TreeMap<String, TreeSet<String>>()
+        new TreeSet<String>(legacyObjects.keySet()).each { String k ->
+            if (!k.startsWith('sound3/') || !k.endsWith('.ogg')) return
+            String rel = k.substring('sound3/'.length())
+            String name = rel.substring(0, rel.indexOf('.'))
+            String target = modernHashByPath.containsKey(rel) ? rel : modernPathByHash[legacyObjects[k].hash as String]
+            if (target != null && !(target ==~ validPath)) target = null
+            def names = []
+            if (Character.isDigit(name.charAt(name.length() - 1))) names << name.replace('/', '.')
+            String base = name
+            while (base.length() > 1 && Character.isDigit(base.charAt(base.length() - 1))) {
+                base = base.substring(0, base.length() - 1)
+            }
+            names << base.replace('/', '.')
+            names.each { String n ->
+                String key = n.toLowerCase(Locale.ROOT).replace(' ', '_')
+                if (!pools.containsKey(key)) pools[key] = new TreeSet<String>()
+                if (target != null) pools[key] << ('minecraft:' + target.substring(0, target.length() - '.ogg'.length()))
+            }
+        }
+
+        // Subtitles, from 1.20.1's own sounds.json
+        def vanillaEvents = [:]
+        String vanillaSoundsHash = modernObjects['minecraft/sounds.json']?.hash
+        if (vanillaSoundsHash != null) {
+            def vanillaSoundsFile = new File(assetsDir, "objects/${vanillaSoundsHash.substring(0, 2)}/${vanillaSoundsHash}")
+            if (vanillaSoundsFile.isFile()) vanillaEvents = slurper.parse(vanillaSoundsFile)
+        }
+        def filesOf = { event ->
+            def files = new TreeSet<String>()
+            event.sounds?.each { s ->
+                String n = (s instanceof Map) ? (((s.type ?: 'file') == 'file') ? s.name : null) : s
+                if (n != null) files << (n.contains(':') ? n : 'minecraft:' + n)
+            }
+            files
+        }
+        def subtitleByFiles = [:]   // file set -> subtitle, '' when two subtitles share the files
+        def vanillaSubtitles = new HashSet<String>()   // keys 1.20.1 translates
+        new TreeSet<String>(vanillaEvents.keySet()).each { String ev ->
+            String sub = vanillaEvents[ev].subtitle
+            if (sub == null) return
+            vanillaSubtitles << sub
+            def files = filesOf(vanillaEvents[ev])
+            if (!subtitleByFiles.containsKey(files)) subtitleByFiles.put(files, sub)
+            else if (subtitleByFiles.get(files) != sub) subtitleByFiles.put(files, '')
+        }
+
+        // A sound's subtitle is, in order:
+        //  1. the one subtitle of the 1.20.1 event(s) that play exactly its files;
+        //  2. else its subtitleOverrides / subtitlePrefixes entry. 1.20.1 plays many 1.5.2 pools as
+        //     several events (dig.stone is block.stone.break and .place, step.stone .step and .hit,
+        //     random.fuse creeper and TNT priming), so the entry names what 1.5.2 played the sound for;
+        //     a few entries cover 1.5.2 files no 1.20.1 event plays any more (chest, door, note);
+        //  3. else, for a numbered name ("mob.cow.say4"), the subtitle of its pool ("mob.cow.say").
+        // No subtitle: random.click (buttons, levers, plates, FC cranks alike), the ghast "affectionate
+        // scream" (also FCEntityWitch's idle sound), and the names 1.20.1 has no subtitle for either
+        // (mob.wolf.howl, portal.travel, random.breath, minecart.inside, mob.bat.loop).
+        def subtitleOverrides = [
+            'ambient.cave.cave'    : 'subtitles.ambient.cave',
+            'damage.hit'           : 'subtitles.entity.generic.hurt',   // EntityLiving's default hurt sound
+            'fire.fire'            : 'subtitles.block.fire.ambient',
+            'mob.cat.hitt'         : 'subtitles.entity.cat.hurt',
+            'mob.chicken.hurt'     : 'subtitles.entity.chicken.hurt',
+            'mob.chicken.plop'     : 'subtitles.entity.chicken.egg',
+            'mob.cow.hurt'         : 'subtitles.entity.cow.hurt',
+            'mob.enderdragon.growl': 'subtitles.entity.ender_dragon.growl',
+            'mob.endermen.portal'  : 'subtitles.entity.enderman.teleport',
+            'mob.ghast.fireball'   : 'subtitles.entity.ghast.shoot',
+            'mob.pig.say'          : 'subtitles.entity.pig.ambient',
+            'mob.sheep.say'        : 'subtitles.entity.sheep.ambient',
+            'mob.sheep.shear'      : 'subtitles.item.shears.shear',
+            'mob.silverfish.hit'   : 'subtitles.entity.silverfish.hurt',
+            'mob.silverfish.kill'  : 'subtitles.entity.silverfish.death',
+            'mob.silverfish.say'   : 'subtitles.entity.silverfish.ambient',
+            'mob.slime.big'        : 'subtitles.entity.slime.squish',
+            'mob.slime.small'      : 'subtitles.entity.slime.squish',
+            'mob.spider.say'       : 'subtitles.entity.spider.ambient',
+            'mob.zombie.woodbreak' : 'subtitles.entity.zombie.break_wooden_door',
+            'note.bass'            : 'subtitles.block.note_block.note',
+            'note.harp'            : 'subtitles.block.note_block.note',
+            'random.anvil_land'    : 'subtitles.block.anvil.land',
+            'random.bow'           : 'subtitles.entity.arrow.shoot',
+            'random.bowhit'        : 'subtitles.entity.arrow.hit',
+            'random.chestclosed'   : 'subtitles.block.chest.close',
+            'random.chestopen'     : 'subtitles.block.chest.open',
+            'random.classic_hurt'  : 'subtitles.entity.generic.hurt',
+            'random.door_close'    : 'subtitles.block.door.toggle',
+            'random.door_open'     : 'subtitles.block.door.toggle',
+            'random.explode'       : 'subtitles.entity.generic.explode',
+            'random.fizz'          : 'subtitles.block.fire.extinguish',
+            'random.fuse'          : 'subtitles.entity.tnt.primed',   // TNT, creeper, FC charges and dynamite
+            'random.glass'         : 'subtitles.block.generic.break',
+            'random.pop'           : 'subtitles.entity.item.pickup'
+        ]
+        def subtitlePrefixes = [
+            'dig.' : 'subtitles.block.generic.break',      // a block's break and place sound in 1.5.2
+            'step.': 'subtitles.block.generic.footsteps'   // ProxyBlock also plays it as the hit and fall sound
+        ]
+        [subtitleOverrides, subtitlePrefixes].each { Map table ->
+            table.each { String name, String sub ->
+                if (!vanillaSubtitles.contains(sub)) {
+                    throw new GradleException("generateLegacySoundsJson: ${sub} (for ${name}) is not a 1.20.1 subtitle key")
+                }
+            }
+        }
+        subtitleOverrides.each { String name, String sub ->
+            if (!pools[name]) throw new GradleException("generateLegacySoundsJson: subtitle for unknown 1.5.2 sound ${name}")
+            if (subtitleByFiles.get(pools[name])) logger.warn("generateLegacySoundsJson: subtitle override for ${name} is unused")
+        }
+        def chosenSubtitle = { String key ->
+            String sub = subtitleOverrides[key]
+            if (sub == null) sub = subtitlePrefixes.find { String prefix, String s -> key.startsWith(prefix) }?.value
+            sub
+        }
+        def subtitleOf = { String key, TreeSet<String> files ->
+            String sub = subtitleByFiles.get(files) ?: chosenSubtitle(key)
+            if (!sub) {
+                String base = key
+                while (base.length() > 1 && Character.isDigit(base.charAt(base.length() - 1))) {
+                    base = base.substring(0, base.length() - 1)
+                }
+                if (base != key && pools[base]) sub = subtitleByFiles.get(pools[base]) ?: chosenSubtitle(base)
+            }
+            sub ?: null
+        }
+
+        def json = new StringBuilder('{\n')
+        int emitted = 0
+        def silent = []
+        for (String key : pools.keySet()) {
+            TreeSet<String> files = pools[key]
+            if (files.isEmpty()) {
+                silent << key   // no 1.20.1 file: LegacySounds resolves it to null
+                continue
+            }
+            String body = files.collect { '      "' + it + '"' }.join(',\n')
+            String subtitle = subtitleOf(key, files)
+            if (emitted++ > 0) json.append(',\n')
+            json.append('  "').append(key).append('": {\n    "sounds": [\n').append(body).append('\n    ]')
+            if (subtitle) json.append(',\n    "subtitle": "').append(subtitle).append('"')
+            json.append('\n  }')
+        }
+        json.append('\n}\n')
+
+        String text = json.toString()
+        if (!outFile.isFile() || outFile.getText('UTF-8').replace('\r\n', '\n') != text) {
+            outFile.parentFile.mkdirs()
+            outFile.setText(text, 'UTF-8')
+            logger.lifecycle("generateLegacySoundsJson: wrote ${emitted} sound events to ${outFile}")
+        } else {
+            logger.lifecycle("generateLegacySoundsJson: ${outFile.name} is up to date (${emitted} sound events)")
+        }
+        if (!silent.isEmpty()) {
+            logger.warn("generateLegacySoundsJson: no 1.20.1 file for ${silent}; they stay silent")
+        }
+    }
+}
+
 // Run before processResources so textures are in place for the build
 processResources.dependsOn lowercaseModelRefs
+processResources.dependsOn generateBtwTextureAnimations
 
 // Template placeholders in META-INF/mods.toml so users can see which
 // upstream BTW build is embedded. We use a targeted string-replace

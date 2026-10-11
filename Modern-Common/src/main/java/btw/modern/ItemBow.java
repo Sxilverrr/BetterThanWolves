@@ -8,6 +8,8 @@ public class ItemBow extends Item {
         // vanilla/client ItemBow.java:26. FCItemBow inherits it (its damageItem wear, FCItemBow.java:82,
         // was a no-op at max damage 0); FCItemCompositeBow raises it to 576 in its own constructor.
         this.setMaxDamage(384);
+        // vanilla/client ItemBow.java:27; FCItemBow / FCItemCompositeBow set no tab of their own
+        this.setCreativeTab(CreativeTabs.tabCombat);
     }
 
     /**

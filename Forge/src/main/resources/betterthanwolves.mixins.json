@@ -26,7 +26,8 @@
     "TotemOfUndyingMixin"
   ],
   "client": [
-    "EntityRendererNameTagMixin"
+    "EntityRendererNameTagMixin",
+    "client.ClientLevelMixin"
   ],
   "injectors": {
     "defaultRequire": 1

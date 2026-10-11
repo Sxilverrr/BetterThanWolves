@@ -149,6 +149,8 @@ public class ContainerBridge {
                 // Write the container slot index
                 int slotIndex = getSlotIndex(fcSlot);
                 buf.writeVarInt(slotIndex);
+                // Crafting result (1.5.2 SlotCrafting): the client slot runs FC's client-side onCreated on take
+                buf.writeBoolean(fcSlot instanceof btw.modern.SlotCrafting);
             }
         }
     }

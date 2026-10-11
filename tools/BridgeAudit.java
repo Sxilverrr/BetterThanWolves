@@ -11,9 +11,10 @@ import java.util.stream.Stream;
  * but silently wrong at runtime" bug classes that LinkAudit (member/class resolution) can't:
  *
  *   1. SOUND COVERAGE   — FC code plays a sound name that SoundMapping doesn't map -> silent.
- *   2. AUX-FX COVERAGE  — FC code fires a custom aux-FX id (>=2222) that WorldBridge's
- *                         playFcAuxSFX switch doesn't handle -> silent (e.g. the ghast
- *                         scream/moan 2225/2228).
+ *   2. AUX-FX COVERAGE  — FC code fires a custom aux-FX id (>=2222) that FC's own client
+ *                         handler (ClientPlayCustomAuxFX) has no case for, or the chain that
+ *                         forwards FC ids to it (WorldBridge -> BTWNetwork -> LegacyClientSound)
+ *                         is broken -> silent.
  *   3. TEXTURE EXISTENCE— an entity renderer's loadTexture() path, or an FC item's icon
  *                         texture, resolves (via the FCEntityRenderer rules) to a resource
  *                         file that isn't shipped -> placeholder/invisible (e.g. the soul urn).
@@ -32,6 +33,8 @@ public class BridgeAudit {
     static final String TEX_BASE = ROOT + "/Forge/src/main/resources/assets/betterthanwolves/textures";
     static final String SOUND_MAPPING = ROOT + "/Forge/src/main/java/btw/forge/SoundMapping.java";
     static final String WORLD_BRIDGE = ROOT + "/Forge/src/main/java/btw/forge/WorldBridge.java";
+    static final String BTW_NETWORK = ROOT + "/Forge/src/main/java/btw/forge/BTWNetwork.java";
+    static final String LEGACY_CLIENT_SOUND = ROOT + "/Forge/src/main/java/btw/forge/client/LegacyClientSound.java";
     static final String FC_CORE = ROOT + "/Client/src/main/java/net/minecraft/src/btw/core/FCBetterThanWolves.java";
 
     static int highSeverity = 0;
@@ -106,10 +109,30 @@ public class BridgeAudit {
         Matcher cm = Pattern.compile("(m_i[A-Za-z0-9]+AuxFXID)\\s*=\\s*(\\d+)").matcher(read(FC_CORE));
         while (cm.find()) idOf.put(cm.group(1), Integer.parseInt(cm.group(2)));
 
-        // handled cases in WorldBridge.playFcAuxSFX (numeric case labels >= 2222)
+        // FC ids (>= 2222) are forwarded to the client and played by FC's own ClientPlayCustomAuxFX:
+        // WorldBridge -> BTWNetwork.sendFcAuxSfx -> LegacyClientSound.playAux -> FCAddOnHandler.ClientPlayCustomAuxFX.
+        // A broken link silences every FC aux effect, so it counts as high severity.
+        String[][] chain = {
+            {WORLD_BRIDGE, "BTWNetwork.sendFcAuxSfx("},
+            {WORLD_BRIDGE, "FIRST_FC_AUX_SFX_ID = 2222"},
+            {BTW_NETWORK, "LegacyClientSound.playAux("},
+            {LEGACY_CLIENT_SOUND, "\"ClientPlayCustomAuxFX\""},
+        };
+        boolean chainOk = true;
+        for (String[] link : chain) {
+            if (!read(link[0]).contains(link[1])) {
+                System.out.println("[2] FC AUX-FX FORWARDING BROKEN: " + shortPath(link[0]) + " lacks " + link[1]);
+                highSeverity++;
+                chainOk = false;
+            }
+        }
+
+        // handled = the case labels of FC's client handler (only when the forwarding chain is intact)
         Set<Integer> handled = new HashSet<>();
-        Matcher hm = Pattern.compile("case\\s+(\\d+)\\s*:").matcher(read(WORLD_BRIDGE));
-        while (hm.find()) { int v = Integer.parseInt(hm.group(1)); if (v >= 2222) handled.add(v); }
+        if (chainOk) {
+            Matcher hm = Pattern.compile("case\\s+(m_i[A-Za-z0-9]+AuxFXID)\\s*:").matcher(read(FC_CORE));
+            while (hm.find()) { Integer v = idOf.get(hm.group(1)); if (v != null && v >= 2222) handled.add(v); }
+        }
 
         // which aux-FX constants are actually fired via playAuxSFX(... m_iXxxAuxFXID ...)
         Map<Integer, String> firedButUnhandled = new TreeMap<>();
@@ -126,7 +149,8 @@ public class BridgeAudit {
             }
         }
         System.out.println("[2] AUX-FX COVERAGE: " + idOf.size() + " aux-FX ids defined, "
-            + handled.size() + " handled in playFcAuxSFX, " + firedButUnhandled.size()
+            + handled.size() + " handled by FC ClientPlayCustomAuxFX (forwarded via BTWNetwork.sendFcAuxSfx), "
+            + firedButUnhandled.size()
             + " FIRED-but-UNHANDLED (would be silent):");
         for (Map.Entry<Integer, String> e : firedButUnhandled.entrySet())
             System.out.println("      " + e.getKey() + " = " + e.getValue());

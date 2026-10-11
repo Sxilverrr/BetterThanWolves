@@ -524,6 +524,13 @@ public class WorldBridge extends btw.modern.WorldServer {
             return current.setValue(net.minecraft.world.level.block.RotatedPillarBlock.AXIS, axis);
         }
 
+        // Leaves: 1.5.2 bit 4 = no decay (player placed: ItemLeaves.getMetadata returns damage | 4, vanilla/client
+        // ItemLeaves.java:29); the species bits picked the variant already (getModernBlockVariant(18, mask 3)).
+        if (block instanceof net.minecraft.world.level.block.LeavesBlock
+                && current.hasProperty(net.minecraft.world.level.block.LeavesBlock.PERSISTENT)) {
+            return current.setValue(net.minecraft.world.level.block.LeavesBlock.PERSISTENT, (metadata & 4) != 0);
+        }
+
         // Fence gates: reverse of deriveVanillaMetadata's 1.5.2 gate encoding (direction 0-3 | 4 = open)
         if (block instanceof net.minecraft.world.level.block.FenceGateBlock) {
             return current
@@ -834,7 +841,7 @@ public class WorldBridge extends btw.modern.WorldServer {
         return level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
     }
 
-    
+
     public boolean setBlockMetadata(int x, int y, int z, int metadata, int flags) {
         BlockPos pos = new BlockPos(x, y, z);
         BlockState current = level.getBlockState(pos);
@@ -844,6 +851,7 @@ public class WorldBridge extends btw.modern.WorldServer {
             return level.setBlock(pos, newState, flags);
         }
         // Vanilla block without META — translate FC metadata to MC block state
+        int iOldMetadata = getBlockMetadata(x, y, z);   // as FC saw it, before the override below
         if (!isMetaFullyDerived(current.getBlock())) {
             vanillaMetaOverrides.put(pos.immutable(), new MetaOverride(current.getBlock(), metadata));
         }
@@ -851,7 +859,19 @@ public class WorldBridge extends btw.modern.WorldServer {
         if (newState != current) {
             return level.setBlock(pos, newState, flags);
         }
-        level.sendBlockUpdated(pos, current, current, flags);
+        // Same MC state, only FC's stored metadata moved: the rest of 1.5.2 World.setBlockMetadata
+        // (vanilla/server World.java:558-584), flag by flag -- nothing if the metadata did not change
+        // (Chunk.setBlockMetadata returns false), else bit 2 -> markBlockForUpdate (client resync), bit 1 ->
+        // notifyBlockChange (neighbour update). It used to resend the block for any flags and never notify.
+        if (iOldMetadata == metadata) {
+            return false;
+        }
+        if ((flags & 2) != 0) {
+            markBlockForUpdate(x, y, z);
+        }
+        if ((flags & 1) != 0) {
+            notifyBlockChange(x, y, z, getBlockId(x, y, z));
+        }
         return true;
     }
 
@@ -913,31 +933,54 @@ public class WorldBridge extends btw.modern.WorldServer {
     // Notifications
     // ================================================================
 
-    
+    // 1.5.2 World.notifyBlockChange IS a neighbour update (vanilla/server World.java:649-652 ->
+    // notifyBlocksOfNeighborChange; setBlock flag 1 is implemented with it, :572-580). It used to be mapped by
+    // name to sendBlockUpdated, the 1.20.1 markBlockForUpdate (client resync), so FC code that wakes its
+    // neighbours with it (FCBlockGearBox / FCBlockSaw.ToggleFacing, FCBlockDoor's other half, FCBlockStake,
+    // FCEntityUrn, ...) woke nobody.
+    @Override
     public void notifyBlockChange(int x, int y, int z, int blockID) {
-        BlockPos pos = new BlockPos(x, y, z);
-        BlockState state = level.getBlockState(pos);
-        level.sendBlockUpdated(pos, state, state, 3);
+        notifyBlocksOfNeighborChange(x, y, z, blockID);
     }
 
-    
+    // vanilla/server World.java:694-702: onNeighborBlockChange(..., blockID) on the six neighbours, in the
+    // -x,+x,-y,+y,-z,+z order 1.20.1 updateNeighborsAt also uses (NeighborUpdater.UPDATE_ORDER). 1.5.2
+    // notifies unconditionally: an id with no 1.20.1 block (0 after FC cleared the cell, an unmapped id)
+    // used to notify nobody; it now uses neighbourSource's fallback.
+    @Override
     public void notifyBlocksOfNeighborChange(int x, int y, int z, int blockID) {
-        net.minecraft.world.level.block.Block modernBlock = ProxyRegistry.getModernBlock(blockID);
-        if (modernBlock != null) {
-            level.updateNeighborsAt(new BlockPos(x, y, z), modernBlock);
-        }
+        BlockPos pos = new BlockPos(x, y, z);
+        level.updateNeighborsAt(pos, neighbourSource(pos, blockID));
     }
 
-    
+    // vanilla/server World.java:744-778 (one neighbour). 1.5.2 passes no source position; the cell itself is
+    // handed over as fromPos, as before.
+    @Override
     public void notifyBlockOfNeighborChange(int x, int y, int z, int blockID) {
         BlockPos pos = new BlockPos(x, y, z);
-        net.minecraft.world.level.block.Block sourceBlock = ProxyRegistry.getModernBlock(blockID);
-        if (sourceBlock != null) {
-            level.getBlockState(pos).neighborChanged(level, pos, sourceBlock, pos, false);
-        }
+        net.minecraft.world.level.block.Block sourceBlock = blockID > 0 ? ProxyRegistry.getModernBlock(blockID) : null;
+        level.getBlockState(pos).neighborChanged(level, pos,
+                sourceBlock != null ? sourceBlock : Blocks.AIR, pos, false);
     }
 
-    
+    /**
+     * The 1.20.1 block that stands for legacy id {@code blockID} as the source of a neighbour update at
+     * {@code pos}: the variant actually there when it reads as that id ({@link #modernBlockAt}), else the id's
+     * canonical block; air for id 0 (FC passes 0 after clearing the cell, FCEntityUrn.java:315-317); for an
+     * unmapped id, whatever is at {@code pos}. Every neighbour's FC onNeighborBlockChange (ProxyBlock and
+     * BlockBehaviorMixin) maps the source back through ProxyRegistry.getNeighbourSourceId, so it sees
+     * {@code blockID} as 1.5.2 passes it (World.java:694-702); air reads as 0.
+     */
+    private net.minecraft.world.level.block.Block neighbourSource(BlockPos pos, int blockID) {
+        if (blockID <= 0) {
+            return Blocks.AIR;
+        }
+        net.minecraft.world.level.block.Block source = modernBlockAt(pos, blockID);
+        return source != null ? source : level.getBlockState(pos).getBlock();
+    }
+
+    // 1.5.2 markBlockForUpdate: "on the server, sends the block to the client" (vanilla/server
+    // World.java:638-644, WorldManager.markBlockForUpdate). The only primitive that maps to sendBlockUpdated.
     public void markBlockForUpdate(int x, int y, int z) {
         BlockPos pos = new BlockPos(x, y, z);
         BlockState state = level.getBlockState(pos);
@@ -982,10 +1025,29 @@ public class WorldBridge extends btw.modern.WorldServer {
         scheduleBlockUpdate(x, y, z, blockID, delay);
     }
 
+    // The three tick queries follow their 1.5.2 bodies, not their names (they used to share hasScheduledTick):
+    //  - isBlockTickScheduled: WorldServer.java:421-425, field_94579_S = the ticks drained for THIS tick and not
+    //    yet run (tickUpdates adds at :574, removes each entry at :584 before its updateTick) == willTickThisTick
+    //    (LevelTicks.toRunThisTickSet loses each tick before it runs, LevelTicks.runCollectedTicks);
+    //  - IsUpdatePendingThisTickForBlock: World.java:4100-4107, a wrapper for isBlockTickScheduled;
+    //  - IsUpdateScheduledForBlock: WorldServer.java:1258-1263, field_73064_N = the future (not yet drained)
+    //    set == LevelTicks.hasScheduledTick (LevelChunkTicks.poll drops a drained tick from ticksPerPosition).
+    // FCBlockGearBox.java:128-130 (and the clutch, millstone, saw, ...) guard their re-schedule with the
+    // this-tick query; answering "scheduled in the future" there skipped or duplicated ticks.
     @Override
     public boolean isBlockTickScheduled(int x, int y, int z, int blockID) {
         BlockPos pos = new BlockPos(x, y, z);
         net.minecraft.world.level.block.Block modernBlock = modernBlockAt(pos, blockID);
+        if (modernBlock != null) {
+            return level.getBlockTicks().willTickThisTick(pos, modernBlock);
+        }
+        return false;
+    }
+
+    @Override
+    public boolean IsUpdateScheduledForBlock(int i, int j, int k, int iBlockID) {
+        BlockPos pos = new BlockPos(i, j, k);
+        net.minecraft.world.level.block.Block modernBlock = modernBlockAt(pos, iBlockID);
         if (modernBlock != null) {
             return level.getBlockTicks().hasScheduledTick(pos, modernBlock);
         }
@@ -993,14 +1055,7 @@ public class WorldBridge extends btw.modern.WorldServer {
     }
 
     @Override
-    public boolean IsUpdateScheduledForBlock(int i, int j, int k, int iBlockID) {
-        return isBlockTickScheduled(i, j, k, iBlockID);
-    }
-
-    @Override
     public boolean IsUpdatePendingThisTickForBlock(int i, int j, int k, int iBlockID) {
-        // MC 1.20.1 does not expose "pending this tick" easily; approximate
-        // by checking if any tick is scheduled for the block.
         return isBlockTickScheduled(i, j, k, iBlockID);
     }
 
@@ -1714,10 +1769,41 @@ public class WorldBridge extends btw.modern.WorldServer {
 
     public void playSoundEffect(double x, double y, double z,
                                 String sound, float volume, float pitch) {
+        playSoundEffectExcept(PREDICTING_ACTOR.get(), x, y, z, sound, volume, pitch);
+    }
+
+    /**
+     * The player whose 1.20.1 client already played this interaction's sound itself, or null. 1.5.2 clients
+     * predicted placements silently (World.playSoundEffect -> RenderGlobal.playSound is a no-op,
+     * vanilla/client RenderGlobal.java:1812), so the server's sound reached the placer too. A 1.20.1 client
+     * predicts BlockItem.useOn and plays the place sound locally (MultiPlayerGameMode.performUseItemOn), so
+     * while FC places on the server for such an interaction its sounds leave that player out. Server thread
+     * only; set through {@link #withPredictingActor}.
+     */
+    private static final ThreadLocal<ServerPlayer> PREDICTING_ACTOR = new ThreadLocal<>();
+
+    /** Runs {@code body} with {@code actor} excluded from playSoundEffect (see {@link #PREDICTING_ACTOR}). */
+    public static <T> T withPredictingActor(ServerPlayer actor, java.util.function.Supplier<T> body) {
+        ServerPlayer previous = PREDICTING_ACTOR.get();
+        PREDICTING_ACTOR.set(actor);
+        try {
+            return body.get();
+        } finally {
+            PREDICTING_ACTOR.set(previous);
+        }
+    }
+
+    /**
+     * playSoundEffect for every player in range except {@code except} (null: everyone): the sounds this bridge
+     * plays itself for an aux-SFX that 1.5.2 sent to all but the actor (WorldManager.playAuxSFX,
+     * vanilla/server WorldManager.java:103-106).
+     */
+    private void playSoundEffectExcept(ServerPlayer except, double x, double y, double z,
+                                       String sound, float volume, float pitch) {
         try {
             SoundEvent event = resolveSoundEvent(sound);
             if (event != null) {
-                level.playSound(null, x, y, z, event,
+                level.playSound(except, x, y, z, event,
                         SoundSource.BLOCKS, volume, pitch);
             }
         } catch (Exception e) {
@@ -1849,16 +1935,13 @@ public class WorldBridge extends btw.modern.WorldServer {
         };
     }
 
-    
+    // 1.5.2 World.playAuxSFX (vanilla/server World.java:3912-3915) = playAuxSFXAtEntity(null, ...): no actor.
     public void playAuxSFX(int effectID, int x, int y, int z, int data) {
-        // FC custom effect IDs (2222+) need special handling — MC 1.20.1's
-        // levelEvent only knows vanilla IDs. Map FC effects to sound playback.
-        if (effectID >= 2222) {
-            playFcAuxSFX(effectID, x, y, z, data);
-            return;
-        }
-        playLegacyAuxSFX(effectID, x, y, z, data);
+        playAuxSFXAtEntity(null, effectID, x, y, z, data);
     }
+
+    /** First FC custom aux-FX id (FCBetterThanWolves.m_iAnimalBirthingAuxFXID; the ids run to 2285). */
+    private static final int FIRST_FC_AUX_SFX_ID = 2222;
 
     /** 1.5.2 ids already reported as having no 1.20.1 equivalent (logged once each). */
     private static final java.util.Set<Integer> DROPPED_AUX_SFX = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -1869,28 +1952,37 @@ public class WorldBridge extends btw.modern.WorldServer {
      * be forwarded raw: every fc_bat takeoff (1015, a 0.05-volume flutter) played GHAST_WARN at volume 10 to
      * everyone within 64 blocks (triage GH1), a zombie infecting / curing a villager (1016 / 1017) a ghast /
      * dragon fireball (GH3), a torch fizz (1004) a firework launch. 1.5.2 effects with no 1.20.1 event are
-     * played here (1003 door) or dropped -- never passed raw.
+     * played here (1003 door) or dropped -- never passed raw. {@code except} (null: nobody) is left out like
+     * the actor of 1.5.2 WorldManager.playAuxSFX (vanilla/server WorldManager.java:103-106).
      */
-    private void playLegacyAuxSFX(int effectID, int x, int y, int z, int data) {
+    private void playLegacyAuxSFX(ServerPlayer except, int effectID, int x, int y, int z, int data) {
         try {
+            BlockPos pos = new BlockPos(x, y, z);
             int modern = AuxSfxMapping.toModernEvent(effectID, data);
             int modernData = modern != AuxSfxMapping.NONE ? AuxSfxMapping.toModernData(effectID, data) : 0;
+            if (modern == 2001) {
+                int live = liveBlockStateId(pos, data);
+                if (live != AuxSfxMapping.INVALID_DATA) {
+                    modernData = live;
+                }
+            }
             if (modern != AuxSfxMapping.NONE && modernData != AuxSfxMapping.INVALID_DATA) {
-                level.levelEvent(null, modern, new BlockPos(x, y, z), modernData);
+                level.levelEvent(except, modern, pos, modernData);
             }
             double px = x + 0.5D, py = y + 0.5D, pz = z + 0.5D;
             switch (effectID) {
                 case 1003: // door open/close, picked at random (RenderGlobal.java:2198-2208); no 1.20.1 event
-                    playSoundEffect(px, py, pz, rand.nextBoolean() ? "random.door_open" : "random.door_close",
+                    playSoundEffectExcept(except, px, py, pz,
+                            rand.nextBoolean() ? "random.door_open" : "random.door_close",
                             1.0F, rand.nextFloat() * 0.1F + 0.9F);
                     break;
                 case 1016: // FCMOD: extra slow zombie moan on villager infection (RenderGlobal.java:2260-2263)
-                    playSoundEffect(px, py, pz, "mob.zombie.say", 1.0F + rand.nextFloat(),
+                    playSoundEffectExcept(except, px, py, pz, "mob.zombie.say", 1.0F + rand.nextFloat(),
                             rand.nextFloat() * 0.2F + 0.5F);
                     break;
                 case 2001: // block 1.20.1 cannot express: no particles, but still its FC break sound
                     if (modernData == AuxSfxMapping.INVALID_DATA) {
-                        playFcBlockSound(px, py, pz, data & 4095, true);
+                        playFcBlockSound(except, px, py, pz, data & 4095, true);
                     }
                     break;
                 default:
@@ -1906,283 +1998,115 @@ public class WorldBridge extends btw.modern.WorldServer {
         }
     }
 
-    /** Handles FC-custom AuxSFX IDs by playing the corresponding sounds. */
-    private void playFcAuxSFX(int effectID, int x, int y, int z, int data) {
-        double px = x + 0.5, py = y + 0.5, pz = z + 0.5;
-        java.util.Random rand = new java.util.Random();
-        // Map FC effect IDs to their sound equivalents (from FC's client handler)
-        switch (effectID) {
-            case 2226: // burp
-                playSoundEffect(px, py, pz, "random.burp", 0.5F, rand.nextFloat() * 0.1F + 0.9F);
-                break;
-            case 2227: // fire fizz
-                playSoundEffect(px, py, pz, "random.fizz", 0.5F, 2.6F + (rand.nextFloat() - rand.nextFloat()) * 0.8F);
-                break;
-            case 2231: // item collection pop
-            case 2232: // XP eject pop
-                playSoundEffect(px, py, pz, "random.pop", 0.2F, ((rand.nextFloat() - rand.nextFloat()) * 0.7F + 1F) * 2F);
-                break;
-            case 2233: // hopper close
-                playSoundEffect(px, py, pz, "random.chestclosed", 0.1F, rand.nextFloat() * 0.1F + 0.9F);
-                break;
-            case 2234: // redstone power click
-                playSoundEffect(px, py, pz, "random.click", 0.3F, 0.6F);
-                break;
-            case 2236: // block place
-                playSoundEffect(px, py, pz, "dig.stone", 1F, 0.8F);
-                break;
-            case 2237: // dynamite fuse
-                playSoundEffect(px, py, pz, "random.fuse", 1F, 1F);
-                break;
-            case 2238: // click low pitch
-                playSoundEffect(px, py, pz, "random.click", 0.3F, 0.5F);
-                break;
-            case 2267: // stump removed
-                playSoundEffect(px, py, pz, "mob.slime.attack", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 0.6F);
-                break;
-            case 2268: // shaft ripped off log
-            case 2271: // wood block destroyed
-                playSoundEffect(px, py, pz, "mob.zombie.woodbreak", 0.25F, 1F + rand.nextFloat() * 0.25F);
-                break;
-            case 2269: // stone ripped off
-                playSoundEffect(px, py, pz, "random.anvil_land", 0.5F, rand.nextFloat() * 0.25F + 1.75F);
-                break;
-            case 2270: // gravel ripped off stone
-                playSoundEffect(px, py, pz, "random.anvil_land", 0.25F, rand.nextFloat() * 0.25F + 1.5F);
-                playSoundEffect(px, py, pz, "step.gravel", 1F, rand.nextFloat() * 0.25F + 1F);
-                break;
-            case 2274: // mortar applied
-                playSoundEffect(px, py, pz, "mob.slime.attack", 0.7F + rand.nextFloat() * 0.1F, 0.85F + rand.nextFloat() * 0.1F);
-                break;
-            case 2275: // loose block on mortar
-                playSoundEffect(px, py, pz, "mob.slime.attack", 0.15F + rand.nextFloat() * 0.1F, 0.6F + rand.nextFloat() * 0.1F);
-                break;
-            case 2276: // log smouldering fall
-                playSoundEffect(px, py, pz, "mob.zombie.woodbreak", 1.25F, 0.5F + rand.nextFloat() * 0.1F);
-                playSoundEffect(px, py, pz, "mob.ghast.fireball", 1F, 0.5F + rand.nextFloat() * 0.1F);
-                break;
-            case 2278: // water evaporate
-                playSoundEffect(px, py, pz, "random.fizz", 0.5F, 2.6F + (rand.nextFloat() - rand.nextFloat()) * 0.8F);
-                break;
-            case 2280: // lightning strike
-                playSoundEffect(px, py, pz, "ambient.weather.thunder", 10000F, 0.8F + rand.nextFloat() * 0.2F);
-                break;
-            case 2283: // animal eat
-            case 2284: // wolf eat
-                playSoundEffect(px, py, pz, "random.eat", 0.5F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                break;
-            case 2285: // eat fail
-                playSoundEffect(px, py, pz, "random.eat", 0.25F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 0.5F);
-                break;
-            // ---- ported from FC ClientPlayCustomAuxFX (2026-07-09) — these effects were
-            // silent (fired but unhandled). Sound side only; the FC particle side is a
-            // separate follow-up (needs client particle spawning). 2241 (dispenser smoke)
-            // and 2282 (cactus explode) are particle-only in FC, so they stay silent.
-            case 2222: // animal birthing
-                playSoundEffect(px, py, pz, "mob.slime.attack", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                break;
-            case 2223: // saw damages entity
-                playSoundEffect(px, py, pz, "minecart.base", 1F + rand.nextFloat() * 0.1F, 2F + rand.nextFloat() * 0.1F);
-                break;
-            case 2224: // nether growth spores burst
-                playSoundEffect(px, py, pz, "random.fuse", 2F, rand.nextFloat() * 0.4F + 1.5F);
-                break;
-            case 2225: // ghast scream (data==1 = soulforged-steel low pitch)
-                playSoundEffect(px, py, pz, "mob.ghast.scream", 1F,
-                        data == 1 ? rand.nextFloat() * 0.4F + 0.25F : rand.nextFloat() * 0.4F + 0.8F);
-                break;
-            case 2228: // ghast moan
-                playSoundEffect(px, py, pz, "mob.ghast.moan", 0.5F, 2.6F + (rand.nextFloat() - rand.nextFloat()) * 0.8F);
-                break;
-            case 2229: // mining charge explosion
-                playSoundEffect(px, py, pz, "random.explode", 4F, (1F + (rand.nextFloat() - rand.nextFloat()) * 0.2F) * 0.7F);
-                break;
-            case 2230: // hopper XP eject
-                playSoundEffect(px, py, pz, "liquid.lavapop", 0.5F + rand.nextFloat() * 0.25F, 0.5F + rand.nextFloat() * 0.25F);
-                break;
-            case 2235: // mechanical device explode
-                playSoundEffect(px, py, pz, "mob.zombie.woodbreak", 0.5F, 0.60F + rand.nextFloat() * 0.25F);
-                break;
-            case 2239: // wolf hurt
-                playSoundEffect(px, py, pz, "mob.wolf.hurt", 0.4F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                break;
-            case 2240: // chicken hurt
-                playSoundEffect(px, py, pz, "mob.chicken.hurt", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                break;
-            case 2242: // companion cube death
-                playSoundEffect(px, py, pz, "mob.wolf.whine", 0.5F, 2.6F + (rand.nextFloat() - rand.nextFloat()) * 0.8F);
-                break;
-            case 2243: // possessed chicken explosion
-                playSoundEffect(px, py, pz, "random.explode", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                playSoundEffect(px, py, pz, "mob.chicken.hurt", 2F, rand.nextFloat() * 0.4F + 1.2F);
-                break;
-            case 2244: // ender block collect
-                playFcBlockSound(px, py, pz, data & 0xfff, true);
-                break;
-            case 2245: // ender block convert
-                playFcBlockSound(px, py, pz, data & 0xfff, true);
-                playSoundEffect(px, py, pz, "mob.endermen.portal", 1F, 1F);
-                break;
-            case 2246: // ender block place
-                playFcBlockSound(px, py, pz, data & 0xfff, false);
-                playSoundEffect(px, py, pz, "mob.endermen.hit", 1F, 1F);
-                break;
-            case 2247: // ender change dimension
-                playSoundEffect(px, py, pz, "ambient.weather.thunder", 3F, rand.nextFloat() * 0.4F + 0.8F);
-                break;
-            case 2248: // soul urn shatter
-                playSoundEffect(px, py, pz, "random.glass", 1F, 1.2F / (rand.nextFloat() * 0.2F + 0.9F));
-                playSoundEffect(px, py, pz, "mob.ghast.scream", 0.2F, rand.nextFloat() * 0.2F + 0.5F);
-                break;
-            case 2251: // melon impact
-                playSoundEffect(px, py, pz, "mob.zombie.wood", 0.1F, 0.40F + rand.nextFloat() * 0.25F);
-                break;
-            case 2252: // block destroy (respect particle settings)
-                playFcBlockSound(px, py, pz, data & 0xfff, true);
-                break;
-            case 2253: // cow milk fill
-            case 2254: // cow milked
-            case 2261: // sheep wool regrow
-            case 2262: // squid tentacle fling
-                playSoundEffect(px, py, pz, "mob.slime.attack", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 0.6F);
-                break;
-            case 2255: // cow -> mooshroom
-                playSoundEffect(px, py, pz, "mob.slime.attack", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                playSoundEffect(px, py, pz, "mob.cow.hurt", 1F,
-                        (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F + (data > 0 ? 0.5F : 0F));
-                break;
-            case 2258: // creeper neutered
-                playSoundEffect(px, py, pz, "mob.sheep.shear", 1F, 1F);
-                playSoundEffect(px, py, pz, "mob.slime.attack", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.1F + 0.7F);
-                break;
-            case 2259: // possessed pig -> zombie pigman
-                playSoundEffect(px, py, pz, "mob.pig.death", 2F, rand.nextFloat() * 0.4F + 1.2F);
-                playSoundEffect(px, py, pz, "mob.zombiepig.zpigangry", 2F, ((rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F) * 1.8F);
-                playSoundEffect(px, py, pz, "mob.slime.attack", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                break;
-            case 2260: // possessed villager -> witch
-                playSoundEffect(px, py, pz, "ambient.weather.thunder", 3F, rand.nextFloat() * 0.4F + 0.8F);
-                playSoundEffect(px, py, pz, "mob.ghast.affectionate scream", 2F, 0.5F + rand.nextFloat() * 0.25F);
-                break;
-            case 2263: // snow golem created
-                playSoundEffect(px, py, pz, "random.glass", 1F, 1.2F / (rand.nextFloat() * 0.2F + 0.9F));
-                playSoundEffect(px, py, pz, "mob.enderdragon.growl", 0.25F, rand.nextFloat() * 0.2F + 1.8F);
-                break;
-            case 2264: // iron golem created
-                playSoundEffect(px, py, pz, "random.glass", 1F, 1.2F / (rand.nextFloat() * 0.2F + 0.9F));
-                playSoundEffect(px, py, pz, "mob.irongolem.death", 1F, rand.nextFloat() * 0.2F + 0.5F);
-                playSoundEffect(px, py, pz, "mob.enderdragon.growl", 0.5F, rand.nextFloat() * 0.2F + 1.5F);
-                break;
-            case 2265: // toss the milk
-                playSoundEffect(px, py, pz, "mob.slime.attack", 0.5F, (rand.nextFloat() - rand.nextFloat()) * 0.1F + 0.6F);
-                playSoundEffect(px, py, pz, "random.classic_hurt", 0.25F, 1.2F);
-                break;
-            case 2266: // dung applied to wolf
-                playSoundEffect(px, py, pz, "mob.slime.attack", 0.5F, (rand.nextFloat() - rand.nextFloat()) * 0.1F + 0.8F);
-                break;
-            case 2272: // block destroyed with improper tool
-                playSoundEffect(px, py, pz, "mob.zombie.woodbreak", 0.25F, 1F + rand.nextFloat() * 0.25F);
-                break;
-            case 2273: // possessed squid -> ghast
-                playSoundEffect(px, py, pz, "mob.slime.attack", 1F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                playSoundEffect(px, py, pz, "mob.ghast.scream", 10F, (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F);
-                break;
-            case 2277: // log smouldering explosion
-                playSoundEffect(px, py, pz, "random.explode", 4F, (1F + (rand.nextFloat() - rand.nextFloat()) * 0.2F) * 0.7F);
-                playSoundEffect(px, py, pz, "mob.zombie.wood", 1.25F, 0.5F + rand.nextFloat() * 0.1F);
-                break;
-            case 2279: // wither created
-                playSoundEffect(px, py, pz, "random.glass", 1F, 1.2F / (rand.nextFloat() * 0.2F + 0.9F));
-                playSoundEffect(px, py, pz, "mob.wither.death", 1F, rand.nextFloat() * 0.2F + 0.5F);
-                playSoundEffect(px, py, pz, "mob.enderdragon.growl", 0.5F, rand.nextFloat() * 0.2F + 1.5F);
-                break;
-            case 2281: // flaming netherrack fall
-                playSoundEffect(px, py, pz, "mob.ghast.fireball", 0.1F, 0.5F + rand.nextFloat() * 0.1F);
-                break;
-            default:
-                // FC effect with no sound side here (particle-only 2241/2249/2250/2282, ...). Not forwarded
-                // raw: 1.20.1 level-event ids mean something else (GH1).
-                if (DROPPED_AUX_SFX.add(effectID)) {
-                    LOGGER.debug("FC aux-SFX {} has no sound mapping; dropped", effectID);
-                }
-                break;
+    /**
+     * 1.20.1 state id of the block still at {@code pos} when it is the block a 2001 payload names (legacy id
+     * {@code data & 4095}, metadata {@code data >> 12}), else {@link AuxSfxMapping#INVALID_DATA}. 1.5.2 raises
+     * 2001 before the block goes (World.destroyBlock, vanilla/server World.java:604-611; ItemInWorldManager
+     * :432 / :458), and the live state carries what the canonical id + meta lookup cannot: the 1.20.1 variant
+     * (new woods, crop age, stair shape) and the post-1.5.2 block behind a ModernBlockStandIn id.
+     */
+    private int liveBlockStateId(BlockPos pos, int data) {
+        BlockState live = level.getBlockState(pos);
+        if (live.isAir()
+                || ProxyRegistry.getWorldBlockId(live, level, pos) != (data & 4095)
+                || (getBlockMetadata(pos.getX(), pos.getY(), pos.getZ()) & 15) != (data >> 12 & 15)) {
+            return AuxSfxMapping.INVALID_DATA;
+        }
+        return net.minecraft.world.level.block.Block.getId(live);
+    }
+
+    /**
+     * Sends an FC custom aux-FX (ids &gt;= 2222) to the clients, where FC's own
+     * FCAddOnHandler.ClientPlayCustomAuxFX plays it (exact sounds, data-dependent branches, particles), as the
+     * 1.5.2 server did with Packet61 (WorldManager.playAuxSFX: 64 blocks around, all but the actor;
+     * broadcastSound for func_82739_e: every player, vanilla/server WorldManager.java:103-111; client dispatch
+     * vanilla/client RenderGlobal.java:2159 / :2394). This replaces the hand-copied server table
+     * (playFcAuxSFX), which had drifted from FC's handler (wrong sounds / volumes / pitches, missing sounds, no
+     * particles; audit S3).
+     */
+    private void sendFcAuxSfx(ServerPlayer except, int effectID, int x, int y, int z, int data, boolean global) {
+        try {
+            BTWNetwork.sendFcAuxSfx(level, except, effectID, x, y, z, data, global);
+        } catch (Throwable t) {
+            if (DROPPED_AUX_SFX.add(-effectID - 1)) {   // negative key: "failed", logged once per id
+                LOGGER.warn("FC aux-SFX {} at {},{},{} could not be sent: {}", effectID, x, y, z, t.toString());
+            }
         }
     }
 
     /**
-     * Plays a block's break/step sound for the ender-block and destroy aux-FX, which pack the
-     * source block id into the aux-FX data (id & 0xfff). Mirrors FC's
-     * {@code block.stepSound.getBreakSound()/getStepSound()} lookup in ClientPlayCustomAuxFX.
+     * Plays a block's break/step sound for a 2001 whose block 1.20.1 cannot express (FC's
+     * {@code block.stepSound.getBreakSound()/getStepSound()} at (v+1)/2, p*0.8 like RenderGlobal 2001).
      */
-    private void playFcBlockSound(double px, double py, double pz, int blockId, boolean breakSound) {
+    private void playFcBlockSound(ServerPlayer except, double px, double py, double pz, int blockId, boolean breakSound) {
         try {
             if (blockId > 0 && blockId < btw.modern.Block.blocksList.length) {
                 btw.modern.Block blk = btw.modern.Block.blocksList[blockId];
                 if (blk != null && blk.stepSound != null) {
                     String s = breakSound ? blk.stepSound.getBreakSound() : blk.stepSound.getStepSound();
-                    playSoundEffect(px, py, pz, s,
+                    playSoundEffectExcept(except, px, py, pz, s,
                             (blk.stepSound.getVolume() + 1.0F) / 2.0F, blk.stepSound.getPitch() * 0.8F);
                 }
             }
         } catch (Throwable ignored) {}
     }
 
-    // 1.5.2 World.playAuxSFXAtEntity reaches the same RenderGlobal.playAuxSFX (FC ids >= 2222 via its
-    // FCAddOnHandler default branch), so it shares playAuxSFX's translation. Everyone hears it, as before:
-    // the 1.5.2 exclusion of `player` assumed that player's client had already played it locally.
-    public void playAuxSFXAtEntity(EntityPlayer player, int effectID,
-                                   int x, int y, int z, int data) {
-        playAuxSFX(effectID, x, y, z, data);
+    /** The ServerPlayer behind an FC player (null for none / not a server player). */
+    private static ServerPlayer serverPlayerOf(EntityPlayer player) {
+        return player instanceof PlayerBridge pb ? pb.getServerPlayer() : null;
     }
 
-    // 1.5.2 World.func_82739_e (vanilla/server World.java:3900) — sends an auxSFX to all
-    // players regardless of distance. Live callers: FCEntityAIWolfHowl.java:117 /
-    // FCEntityAIWolfDireHowl.java:78 (howls), FCEntityWolf.java:894 (dire conversion),
-    // FCEntityLightningBolt.java:82 (strike FX). Sound handling ported from the FC
-    // client aux-FX handler (Client FCBetterThanWolves.java:3448+); high volumes give
-    // the long audible range MC derives from volume.
+    // 1.5.2 World.playAuxSFXAtEntity (vanilla/server World.java:3920-3939) -> WorldManager.playAuxSFX: Packet61
+    // to everyone within 64 blocks EXCEPT `player`, whose client already played the event. That exclusion is
+    // honoured again where the actor's 1.20.1 client really played it: ItemInWorldManager.tryHarvestBlock's
+    // 2001, whose breaker's client already played the break (MultiPlayerGameMode.destroyBlock ->
+    // playerWillDestroy). An event raised at a ProxyBlock is not predicted (ProxyBlock.use & co. run FC on the
+    // server only), so its actor is kept: the FC wood door's 1003 (FCBlockDoor.onBlockActivated, Client
+    // FCBlockDoor.java:63; block 1036), which the 1.5.2 client played from its own onBlockActivated, would
+    // otherwise be silent for the player who opened it. FC ids go to FC's client handler, vanilla ids through
+    // AuxSfxMapping.
+    @Override
+    public void playAuxSFXAtEntity(EntityPlayer player, int effectID,
+                                   int x, int y, int z, int data) {
+        ServerPlayer except = null;
+        try {
+            except = serverPlayerOf(player);
+            if (except != null && effectID != 2001
+                    && level.getBlockState(new BlockPos(x, y, z)).getBlock() instanceof ProxyBlock) {
+                except = null;
+            }
+        } catch (Throwable ignored) {}
+        if (effectID >= FIRST_FC_AUX_SFX_ID) {
+            sendFcAuxSfx(except, effectID, x, y, z, data, false);
+            return;
+        }
+        playLegacyAuxSFX(except, effectID, x, y, z, data);
+    }
+
+    // 1.5.2 World.func_82739_e (vanilla/server World.java:3900-3906) -> WorldManager.broadcastSound: Packet61
+    // (global) to every player regardless of distance. Live callers: FCEntityAIWolfHowl.java:117 /
+    // FCEntityAIWolfDireHowl.java:78 (howls), FCEntityWolf.java:895 (dire conversion),
+    // FCEntityLightningBolt.java:83 (strike FX): FC ids, played by FC's client handler (whose howl volume
+    // depends on the local player's height, FCBetterThanWolves.java:3466-3480).
     @Override
     public void func_82739_e(int effectID, int x, int y, int z, int data) {
-        double px = x + 0.5D, py = y + 0.5D, pz = z + 0.5D;
-        switch (effectID) {
-            case 2256: { // FCBetterThanWolves.m_iWolfHowlAuxFXID
-                float fSoundVolume;
-                float fSoundPitch;
-                if (data > 0) {
-                    // dire howl
-                    fSoundVolume = 10F;
-                    fSoundPitch = (rand.nextFloat() - rand.nextFloat()) * 0.05F + 0.55F;
-                } else {
-                    // regular wolf howl
-                    fSoundVolume = 8.5F;
-                    fSoundPitch = (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1F;
-                }
-                playSoundEffect(px, py, pz, "mob.wolf.howl", fSoundVolume, fSoundPitch);
-                break;
+        if (effectID >= FIRST_FC_AUX_SFX_ID) {
+            sendFcAuxSfx(null, effectID, x, y, z, data, true);
+            return;
+        }
+        try {
+            // Vanilla broadcast IDs: 1.5.2 RenderGlobal.broadcastSound plays only 1013 (wither spawn)
+            // and 1018 (dragon death), which 1.20.1 numbers 1023 / 1028; a global level event reaches
+            // every player like broadcastSound. Any other id played nothing in 1.5.2 (and was
+            // forwarded raw here before).
+            int global = AuxSfxMapping.toModernGlobalEvent(effectID);
+            if (global != AuxSfxMapping.NONE) {
+                level.globalLevelEvent(global, new BlockPos(x, y, z), data);
             }
-            case 2257: // FCBetterThanWolves.m_iWolfConvertToDireAuxFXID
-                spawnParticle("largeexplode", px, py, pz, 0.0D, 0.0D, 0.0D);
-                playSoundEffect(px, py, pz, "mob.slime.attack", 1.0F,
-                        (rand.nextFloat() - rand.nextFloat()) * 0.2F + 1.0F);
-                playSoundEffect(px, py, pz, "mob.wolf.growl", 8.5F,
-                        (rand.nextFloat() - rand.nextFloat()) * 0.05F + 0.55F);
-                break;
-            default:
-                if (effectID >= 2222) {
-                    // Other FC custom IDs (e.g. 2280 lightning strike) share the
-                    // playAuxSFX sound mapping.
-                    playFcAuxSFX(effectID, x, y, z, data);
-                } else {
-                    // Vanilla broadcast IDs: 1.5.2 RenderGlobal.broadcastSound plays only 1013 (wither spawn)
-                    // and 1018 (dragon death), which 1.20.1 numbers 1023 / 1028; a global level event reaches
-                    // every player like broadcastSound. Any other id played nothing in 1.5.2 (and was
-                    // forwarded raw here before).
-                    int global = AuxSfxMapping.toModernGlobalEvent(effectID);
-                    if (global != AuxSfxMapping.NONE) {
-                        level.globalLevelEvent(global, new BlockPos(x, y, z), data);
-                    }
-                }
-                break;
+        } catch (Throwable t) {
+            if (DROPPED_AUX_SFX.add(-effectID - 1)) {
+                LOGGER.warn("global aux-SFX {} at {},{},{} failed: {}", effectID, x, y, z, t.toString());
+            }
         }
     }
 
@@ -2234,14 +2158,29 @@ public class WorldBridge extends btw.modern.WorldServer {
     // Redstone
     // ================================================================
 
-    
+    // Only these two 1.5.2 power queries exist on btw.modern.World (getBlockPowerInput, isBlockProvidingPowerTo,
+    // getIndirectPowerLevelTo and getStrongestIndirectPower have no declaration and no FC/frozen caller); each
+    // maps to the 1.20.1 SignalGetter query with the same body. Side order and indices agree: 1.5.2 sides 0-5
+    // (below, above, z-1, z+1, x-1, x+1) == Direction DOWN, UP, NORTH, SOUTH, WEST, EAST get3DDataValue, and
+    // ProxyBlock.getDirectSignal / getSignal forward FC isProvidingStrongPower / isProvidingWeakPower with it.
+
+    // FCMOD World.isBlockGettingPowered (vanilla/server World.java:4157-4160) = getBlockPowerInput > 0: the
+    // strongest isProvidingStrongPower of the six neighbours (:3452-3510), i.e. STRONG power only ==
+    // SignalGetter.getDirectSignalTo. It was hasNeighborSignal (weak / relayed power), so the redstone clutch,
+    // pulley, block dispenser and turntable reacted to redstone blocks and powered conductors that 1.5.2
+    // ignores (prover D6: a redstone block under a clutch kept it disengaged).
+    @Override
     public boolean isBlockGettingPowered(int x, int y, int z) {
-        return level.hasNeighborSignal(new BlockPos(x, y, z));
+        return level.getDirectSignalTo(new BlockPos(x, y, z)) > 0;
     }
 
-    
+    // World.isBlockIndirectlyGettingPowered (vanilla/server World.java:3558-3561) = any of the six
+    // getIndirectPowerLevelTo(neighbour, side) > 0 (:3525-3552: weak power, plus the strong power a normal cube
+    // relays -- FCMOD: a cube that is itself a power source gives the larger of the two) ==
+    // SignalGetter.hasNeighborSignal (getSignal = max(weak, conductor ? getDirectSignalTo : 0)), same order.
+    @Override
     public boolean isBlockIndirectlyGettingPowered(int x, int y, int z) {
-        return level.getBestNeighborSignal(new BlockPos(x, y, z)) > 0;
+        return level.hasNeighborSignal(new BlockPos(x, y, z));
     }
 
     // ================================================================
@@ -2838,27 +2777,24 @@ public class WorldBridge extends btw.modern.WorldServer {
     // ================================================================
 
     /**
-     * Resolves a legacy FC sound name (e.g. "random.drink") to a modern
-     * SoundEvent.  Uses {@link SoundEvent#createVariableRangeEvent} with
-     * the FC name as a ResourceLocation under the "minecraft" namespace,
-     * converting dots to underscores so "random.drink" becomes
-     * "minecraft:random/drink" (matching vanilla's path convention where
-     * applicable).  Returns null if the name is blank.
+     * Resolves the sound name FC code hands the world to a 1.20.1 SoundEvent, or null (nothing plays).
+     * <ul>
+     *   <li>A 1.5.2 name ("random.drink", "mob.cow.say4") goes through the single legacy resolver,
+     *       {@link LegacySounds#resolve}, which plays the 1.5.2 file pool. The old fallback
+     *       (minecraft:&lt;name with '.' -&gt; '_'&gt;) named events that never exist: clients logged
+     *       "Unable to play unknown soundEvent" and played nothing (audit S4).</li>
+     *   <li>A namespaced id ("minecraft:block.deepslate.step") is a 1.20.1 event handed back to FC on purpose:
+     *       {@link ModernBlockStandIn#GetStepSound} reports the live block's SoundType that way, so a puppet
+     *       walking on a post-1.5.2 block steps with that block's sound. 1.5.2 names never contain ':'.</li>
+     * </ul>
      */
     private static SoundEvent resolveSoundEvent(String fcSoundName) {
         if (fcSoundName == null || fcSoundName.isEmpty()) return null;
-        // Use the centralized SoundMapping which maps 1.5.2 names → 1.20.1 SoundEvents
-        SoundEvent mapped = SoundMapping.get(fcSoundName);
-        if (mapped != null) return mapped;
-        // Fallback: try creating a SoundEvent from the raw name (for sounds
-        // that happen to have the same name in 1.20.1, or custom registered sounds)
-        try {
-            String path = fcSoundName.replace('.', '_');
-            ResourceLocation loc = new ResourceLocation("minecraft", path);
-            return SoundEvent.createVariableRangeEvent(loc);
-        } catch (Exception e) {
-            return null;
+        if (fcSoundName.indexOf(':') > 0) {
+            ResourceLocation loc = ResourceLocation.tryParse(fcSoundName);
+            return loc != null ? net.minecraft.core.registries.BuiltInRegistries.SOUND_EVENT.get(loc) : null;
         }
+        return LegacySounds.resolve(fcSoundName);
     }
 
     // ================================================================

@@ -96,6 +96,12 @@ public class FCItemSubtypeModel implements BakedModel {
 
             BakedModel existing = models.get(mrl);
             if (existing == null) continue;
+            // An FC block's item (ids >= 478 include FC's 1000+ block ids): its FCBakedModel resolves
+            // the stack's damage itself, drawing FC's RenderBlockAsItem or the flat icon per damage as
+            // 1.5.2 did (FCBakedModel.itemModelFor). A flat-only subtype model would replace the 3D
+            // subtypes (sidings, mouldings, ...) with icons, e.g. after a resource reload, once block
+            // icons are registered and an FC ItemBlock's getIconFromDamage returns per-damage block icons.
+            if (existing instanceof FCBakedModel) continue;
 
             FCItemSubtypeModel subtypeModel = new FCItemSubtypeModel(existing, id);
 

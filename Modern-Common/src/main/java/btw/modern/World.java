@@ -292,8 +292,9 @@ public abstract class World implements IBlockAccess {
         return this.setBlockMetadata(i, j, k, iMetadata, 1);
     }
 
+    // FCMOD (vanilla/server World.java:4152-4155): flag 2, sent to clients without a neighbour update
     public boolean setBlockAndMetadata(int i, int j, int k, int iBlockID, int iMetadata) {
-        return this.setBlock(i, j, k, iBlockID, iMetadata, 0);
+        return this.setBlock(i, j, k, iBlockID, iMetadata, 2);
     }
 
     // --- Notification methods ---
@@ -681,7 +682,10 @@ public abstract class World implements IBlockAccess {
 
     public void playSound(double x, double y, double z, String sound, float volume, float pitch, boolean distanceDelay) {}
 
-    public void playSound(double x, double y, double z, String sound, float volume, float pitch) {}
+    // FCMOD (vanilla/client World.java:4994-4997)
+    public void playSound(double x, double y, double z, String sound, float volume, float pitch) {
+        playSound(x, y, z, sound, volume, pitch, false);
+    }
 
     public void playRecord(String recordName, int x, int y, int z) {}
 

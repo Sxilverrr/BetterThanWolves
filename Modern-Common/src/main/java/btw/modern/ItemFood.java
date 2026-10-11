@@ -21,6 +21,9 @@ public class ItemFood extends Item {
         this.healAmount = healAmount;
         this.saturationModifier = saturation;
         this.isWolfsFavoriteMeat = wolfFood;
+        // vanilla/client ItemFood.java:55. FC foods (FCItemFood, FCItemSoup, FCItemSeedFood, ...) set no tab of their
+        // own and are listed under Foodstuffs through this one (BTWCreativeTab reads getCreativeTab).
+        this.setCreativeTab(CreativeTabs.tabFood);
         // 1.5.2 (FCMOD) ItemFood ctor additions — BTWRegistration reads maxStackSize,
         // EntityItem.UpdateHardcoreBuoy reads buoyancy, FCTileEntityCrucible reads incineration.
         // FCMOD: Added
@@ -118,14 +121,18 @@ public class ItemFood extends Item {
     }
 
     /**
-     * Restores hunger/saturation through FC's high-res {@link FoodStats}.
+     * Restores hunger/saturation through FC's high-res {@link FoodStats} and burps.
      * Mirrors the original FC {@code ItemFood.onEaten -> FoodStats.addStats(this)}.
      * The MC-side stack decrement and HUD sync are performed by the bridge layer
-     * (ProxyItem / ItemStackMixin), so this only applies nutrition.
+     * (ProxyItem / ItemStackMixin), so this only applies nutrition and the sound.
      */
     @Override
     public ItemStack onEaten(ItemStack stack, World world, EntityPlayer player) {
         player.getFoodStats().addStats(this);
+        // vanilla/client ItemFood.java:73, broadcast by the server world (WorldBridge.playSoundAtEntity) like 1.5.2
+        // WorldManager. Without it eating an FC food ended silently: ProxyItem.finishUsingItem runs this instead of
+        // 1.20.1 Player.eat, whose PLAYER_BURP is the vanilla counterpart.
+        world.playSoundAtEntity(player, "random.burp", 0.5F, world.rand.nextFloat() * 0.1F + 0.9F);
         this.onFoodEaten(stack, world, player);
         return stack;
     }

@@ -41,6 +41,32 @@ The upstream BTW / FC source version is pinned in `gradle.properties` as
 `btwVersion`. It is **not** part of the port SemVer — it only changes
 when the BTW source tree is upgraded (rare).
 
+**FC code is read-only — never modify it.** "FC code" is FlowerChild's
+BTW sources (`net.minecraft.src.btw.*` under `Common/`, `Client/`,
+`Server/`), the 1.5.2 vanilla sources carrying FC's FCMOD edits under
+`vanilla/`, the frozen compiled classes in root
+`build/classes/java/{main,server}`, FlowerChild's original 4.B release
+files kept in the repo (`Src/`, `SrcServer/` and `SrcClient/`, holding
+the flat sources and the `patch.txt` files that `setupVanilla` applies to
+build `vanilla/`, plus `BTWMod4-B0000003.zip`), and FlowerChild's own
+files such as `Readme.txt`. Nobody edits them: no small fixes, no tagged
+edits. An
+upgrade replaces the tree with a newer FlowerChild release; it never edits
+it. No port change is a reason to touch FC code or to bump `btwVersion`.
+Port changes are versioned by `portVersion` and live outside FC code:
+
+- the Forge bridge (`Forge/src/main/java/btw/forge`, mixins on 1.20.1
+  classes, data packs);
+- Modern-Common (`btw.modern`), the port's own stand-ins for 1.5.2
+  vanilla classes: port code, not FC code;
+- a planned subproject (name not chosen yet) that extends FC code
+  (subclasses, registries, event hooks, replacement classes) and patches
+  it (bytecode transforms or mixins at build or load time) without ever
+  writing back to FC files. The build-time ASM transforms in
+  `Forge/build.gradle` (`widenFcHookDescriptors`, `openUpEntityAccess`,
+  `extendFcPathingBuildRange`) are its precursors and are expected to
+  move into it.
+
 Its current value (`4.B0000003`) is surfaced in three places:
 
 - JAR manifest: `BTW-Upstream-Version: 4.B0000003`

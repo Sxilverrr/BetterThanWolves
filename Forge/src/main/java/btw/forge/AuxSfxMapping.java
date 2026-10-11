@@ -11,7 +11,8 @@ import net.minecraft.world.level.block.state.BlockState;
  *
  * <p>Each mapping below was checked against 1.5.2 RenderGlobal.playAuxSFX (vanilla/client RenderGlobal.java:
  * 2169-2399) / broadcastSound (:2122-2164) and 1.20.1 LevelRenderer.levelEvent / globalLevelEvent: same sound
- * file, volume and pitch formula. FC custom ids (&gt;= 2222) never come here (WorldBridge.playFcAuxSFX). A 1.5.2
+ * file, volume and pitch formula. FC custom ids (&gt;= 2222) never come here (WorldBridge.sendFcAuxSfx -&gt;
+ * BTWNetwork.sendFcAuxSfx -&gt; FC ClientPlayCustomAuxFX on the client). A 1.5.2
  * id with no 1.20.1 event answers {@link #NONE} and is never passed raw: the caller plays it itself (1003
  * door sound) or drops it.</p>
  *

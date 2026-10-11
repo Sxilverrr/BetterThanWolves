@@ -4,8 +4,25 @@ Originally audited 2026-03-28. Re-audited 2026-06-05 (see below). Link-audited
 2026-07-08 (see below). Every remaining stub, no-op, empty body, hardcoded
 return, and TODO across the btw.modern and btw.forge layers.
 
+**FC code is read-only. Never modify it** (user directive, 2026-10-10). FC code is FlowerChild's
+BTW sources (`net.minecraft.src.btw.*` under `Common/`, `Client/`, `Server/`), the 1.5.2 vanilla
+sources with FC's FCMOD edits under `vanilla/`, the frozen compiled classes in root
+`build/classes/java/{main,server}`, FlowerChild's original 4.B release files kept in the repo
+(`Src/`, `SrcServer/` and `SrcClient/`, holding the flat sources and the `patch.txt` files that
+`setupVanilla` applies to build `vanilla/`, plus `BTWMod4-B0000003.zip`), and FlowerChild's own
+files such as `Readme.txt`. No entry in this catalogue is ever closed by editing them, not even with
+a small tagged fix. Fixes go to the
+Forge bridge (`btw.forge`, mixins on 1.20.1 classes, data packs), to Modern-Common (the `btw.modern`
+stand-ins, which are port code, not FC code), or to the planned subproject (name not chosen yet)
+that extends FC code and patches it at build or load time without writing back to FC files. The
+build-time ASM transforms in Forge/build.gradle (widenFcHookDescriptors, openUpEntityAccess,
+extendFcPathingBuildRange) are its precursors and are expected to move into it. Older entries that
+describe or suggest edits to FC code predate the rule and carry a dated note; the entries themselves
+are left as written.
+
 2026-10-10: CurseForge-feedback fix pass, entries (w)-(am) at the end of this file. They describe
-UNCOMMITTED working-tree changes on top of 1.3.0-alpha.3 (git 9569443), i.e. Unreleased. Finding ids
+changes on top of 1.3.0-alpha.3 (git 48e9825), committed on 2026-10-10 as f6ec9be ("Fixed several major
+bugs"; d55db5d then set portVersion 1.4.0-alpha.5), i.e. Unreleased. Finding ids
 (R1, D1, GH1, HAI-1, SW1, RE1, CTX-5, ...) come from docs/curseforge-feedback-triage.md; design ids
 (B1, U1, E1, ...) come from the earlier bug-design pass the triage cross-references; review ids
 (AP-1, RP-2, FD-R1, ...) come from the per-wave code reviews. Verification for every one of these
@@ -19,6 +36,26 @@ the modern-block stand-ins.
 NOT run: any client (every rendering, animation, GUI and HUD fix is checked by code review only),
 multiplayer, and a clean server shutdown / session.lock release (the harness could not send 'stop').
 The "in game" steps listed in each entry are the intended checks, not results.
+
+2026-10-11: bugs the maintainer found in play (mechanical power, sounds, the BTW creative tab), entries
+(an)-(aq) at the end of this file. UNCOMMITTED working-tree changes on top of d55db5d. Method: an
+audit-and-prove pass first (four audits, each checked by an independent verifier, and a dedicated-server
+prover that ran mechanical scenarios D1-D11 twice), then one implementation wave (W6, eight workstreams,
+each reviewed and its findings fixed, deferred or rejected), then orchestrator follow-ups. Audit ids:
+MPR-1..6 (mechanical placement and render), F1..F4 (mechanical logic), S1..S11 (sounds), CT1..CT6 (creative
+tab), MISSED-1..4 (creative-tab verifier); review ids RP-, RI-, WP-, CW-, PB-, AS-, CI-, EI-. The rule
+throughout: port the 1.5.2 body of a primitive, never re-derive it from its name, and fix the shared
+primitive rather than single blocks. Verification: `:Forge:jar` green (JDK 17); LinkAudit unchanged from W5
+(0 missing classes, the 6 baseline missing members, 0 foreign refs, jar precedence 80 collisions / 0
+drift); BridgeAudit 0 high-severity (sound coverage 72 used / 136 mapped / 0 unmapped, aux-FX 64 defined /
+64 handled, textures 0 missing); a dedicated server boots a fresh world with 0 ERROR lines and registers 508
+legacy sound events. Client: the maintainer's dev-client sessions (Forge/run/client/logs, nine on
+2026-10-10, each joining a world) show the pre-W6 state the audit reproduced ('Added 174 blocks and 253
+items to BTW creative tab'); the last session (2026-10-11 09:40-09:49) ran a mid-wave build (514 sound
+events, before the review fixes) and logs the BTW tab built with 120 block and 235 item entries and the
+gear box, clutch, saw, bellows and axles live-captured. None of the in-game checks in (an)-(aq) has been
+run and recorded on the final code: every rendering, client sound, creative-tab and JEI change is
+verified by code review and small harnesses only.
 
 ## 2026-07-09 (e) Movement penalty vanishes while running/jumping
 
@@ -251,7 +288,7 @@ A `0->1` possession or `[GHAST-SPAWN]` in `dim=minecraft:overworld` in a never-N
 the noises were the Infernal Enchanter's `GHAST_SHOOT` "whoosh" applies only to worlds that
 have one placed — a different sound from the fresh-world `GHAST_HURT`.)
 
-2026-10-10 correction (triage GH4, GH1): the possessed-squid -> ghast theory (7341cb5) cannot
+2026-10-10 correction (triage GH4, GH1): the possessed-squid -> ghast theory (c449199) cannot
 explain a fresh world. Spontaneous possession requires `dimensionId == -1`, WorldBridge sets that
 only for `Level.NETHER`, and no instrumented log ever showed a `[BTW-Possession]` or `[GHAST-SPAWN]`
 line. If the sound was identified by ear, it was almost certainly GH1: the 1.5.2 bat take-off
@@ -519,6 +556,18 @@ the remapFcCode include list, or the shadow/exclude lists.
   everything. Future manual edits to `vanilla/` must be folded into the patch — the
   regeneration procedure is documented next to the apply step in the root build.gradle
   (`setupVanilla -PskipManualPatch` produces the pristine baseline to diff against).
+  *(2026-10-10 rule: FC code is read-only, and `vanilla/` is FC code. The 27 edits above and the
+  `EntityAnimal` cast fix in the previous bullet predate the rule; the patch stays only so that
+  `setupVanilla` keeps reproducing the existing tree. There are no "future manual edits to
+  `vanilla/`" and nothing new is folded into the patch. A change that would have gone there goes to
+  the bridge, Modern-Common, or the planned FC extension/patch subproject instead. The other legacy
+  port edits that predate the rule are: the restructure of FC's flat `Src/` and `SrcServer/` sources
+  into `net.minecraft.src.btw.*` (including hook-signature widening in `Server/`, e.g.
+  `FCEntityCreeper.OnKickedByCow`), `applyFixups` in the root build.gradle (text edits to `vanilla/`
+  during `setupVanilla`), and three vanilla classes added under `Client/` in 5257461 (`ModelChest`,
+  `ModelLargeChest`, `TileEntityChestRenderer`). They stay so the tree keeps building, nothing new
+  is added, and they are candidates to move into the extension/patch subproject. Full list in
+  BRIDGE_SPEC.md, Key Principles.)*
 - **Data-gen output now ships**: `Forge/src/generated/resources` (10 loot-modifier + 30
   stonecutter-recipe JSONs) is generated, committed, and guarded — the Forge `jar` task fails
   if the directory is missing/empty. Regenerate with `gradlew :Forge:runData`.
@@ -574,7 +623,10 @@ the remapFcCode include list, or the shadow/exclude lists.
   those overrides silently never dispatch. Fix by widening the Client sources to match
   Server twins. *(2026-10-10: the four FCEntityCreeper/FCEntityPig/FCEntityZombie hook overloads
   are widened at build time by widenFcHookDescriptors pass (c), see (w); the two block-class
-  methods (FCBlockLogSmouldering, FCBlockNetherrackFalling) are not.)*
+  methods (FCBlockLogSmouldering, FCBlockNetherrackFalling) are not.)* *(2026-10-10 rule: the
+  "widening the Client sources" fix above is withdrawn. FC code is read-only, so the Client sources
+  are never edited; if the two block-class overloads are ever widened, it is done by a build-time
+  transform like pass (c), in the planned FC extension/patch subproject.)*
 - `fc_zombie`/`fc_spider`/`fc_ocelot`/`fc_ghast`/`fc_cave_spider` never register —
   those FC classes were never restructured into `net.minecraft.src.btw.entity`.
 
@@ -680,7 +732,7 @@ in these FC subclasses. So mechanical power / mill / saw are present and load �
 > of 16 classes that dev never ran: ContainerBeacon/BrewingStand/Chest/Dispenser/Enchantment/
 > Furnace/Hopper/Merchant/Repair, EntityAIBase, EntityAIControlledByPlayer, IEntitySelector,
 > IMerchant, InventoryMerchant, SlotCrafting and SlotMerchantResult. Jars built since the fc spec
-> was added (71d3df0, 2026-04-12) packed fc the same way, but only the alpha.3 jar was audited;
+> was added (9e9cb23, 2026-04-12) packed fc the same way, but only the alpha.3 jar was audited;
 > earlier uploads were built from other trees, so their divergent set is unknown. The E1 fix in
 > 2026-10-10 (w) makes the jar match dev (Modern-Common wins unless the class is on the shadow
 > list), and a `jar.doLast` guard plus LinkAudit's JAR PRECEDENCE CHECK now enforce it. The bullets
@@ -1093,7 +1145,7 @@ FCEntityLightningBolt redirect bolts to it, an iron lightning rod predating vani
 
 ## 2026-07-09 (p) Worldgen phase 2: wood species drops + bonus basket
 
-- WOOD SPECIES DROPS (commit a2f259b): the one real wood bug — chopping a natural spruce/
+- WOOD SPECIES DROPS (commit 6b3417e): the one real wood bug — chopping a natural spruce/
   birch/jungle log/leaf/plank/slab dropped OAK. Fixed via BlockLog.damageDropped(meta)=meta&3
   + ProxyRegistry.getModernBlockVariant variant table (17/18/5/126 -> 4 species blocks) +
   ItemStackHelper consulting it.
@@ -1120,7 +1172,7 @@ A 4-investigator workflow root-caused the wicker-basket scrambled mesh. Two dist
   The basket looked "fixed" only by timing luck. Fix: made GL11 state thread-local (per-thread
   State, mirroring Tessellator), so worker-thread block captures never observe the render
   thread's matrix. Belt-and-suspenders: FCBakedModel now calls GL11.disableMatrixTracking()
-  before each block startCapturing(). This matches the note left after the axle fix (aa978b8).
+  before each block startCapturing(). This matches the note left after the axle fix (fe1dd22).
 
 - INVISIBLE BASKET LID (missing color-multiplier emit): FCBlockBasketWicker draws its lid/handle
   /interior via RenderAsBlockWithColorMultiplier, but that path was a no-op stub at two levels of
@@ -1729,7 +1781,7 @@ Root cause: btw.modern.Tessellator kept one sticky colour per thread. 1.5.2 Tess
 clears hasColor (Tessellator.java:322-339), so an uncoloured draw uses GL's current colour; the
 port's startDrawing*/startCapturing reset nothing, and GL11.glColor was tracked but never read. FC
 mob models never set a colour, so they inherited whatever the RenderXPOrb port of 2026-07-09 (g)
-(commit bd8f23f) last set: (0.25-0.5, 0, 0, alpha 0.5) for dragon orbs. The logged tint's alpha 0.50
+(commit c2e15f3) last set: (0.25-0.5, 0, 0, alpha 0.5) for dragon orbs. The logged tint's alpha 0.50
 matches RenderXPOrb, not the 0.40 of a damage pass. FCEntityRenderer multiplied the texture by it
 under entityCutoutNoCull with no blending. GL blend, texture and lightmap state were discarded. The
 1.5.2 damage pass (RenderLiving.java:196-217) was never ported and FCEntityRenderer used NO_OVERLAY.
@@ -1801,7 +1853,7 @@ endermen drew as cubes, held and worn blocks were textured with the mob's own sk
 FC block was meshed, a carried grass block showed the 1.20.1 tall-grass texture with a grey top, and
 undyed leather armour on mobs rendered black or untinted with no trim layer.
 
-Root cause: Modern-Common RenderLiving was a minimal stand-in, unchanged since 2443805. It never
+Root cause: Modern-Common RenderLiving was a minimal stand-in, unchanged since 365f5c8. It never
 called setLivingAnimations, renderSwingProgress, handleRotationFloat, shouldRenderPass or
 renderEquippedItems, never set model.isChild/isRiding/onGround, and passed ticksExisted+pt where
 1.5.2 passes handleRotationFloat (ModelChicken.java:99-100, ModelWolf.java:199, ModelSquid.java:48),
@@ -2696,3 +2748,517 @@ shows only in the count lines. A failure that repeats every tick still costs one
 tick to compute its key. ProxyEntity still deduplicates onUpdate failures by exception class only.
 Failures that used to be silent now print one WARN or ERROR per site, which may surface latent FC
 container bugs; that is intended.
+
+## 2026-10-11 (an) Mechanical power: 1.5.2 render primitives, item models, animations, placement, turntables
+
+Symptom (maintainer: the clutch "doesn't have proper facing" and "doesn't connect up with axles from
+different directions", wrong axle textures; audits MPR-1..5, F1..F4; reviews RP-R1/R2, RI-1/R2,
+PB-R2/R3):
+
+- Clutches and gear boxes drew their input texture on the south (+Z) face whatever their facing and
+  never drew their output texture, so axles went on the wrong face and the box seemed not to
+  connect. The bellows, saw, screw pump, block dispenser, buddy block, detector block, companion
+  cube and mining charge fronts never followed their facing. X and Y axles had end and side textures
+  swapped, long faces showed the dark groove along their length, and no axle (not even an axle power
+  source) showed fcblockaxle_side_on. The saw blade was mis-rotated.
+- The axle item was a vertical post, the saw item the facing-0 world state, every siding, moulding
+  and wool-slab subtype looked like damage 0. Millstone `_on` faces, the running saw blade, the
+  powered axle and bucket water showed their frame strip squashed into one face.
+- Placed against a vanilla or modern block, FC stairs always got direction 0 and the anvil, basket,
+  hamper and piston shovel always faced meta 0; a lens never set up its beam.
+- Turntables never rotated saws, bellows, block dispensers, screw pumps, buddy blocks, lenses and
+  other default-rotation users, and gear boxes, clutches and stairs turned N->E while pumpkins,
+  repeaters and pistons turned N->W (prover D8: saw stayed meta 2, gear box 2 -> 5). The clutch,
+  pulley, block dispenser and turntable reacted to redstone blocks and powered conductors (prover
+  D6: a clutch above a redstone block stayed disengaged). notifyBlockChange woke no neighbour, and
+  the "pending this tick" guards (gear box, clutch, millstone, buddy, hopper) answered "scheduled in
+  the future".
+
+The prover (D1-D4, D9-D11, two runs) showed the server mechanics themselves were already
+1.5.2-exact.
+
+Root cause: render and world primitives re-derived from their names instead of ported from their
+1.5.2 bodies.
+
+- btw.modern.RenderBlocks.renderStandardBlock / RenderStandardFullBlock took every face icon from
+  block.getIcon(side, meta), FC's item-icon API, and drew all six faces. 1.5.2
+  renderStandardBlockWithColorMultiplier (vanilla/client RenderBlocks.java:6047-6187) gates each
+  face on `renderAllFaces || shouldSideBeRendered` and draws it with getBlockIcon ->
+  block.getBlockTexture(blockAccess, x, y, z, side), where FC keeps its facing logic; FCBakedModel
+  therefore baked these blocks once ('live-capture metas: 0x0'). The six renderFace* ignored
+  uvRotate* and flipTexture, had no 0..1 clamp, ignored overrideBlockTexture and paired +X UVs
+  differently (:7167-7806).
+- Block items used the meta-0 RenderBlock quads with ItemOverrides.EMPTY; nothing ran
+  RenderBlockAsItem (RenderItem.java:374-398). 1.5.2 animated from `<name>.txt`
+  (TextureStitched.java:205-245); no .png.mcmeta existed.
+- ProxyBlock.getStateForPlacement called only onBlockPlaced, with metadata 0; nothing called
+  PreBlockPlacedBy or onPostBlockPlaced (FCItemPlacesAsBlock.java:94-108).
+- Modern-Common Block's turntable helpers had swapped tables, a (f+1)%6 CycleFacing, a no-op
+  RotateMetadataAroundJAxis and ToggleFacing, and flag 2 writes (vanilla/server
+  Block.java:1461-1471, 2845-2869, 2930-2948, 3059-3082). WorldBridge.notifyBlockChange called
+  sendBlockUpdated, isBlockGettingPowered called hasNeighborSignal (1.5.2 getBlockPowerInput is
+  strong power only, World.java:4157-4160, :3452-3510), and all three tick queries called
+  hasScheduledTick.
+
+Fix (general rule: port the 1.5.2 render and world primitives line for line and run FC's real entry
+point for each context; no per-block patches):
+
+- Modern-Common RenderBlocks (port RenderBlocks.java:211-300): renderStandardBlock draws through the
+  ported renderStandardBlockWithColorMultiplier with colorMultiplier (the AO variants too);
+  RenderStandardFullBlock through RenderStandardFullBlockWithColorMultiplier (1.5.2 :10103-10175)
+  and the ported RenderFull*Face (FC's compass: East = z-negative, North = x-negative). The six
+  renderFace* (port :2827ff) are 1.5.2's non-AO bodies (:7167-7806): override substitution,
+  flipTexture, clamps, uvRotate (YNeg = Bottom, YPos = Top, ZNeg = East, ZPos = West, XNeg = North,
+  XPos = South; any other value, such as the saw's 4, means none).
+  ShouldSideBeRenderedBasedOnCurrentBounds (port :3702, 1.5.2 :10645-10670),
+  RenderStandardFullBlockMovedByPiston, renderBlockUsingTexture and renderBlockAllFaces (1.5.2
+  :392-407) are ported. Capture adaptations only: no face shades (1.20.1 applies its own), quads
+  tagged with icon and normal, FC calls guarded and logged once per class and method.
+- FCBakedModel items (MPR-3, MISSED-2): getOverrides() resolves Damage to a per-damage model
+  (cached, up to 256 per block). With sprite number 0 and DoesItemRenderAsBlock(damage) it captures
+  renderBlockAsItem(block, damage, 1F) (null blockAccess, GL matrix tracking, base
+  glTranslatef(+0.5), 1.5.2's stairs item branch :7939-8010); otherwise the flat icon as
+  item/generated geometry; fallback the RenderBlock quads of getMetadata(damage). RI-1: 3D item
+  models carry FC_ITEM_TRANSFORMS, block.json's tilt and scale with each context's Y turn from the
+  1.5.2 chain (gui RenderItem.java:379-398, first person ItemRenderer.java:421-431, third person
+  RenderPlayer.java:316-338).
+- RP-R1 follow-up: the gate culled static per-meta quads against StaticAccess's fake same-block
+  neighbour (stairs 160 instead of 192 quads, axle 64 instead of 72). A live meta's static quads now
+  come from an all-faces capture (runFcRender(..., true) -> SetRenderAllFaces,
+  FCBakedModel.java:268-272, :543), 1.5.2's renderBlockAllFaces convention for piston-moved blocks
+  (Block.java:3764-3767); they serve piston-moved blocks, the breaking overlay and the live-capture
+  fallback.
+- MPR-4: :Forge:generateBtwTextureAnimations (a processResources dependency) converts the zip's
+  MINECRAFT-JAR/textures/{blocks,items}/*.txt to .png.mcmeta with 1.5.2's grammar ("i*t"; bare "i" =
+  1 tick; the first bad token ends the list; empty or 600+ entries = every frame at 1 tick). Eight
+  are checked in (axle, bucket water, millstone, saw blade).
+- MPR-5 (ProxyBlock): getStateForPlacement follows FCItemPlacesAsBlock.onItemUse: metadata =
+  getMetadata(damage) of the held stack, facing 1 into ground cover, hit relative to the clicked
+  block (PlayerControllerMP.java:397-399), PreBlockPlacedBy with the PlayerBridge (server) or a
+  same-yaw facade (client). setPlacedBy runs onBlockPlacedBy with the stack actually placed (PB-R2),
+  onPostBlockPlaced and the animal notification (:103-111); canBeReplaced accepts FC ground cover
+  and replaceable materials (PB-R3, :79-86).
+- F2 (Modern-Common Block): the four FC tables, table-driven RotateFacingAroundJ and CycleFacing,
+  RotateMetadataAroundJAxis = SetFacing(meta, rotated GetFacing), ToggleFacing = RotateAroundJAxis,
+  flag 3 behind a changed check, ConvertFacingToTop/BottomTextureRotation, OnCraftedOnTurntable aux
+  2252 and the 1-clay default (Block.java:1460-1471, 2833-2948, 3025-3082).
+- F3, F4, ticks (WorldBridge): notifyBlockChange = level.updateNeighborsAt
+  (WorldBridge.java:942-980; source air for id 0, the block at pos for an unmapped id);
+  markBlockForUpdate is the only sendBlockUpdated (:984-988); isBlockGettingPowered =
+  getDirectSignalTo > 0 (:2173), isBlockIndirectlyGettingPowered = hasNeighborSignal;
+  isBlockTickScheduled and IsUpdatePendingThisTickForBlock = willTickThisTick,
+  IsUpdateScheduledForBlock = hasScheduledTick (:1028-1060; WorldServer.java:421-425, :1258-1263).
+  BRIDGE_SPEC.md 3.1 maps these by body.
+
+Verification: build and audits. A harness gives the 1.5.2 UVs (Z-axle top U 0..16 along Z, V 6..10;
+switch-like bounds clamped). The mid-wave dev client logged gear box, clutch, saw, bellows and axles
+as 'live-capture metas: 0xffff' with the _output textures captured (a build before the review
+fixes). To check in game (not run): a clutch or gear box placed facing each direction shows its
+input there and outputs elsewhere; X, Y and Z axles show end caps on their axis, powered ones
+animated; the axle item is horizontal and the saw item has an upright blade; stairs placed against
+dirt follow the player's yaw; prover D8 gives saw and gear box meta 4 after one rotation and D6
+clutch meta 12, outputs 11/7/7; FCBlockStairs is back to 192 static quads and FCBlockAxle to 72.
+
+Caveats:
+
+- RP-R2 / RI-2 (unmeasured): the gate reads neighbours, so every meta of FCBlockAestheticOpaque, the
+  FC slabs, sidings, corners, mouldings, stairs, planters, panes, the mining charge and aesthetic
+  vegetation is captured live on every section rebuild, serialised on CAPTURE_LOCK, for little
+  culling: Block.opaqueCubeLookup is never filled (1.5.2 Block.java:484) and
+  ShouldRenderNeighborFullFaceSide returns true (1.5.2: !isOpaqueCube). Measure before changing; the
+  lever is lock granularity (FCBlockAestheticOpaque reads the neighbour id for blood moss, :518).
+- Items: cached per damage per bake; brightness dropped; the FC chest (1035) item is a planks cube
+  (ChestItemRenderHelper not ported; it was invisible); other unported vanilla item branches (11,
+  21, 27, 32, 34, 35, 38) draw cubes; blocks without a RenderBlockAsItem override show 1.5.2's cube
+  item; FC TESR cook items draw 3D block items turned 90 degrees.
+- The BlockItem path does not run FC's canPlaceBlockOnSide / canPlaceBlockAt refusal, and client
+  prediction runs on a read-only view, so neighbour-dependent blocks can mispredict briefly.
+- More blocks turn on turntables and the redstone users ignore weak power: authentic, but existing
+  builds change.
+- Not done: opaqueCubeLookup, the ShouldRenderNeighborFullFaceSide default and
+  RenderBlockMovedByPiston; AxisAlignedBB.RenderAsBlock* still use getIcon (1.5.2
+  AxisAlignedBB.java:605-628; overdraw only); three Block dispenser/spawn defaults.
+
+## 2026-10-11 (ao) One sound rule: 1.5.2 files, one resolver, each sound played by its 1.5.2 side and owner
+
+Symptom (maintainer: wrong and missing sounds; audit S1-S11 and the verifier's missed items; reviews
+WP-1, CW-1..3, PB-R1, AS-R1..R3, EI-1/2):
+
+- Wrong files: the saw and millstone ground with the minecart-inside loop, a hurt creeper hissed the
+  fuse, the bellows mooed a random cow, and chests, doors, anvil break, the "oof" and the hit ding
+  played 1.20.1 replacements. Silent ('Unable to play unknown soundEvent:
+  minecraft:mob_zombiepig_zpig'): zombie pigmen, enderman idle, wither idle and hurt, ghast death,
+  wolf shake, ocelots, iron golem throw, zombie cure, dragon wings, firework launch, the soulforged
+  helm's breath.
+- Client-only sounds never played: millstone grinding, axle creak, campfire and smouldering-log
+  crackle, wet-cement moan, turntable click, cow kick; the gear box, millstone and bellows
+  power-on/off sounds and smoke (S2); everything FC's ClientPlayCustomAuxFX plays. FC aux ids came
+  from a drifted server copy (hopper close, redstone click 0.3/0.6 instead of 0.75/2.0, XP pop, wolf
+  eating, melon and pumpkin bursts, improper tool, lightning, dung whine, howl volume) with no
+  particles.
+- FC block sounds fell back to stone: squish blocks (FC web, unfired pottery, nether growth, rotten
+  flesh) and glass-type blocks (crucible, vase, planters, light bulb); puppets on deepslate or new
+  woods stepped on stone.
+- Nobody else heard or saw a player break a block (S6); the placer heard a block placed against a
+  legacy-id vanilla block twice; FC mobs entering water made no splash (S8); crafting FC tools,
+  armour, shears or cured food was silent (S9); FC foods never burped, placement played the step
+  sound at full volume and pitch, stoked fire neither crackled nor smoked (S10); no gloom ambience,
+  step grunt or soulforged-boots footstep (S11).
+
+Root cause: no single contract for names, sides or owners. SoundMapping was a hand table of 1.20.1
+replacement events with a `minecraft:<a_b_c>` fallback that never exists, although 1.20.1 still
+ships every 1.5.2 sound3 file (402 at the same path, 15 renamed but byte-identical). Every
+client-side FC world inherited Modern-Common World.playSound as an empty method and stubbed
+playAuxSFX, where 1.5.2 played through WorldClient.playSound (WorldClient.java:483-505) and
+RenderGlobal, whose FCMOD default branch calls ClientPlayCustomAuxFX (RenderGlobal.java:2394/:2159);
+nothing called ClientNotificationOfMetadataChange (WorldClient.java:294-315) or ClientBreakBlock /
+ClientBlockAdded (Chunk.java:633/683). WorldBridge replayed FC aux ids from its own copy and ignored
+the actor; tryHarvestBlock left out the 2001 emit (ItemInWorldManager.java:432/:458) while the mixin
+cancels MC's. ProxyBlock.getSoundType translated stepSoundName only. Puppets copied MC's isInWater
+into FC, hiding the water-entry edge (Entity.java:1079-1123). Nothing ran Item.onCreated, which FC
+uses only when world.isRemote (SlotCrafting.java:72-75). ItemFood, ItemBlock and BlockFire stand-ins
+dropped their 1.5.2 sounds; gloom, grunt and boots live in player classes 1.20.1 replaces
+(EntityPlayer.java:2454-2492).
+
+Fix (general rule: route every FC sound call by the 1.5.2 IWorldAccess contract of the side that
+runs it, resolve every name in one place, give every sound exactly one owner):
+
+- Names: new LegacySounds.resolve(String) (LegacySounds.java:92) is the single resolver (never
+  throws, thread-safe, unknown names logged once). It registers one SoundEvent per key of the
+  checked-in sounds.json: 508 events, one per 1.5.2 pool (SoundPool.addSound with FCMOD,
+  SoundPool.java:46-97, so mob.cow.say4 is exactly say4.ogg), each playing 1.5.2 files only (same
+  path, else the identical-SHA-1 file). Names 1.5.2 had no file for (mob.attack, step.anvil,
+  damage.thorns, the villager and witch names) are SILENT_IN_1_5_2. 499 of 508 have a 1.20.1
+  subtitle key (AS-R1). sounds.json comes from the manual task :Forge:generateLegacySoundsJson;
+  SoundMapping.SOUND_MAP is a coverage manifest.
+- Client sink: new btw.forge.client.LegacyClientSound. playLocal (:76) ports WorldClient.playSound;
+  playAux (:121/:130) sends vanilla ids through AuxSfxMapping to a local levelEvent and ids >= 2222
+  to FC's ClientPlayCustomAuxFX with a populated legacy Minecraft facade (particleSetting, an
+  EffectRenderer bridged to ParticleEngine, an eye-level thePlayer). The ProxyEntity and
+  ProxyBlockEntity client worlds, ProxyBlock's client view (createFcWorld(level, false)) and the new
+  read-only ClientFcWorld use it and re-mesh through LevelRenderer.setBlocksDirty; playSoundEffect
+  stays a no-op, as in RenderGlobal (:1812). CW-1: the spider-web and soul-sand spawn sounds
+  (FCBetterThanWolves.java:2653/:2675); CW-2: aux digging FX use the aux metadata; CW-3: a bellows
+  lifts the local player on power-off (FCBlockBellows.java:577-605).
+- Client block hooks (MPR-6, S2): client mixin ClientLevelMixin calls
+  ClientNotificationOfMetadataChange on a server-verified META change of the same ProxyBlock, and
+  ClientBreakBlock / ClientBlockAdded on a block change.
+- FC aux ids (S3): WorldBridge sends ids >= 2222 with BTWNetwork.sendFcAuxSfx
+  (WorldBridge.java:2027): the FcAuxSfx message (network protocol 4) to players within 64 blocks
+  except the actor, or to every player when global; the client runs FC's own handler. playFcAuxSFX
+  is deleted.
+- Actor rule (S6, S7, WP-1): playAuxSFX = playAuxSFXAtEntity(null); the actor is left out only where
+  its 1.20.1 client really played the event: always for 2001, otherwise only off a ProxyBlock
+  (ProxyBlock.use runs FC server-side only, so the FC door 1036 keeps its sound for the opener)
+  (WorldBridge.java:2059-2085). tryHarvestBlock emits 2001 to the players around the breaker
+  (ItemInWorldManager.java:49).
+- Placement sound (follow-up 4): BlockBehaviorMixin stage 2 runs tryPlaceHeldItem inside
+  WorldBridge.withPredictingActor when the held item is a BlockItem
+  (BlockBehaviorMixin.java:255-266), and playSoundEffect then leaves that player out
+  (PREDICTING_ACTOR, WorldBridge.java:1770-1793): the 1.20.1 client predicted BlockItem.useOn with
+  its sound, while 1.5.2 clients predicted silently (vanilla/client RenderGlobal.java:1812).
+  ProxyBlock.use needs no scope; its client predicts nothing.
+- Block sounds (S5, PB-R1): ProxyBlock.getSoundType(state, level, pos, entity) builds a
+  ForgeSoundType from FC's StepSound objects; the per-position GetStepSound feeds footsteps only
+  (ProxyBlock.java:1190), break, place, hit and fall use the block's stepSound
+  (RenderGlobal.java:2309, PlayerControllerMP.java:320). StepSound gains StepSoundStone/Sand/Anvil;
+  ModernBlockStandIn.GetStepSound reports the live block's SoundType.
+- S8: puppets seed inWater from MC on the client only; FC's handleWaterMovement owns the splash and
+  its particles, MC keeps only GameEvent.SPLASH (EI-1).
+- S9 and follow-up 5: ProxyItem.onCraftedBy and an ItemStackMixin onCraftedBy hook call
+  ProxyItem.runFcOnCreated, which on the client counts m_iTimesCraftedThisTick and plays locally.
+  For FC containers, ContainerBridge.writeSlotLayout sends a craft-result flag per slot
+  (ContainerBridge.java:152-153) and the client FCContainerMenu builds ClientCraftResultSlot
+  (FCContainerMenu.java:234, :595-610), whose onTake runs it (shift-click passes the pre-move stack,
+  :327). The server SlotCrafting stays silent under FC's isRemote guard, so the client is the one
+  owner, as in 1.5.2 (vanilla/client SlotCrafting.java:72-75, :184).
+- S10: ItemFood.onEaten burps (ItemFood.java:73) and for an eat FC fed, PlayerMixin drops
+  Player.eat's PLAYER_BURP and ItemStackMixin empties the closing eat sound;
+  ItemBlock.PlayPlaceSound plays getPlaceSound at (v+1)/2, p*0.8; BlockFire.randomDisplayTick is
+  ported (BlockFire.java:400-479).
+- S11: client GloomAmbience ports UpdateGloomState (waiting up to 20 ticks for a new LocalPlayer's
+  first PenaltySync, EI-2); Modern-Common EntityPlayer carries playStepSound (grunt, soulforged
+  boots), run by a PlayerMixin hook.
+
+Verification: BridgeAudit [1] 72 / 136 / 0 unmapped, [2] 64 / 64; every file sounds.json names
+exists in the 1.20.1 index; the generator reproduces sounds.json byte for byte; the dedicated server
+registers 508 legacy sound events. To check in game (not run): /playsound
+betterthanwolves:mob.zombiepig.zpig plays; a powered gear box clicks and smokes on every client; a
+second player hears a break once; placing stone on stone and crafting shears at the FC workbench
+(also shift-click) each sound once; an FC cow splashes once; darkness brings cave sounds, growls and
+the stare.
+
+Caveats:
+
+- FC villagers and witches have no idle, hurt or death sound, as in 1.5.2 (no sound file existed);
+  the FC witch still idles with the ghast's affectionate scream.
+- 28 same-path files are Mojang re-encodes (cat, wood steps, rain, random/click now mono). The
+  1.20.1 pitch clamp (0.5-2.0) caps the wet-cement moan (2.6 +- 0.8) and the 2.5 fizz. Hitting an FC
+  block is subtitled 'Footsteps'; FC's creaks read 'Chest opens/closes'.
+- Global aux events (howls, dire conversion, lightning) reach every player on the server, in every
+  dimension, as 1.5.2 broadcastSound did (vanilla/server WorldManager.java:108-111; first written to
+  the dimension only, corrected after the review).
+- ClientNotificationOfMetadataChange fires after the state is applied and only on a real META
+  change; only ProxyBlocks are hooked.
+- One packet per splash particle; one PlayerBridge sync per server footstep; in water the 1.20.1
+  swim and muffled steps stay with soulforged boots on. Hold-to-craft PlayCraftingFX is still not
+  bridged (UpdateUsingItem).
+- The 508 SoundEvent registry entries and network protocol 4 refuse mismatched client and server
+  builds.
+
+## 2026-10-11 (ap) Creative tab, Search and JEI from FC's creative rules; block-item names, subtypes, pick block
+
+Symptom (maintainer: hidden technical blocks and 'Fc Opaque Generic' in the BTW tab, missing
+variants; audit CT1-CT5, verifier MISSED-1..4; reviews CI-1..CI-3):
+
+- The BTW tab, the vanilla Search tab and JEI listed every registered FC block and item ('Added 174
+  blocks and 253 items to BTW creative tab'): 105 entries that 1.5.2 hides, among them burning, lit
+  and crop states, Axle Power Source, Stoked Fire, the Milk and Bucket blocks, Weeds as 'Block
+  1091', Lava Pillow, Shaft, Tool Placed, the 20 legacy 'Fc ... Siding/Moulding' blocks and the Old
+  Slats/Grate/Wicker items.
+- 33 variants 1.5.2 shows were missing: the 11 aesthetic blocks, 15 of the 16 wool slab colours, the
+  sand, grass and packed-earth slabs, packed earth and dung, the blood wood sapling, the companion
+  slab.
+- 64 of the 120 block entries 1.5.2 shows had camel-case names from the raw block name: 'Aesthetic
+  Opaque' for Block of Soap, Hellfire and the rest, 'Anvil' for Soulforge, 'Furnace Brick' for Brick
+  Oven, 'Shovel' for Piston Shovel. The string 'Fc Opaque Generic' exists nowhere in the repo,
+  source, lang files, classes or logs; it is most likely a paraphrase of these 'Fc ...' and
+  'Aesthetic Opaque' names.
+- JEI collapsed every Damage subtype into one entry (22 arcane scrolls, wool, candles, knit wool,
+  bark).
+- A subtype block item placed meta 0 on the BlockItem path (MISSED-1), a crafted packed-earth or
+  grass slab placed the wrong subtype on the FC path, middle-click handed out the clicked block's
+  own item at meta 0 (Shaft, Wheat Crop, Furnace Brick, Kiln; MISSED-3), and every subtype rendered
+  as meta 0 (MISSED-2, see (an)).
+
+Root cause: BTWCreativeTab.buildContents walked the registries (every ProxyBlock at meta 0, every
+btw item from id 478) and never asked FC's getCreativeTab / getSubItems, the way 1.5.2
+GuiContainerCreative did. Modern-Common lacked the plumbing: no Item.getCreativeTab(); ItemBlock did
+not forward the tab, getSubBlocks or the "tile." name to its block; and the vanilla-base stand-ins
+(ItemFood, ItemArmor, ItemSword, ItemBow, BlockChest, BlockPane, BlockBasePressurePlate) dropped
+their constructor setCreativeTab, so a naive tab filter would have hidden 66 legitimate FC entries
+(CT4). Block items had a constant literal name, JEI had no subtype interpreter, nothing read
+GetBlockIDToPlace or getMetadata(damage), and ProxyBlock had no getCloneItemStack.
+
+Fix (general rule: creative visibility, names and placement come from FC, computed as 1.5.2
+CreativeTabs.displayAllReleventItems, Item.getItemDisplayName and FCItemPlacesAsBlock.onItemUse
+computed them, never from the registries):
+
+- BTWCreativeTab emulates CreativeTabs.displayAllReleventItems (vanilla/client
+  CreativeTabs.java:134-147): FC tabs in creativeTabArray order (Search and Inventory skipped),
+  FC-owned ids only (block items of ProxyBlocks 175-4095, ProxyItems from 478), an id listed when
+  getCreativeTab() == tab and expanded through getSubItems, each stack converted with toMcStack
+  (metadata on the Damage tag) and accepted with PARENT_AND_SEARCH_TABS, so the Search tab and JEI
+  list exactly the BTW tab (MISSED-4).
+- Modern-Common (CT4, which had to land with CT1): Item.getCreativeTab() and
+  CreativeTabs.displayAllReleventItems; ItemBlock.getCreativeTab / getSubItems /
+  getUnlocalizedName()/(stack) forward to the block, with "tile." + getUnlocalizedName2()
+  (vanilla/client ItemBlock.java:200-227); constructor tabs restored per vanilla/client
+  (ItemFood:55, ItemArmor:58, ItemSword:30, ItemBow:27, BlockChest:31, BlockPane:41,
+  BlockBasePressurePlate:27).
+- New ProxyBlockItem, registered by BTWRegistration: getName is FC's
+  getItemDisplayName(toFcStack(stack)), with formatFcName only when FC hands back the untranslated
+  key; getPlacementState places the block FC's GetBlockIDToPlace(damage, side, hit relative to the
+  clicked block) names, through that block's getStateForPlacement, which takes getMetadata(damage)
+  from the held stack ((an) MPR-5).
+- Modern-Common ItemBlock.onItemUse is now FCItemPlacesAsBlock.onItemUse (Common
+  FCItemPlacesAsBlock.java:60-123): GetBlockIDToPlace, ground-cover and replaceable targeting,
+  canPlaceEntityOnSide, getMetadata(damage), onBlockPlaced, PreBlockPlacedBy, set, onBlockPlacedBy,
+  onPostBlockPlaced, the animal notification, PlayPlaceSound.
+- CI-1 (review blocker): getMetadata(damage) is faithful (:94), but the port registers plain
+  ItemBlocks and getMetadata-less ItemMultiTextureTile / ItemBlockWithMetadata / ItemColored stubs
+  at the vanilla subtype ids, so wool colours, wood species, slabs, sandstone, stone bricks, quartz,
+  walls and strata stone placed against an FC or legacy-id block came out as meta 0 and snapped back
+  from the client's prediction. ItemBlock.getMetadata (ItemBlock.java:112-128) restores 1.5.2's
+  vanilla subclass rule: the three stubs (and FC's FCItemBlockLog, FCItemBlockSnow,
+  FCItemBlockLilyPad, which extend them) return the damage; an exact-class ItemBlock at ids 5, 6,
+  17, 24, 31, 35, 43, 44, 97, 98, 106, 125, 126, 139 and 155 returns the damage, and at 18 damage |
+  4 (ItemLeaves.java:29); any other block item keeps FCItemPlacesAsBlock's 0. ItemPiston's 7 and
+  ItemAnvilBlock's << 2 are not ported.
+- CI-2: onItemUse guards its FC hooks. A throw in getMetadata, onBlockPlaced or PreBlockPlacedBy
+  places nothing; a throw after the block is set is logged once per block class and hook group, and
+  the place sound and stackSize-- still run, so a failing hook cannot hand out free blocks.
+- JEI (CT5, CI-3): BTWJeiPlugin registers one subtype interpreter for every betterthanwolves item:
+  the Damage metadata, NONE for damageable items, and NONE in UidContext.Recipe
+  (BTWJeiPlugin.java:145), because JEI looks recipes up by the exact Recipe uid and RecipeBridge
+  collapses FC's 32767 wildcard on a btw item to meta 0.
+- Pick block (MISSED-3): ProxyBlock.getCloneItemStack (ProxyBlock.java:1227) follows 1.5.2
+  Minecraft.java:2348-2380: FC's idPicked (0 picks nothing), the damage of blocksList[picked < 256
+  and not a flower pot ? picked : clicked].getDamageValue, converted by
+  ItemStackHelper.fcIdToMcStack (EMPTY when the id has no 1.20.1 item).
+
+Verification: a headless harness running the real FC init (FCBetterThanWolves and
+FCAddOnHandler.InitializeMods over the fc and Modern-Common classes, scratchpad only) reproduced the
+maintainer's 174 + 253 and gave 355 entries under the 1.5.2 rules; the mid-wave dev client logged
+'Added 120 block and 235 item entries to the BTW creative tab from FC's creative-tab membership (358
+FC-owned item ids)', the same 355. No changed Modern-Common class has a frozen copy in
+Forge/build/classes/java/fc/btw/modern. To check in game (not run): no 'Fc ...', burning, crop or
+power-source entries; 11 named aesthetic subtypes and 16 wool slab colours; FC foods, armour, the
+refined sword, the composite bow, the chest, the panes and the soulforged pressure plate present;
+'axle power' finds nothing in Search or JEI; JEI shows 22 scrolls and 16 wool colours, and U on red
+knit wool lists the wool armour; a creative Block of Soap places 215:5 against stone and against
+deepslate; orange wool, spruce planks, a birch log, chiseled stone bricks, a jungle sapling and
+spruce leaves placed against stone, dirt or an FC block keep their variant and drop it back;
+middle-click on a shaft, wheat crop, lit oven and kiln gives a stick, seeds, the idle oven and the
+kiln's drop.
+
+Caveats:
+
+- CT6 is not done (maintainer decision): the vanilla tabs still show what FC hid in 1.5.2, such as
+  the vanilla-id chest, cobweb and ladder (FC's own 1035, 1037 and 1051 are in the BTW tab), the
+  crafting table, records, the comparator and the TNT and hopper minecarts. If wanted, drive it from
+  FC's explicit setCreativeTab(null) calls (FCMOD lines in vanilla/client Block.java and Item.java,
+  BTWLifecycle.java:476-478 and :1704, the FCItemStub records), not from a null-tab test: the port's
+  vanilla initialisers set no tabs at all.
+- Strict parity hides survival-obtainable untabbed FC items from the tab and from JEI's list (Witch
+  Wart, Mail, Steel Nugget, Ender Slag, cut and tanned leathers, Golden Dung, Redstone Latch, ...):
+  maintainer decision.
+- MISSED-1 remaining gap: on the BlockItem path ProxyBlockItem delegates only GetBlockIDToPlace and
+  getStateForPlacement. FC ItemBlock onItemUse overrides (FCItemBlockSlab combining, the blood wood
+  sapling's soil rules, the finite torches' AttemptToLightBlock) and FC's placement refusals do not
+  run there; running them in useOn needs its own creative and consumption design. The path is taken
+  when the clicked block is post-1.5.2 or a vanilla block whose 1.20.1 class overrides use(), for
+  off-hand placement, and for every sneaking placement: 1.20.1 ServerPlayerGameMode.useItemOn skips
+  Block.use when the player is sneaking with an item, so neither ProxyBlock.use nor
+  BlockBehaviorMixin stage 2 runs, while 1.5.2 skipped only onBlockActivated and still ran FC's
+  onItemUse (ItemInWorldManager.activateBlockOrUseItem).
+- CI-3 partial: JEI's R and U lookups merge an item's subtypes until
+  RecipeBridge.fcStackAlternatives expands a 32767 wildcard to every FC subtype (getSubItems in a
+  try/catch, metas 0-15 as fallback); the Recipe-context NONE can then go.
+- FC block names are English Component.literal strings, as with ProxyItem. The verifier's explicit
+  null tabs for the BlockStem / BlockNetherStalk / BlockRedstoneTorch stand-ins are not applied
+  (vanilla ids only, CT6 territory).
+
+## 2026-10-11 (aq) Neighbour source ids, placed leaves, placement failures, World flag 2, BridgeAudit aux check
+
+Symptom (reviews WP-2, WP-3, WP-4, CI-1 and CI-2 follow-ups; orchestrator follow-ups 1-3, 6 and 8
+after W6):
+
+- Buddy blocks never fired when a lever beside them was flipped, a vanilla block next to them was
+  mined or a post-1.5.2 block next to them changed. The F3 notifyBlockChange path ((an)) also
+  reached FC ProxyBlock neighbours as "no block" whenever its source was a vanilla id.
+- Leaves placed through BTW's placement path decayed like natural leaves.
+- A throw from FC onItemUse, now the full FCItemPlacesAsBlock sequence, escaped
+  ProxyBlock.tryPlaceHeldItem into the use-item packet handler, which has no catch (1.20.1
+  PacketUtils rethrows): BlockableEventLoop.doRunTask logs an Exception as FATAL, and an Error (the
+  usual failure from frozen / Modern-Common divergence) takes the server down.
+- FCBlockNetherGrowth's netherrack conversion (Client FCBlockNetherGrowth.java:53/:145) and
+  FCBlockSapling's restore after a failed tree (:200-207) never reached clients.
+- tools/BridgeAudit check [2] reported 0 handled and 55 fired-but-unhandled FC aux ids once (ao)
+  deleted WorldBridge.playFcAuxSFX: false positives that would hide a real regression.
+
+Root cause: more primitives mapped by name.
+
+- ProxyBlock.neighborChanged passed the source's legacy id only when the source was a ProxyBlock,
+  so FC onNeighborBlockChange saw 0 for any other source, and FCBlockBuddyBlock ignores 0 (Client
+  FCBlockBuddyBlock.java:78-80). 1.5.2 passes the notifying id through (World.java:694-702; setBlock
+  passes the old id, :461-478; setBlockMetadata the current one, :572-575), as 1.20.1 blockUpdated
+  passes the old block.
+- WorldBridge.applyFcMetadataToVanillaBlock had no leaves branch: once CI-1 passed 1.5.2's
+  player-placed bit (ItemLeaves.getMetadata = damage | 4, vanilla/client ItemLeaves.java:29), the
+  state was still written with PERSISTENT false (before W6 the bit was not even passed, so these
+  leaves decayed in 1.3.0-alpha.3 as well).
+- ProxyBlock.tryPlaceHeldItem had only the creative try/finally.
+- Modern-Common World.setBlockAndMetadata wrote with flag 0, while 1.5.2 uses flag 2 (vanilla/server
+  World.java:4152-4155); with 1.20.1 Level.setBlock flag 0, sendBlockUpdated never runs. Its 6-arg
+  playSound was empty instead of delegating to the 7-arg one (vanilla/client World.java:4994-4997),
+  so a client world overriding only the 7-arg overload missed FC's 6-arg calls (FCBlockMillStone).
+- BridgeAudit counted numeric `case NNNN:` labels >= 2222 in WorldBridge.
+
+Fix:
+
+- New ProxyRegistry.getNeighbourSourceId(Block, BlockGetter, BlockPos) (ProxyRegistry.java:280-288)
+  = getWorldBlockId of the source's default state: a ProxyBlock or legacy-id vanilla block reports
+  its legacy id, any other colliding block its stand-in id (160/161), air 0.
+  ProxyBlock.neighborChanged (ProxyBlock.java:379) and BlockBehaviorMixin.btw$neighborChanged
+  (BlockBehaviorMixin.java:178) use it, so FC neighbours see the id 1.5.2 would pass, and
+  WorldBridge's notifyBlockChange(id) round-trips: id -> neighbourSource block -> the same id
+  (WorldBridge.java:966-980).
+- WorldBridge.applyFcMetadataToVanillaBlock maps meta bit 4 to LeavesBlock.PERSISTENT
+  (WorldBridge.java:527-532); the species bits already pick the variant through
+  getModernBlockVariant(18, mask 3).
+- ProxyBlock.tryPlaceHeldItem (ProxyBlock.java:536-563) catches Throwable around both
+  tryPlaceItemIntoWorld calls, logs once per item id through ProxyItem.logFcFailureOnce("onItemUse",
+  ...) and returns false, so nothing is placed; the creative restore stays in finally. Together with
+  CI-2's guards in ItemBlock.onItemUse ((ap)), a failing FC placement hook can neither crash the
+  server nor hand out free blocks.
+- Modern-Common World.setBlockAndMetadata uses flag 2 (World.java:295-298), and the 6-arg playSound
+  delegates to the 7-arg one (:683-688). The WorldBridge setBlockAndMetadata override added during
+  the wave is removed as redundant.
+- BridgeAudit [2] (BridgeAudit.java:111-134): an FC aux id counts as handled when FC's own
+  ClientPlayCustomAuxFX has a `case m_i...AuxFXID:` label for it (Client FCBetterThanWolves.java),
+  provided the forwarding chain is intact: WorldBridge contains `BTWNetwork.sendFcAuxSfx(` and
+  `FIRST_FC_AUX_SFX_ID = 2222`, BTWNetwork calls `LegacyClientSound.playAux(`, and LegacyClientSound
+  names "ClientPlayCustomAuxFX". A broken link is a high-severity finding.
+
+Verification: BridgeAudit prints '[2] AUX-FX COVERAGE: 64 aux-FX ids defined, 64 handled by FC
+ClientPlayCustomAuxFX (forwarded via BTWNetwork.sendFcAuxSfx), 0 FIRED-but-UNHANDLED' (2 unhandled
+before W6); `:Forge:jar` is green and the dedicated server boots with 0 ERROR lines. To check in
+game (not run): a buddy block fires when a lever beside it is flipped and when the stone beside it
+is mined; spruce leaves placed against stone, away from any log, never decay; nether growth
+spreading into netherrack shows on the client at once; a forced FC onItemUse failure gives one WARN
+and no placement.
+
+Caveats: the source id comes from the source block's default state, so a state-dependent legacy id
+is reported as the default state's (a vanilla slab notifying as a double slab reads as the
+single-slab id). BridgeAudit's class comment (BridgeAudit.java:13-15) still describes the old
+WorldBridge switch. RecipeBridge's per-subtype wildcard expansion (CI-3) and the opaque-cube /
+AxisAlignedBB render items of (an) remain open.
+
+## 2026-10-11 (ar) Server lag: replacement proxies count in the replaced vanilla mob's spawn category
+
+**Symptom (maintainer, CurseForge instance).** Within about ten minutes of a fresh world the server
+thread fell behind ("Can't keep up", up to 28 s, about 6 TPS). Oak logs broke 10-30 s late while dead
+bushes broke at once. Reported against the published jar; the dev client showed the same.
+
+**Evidence.**
+- JFR profile of the live instance (90 s): 83.6% of server-thread samples in ProxyPathfinderMob.tick,
+  69.3% in FCEntitySquid.onLivingUpdate (head-crab and attack-target entity scans through
+  WorldBridge.getEntitiesWithinAABB / GetClosestEntityMatchingCriteriaWithinRange,
+  collideWithNearbyEntities, moveEntity).
+- The ten-minute autosave held 5745 `betterthanwolves:fc_squid`, up to 478 in one chunk, almost all at
+  y -40..31, plus 403 ink sacs and 490 FC XP orbs from squids killed by entity cramming. A nine-minute
+  dev world held 185.
+- The only squid replacement in the log: `minecraft:glow_squid -> betterthanwolves:fc_squid (NATURAL)`.
+
+**Root cause.** VanillaMobReplacer maps glow_squid (MobCategory UNDERGROUND_WATER_CREATURE, cap 5) to
+fc_squid, registered as WATER_CREATURE. Forge 1.20.1 NaturalSpawner.createState (mapped 47.3.0
+sources :67-90) counts each loaded non-persistent mob under `entity.getClassification(true)`, whose
+IForgeEntity default is `getType().getCategory()`. Every converted glow squid counted as
+WATER_CREATURE, the underground-water count stayed near 0, and glow squids spawned every tick without
+limit, each becoming an fc_squid. FC's squid AI scans the entities around it every tick, so the cost
+grew roughly with the square of the population. 1.5.2 counted each cap by the creature class it
+spawns (vanilla/server SpawnerAnimals.java:107), so a mob was always counted where it spawned.
+glow_squid was the only REPLACEMENTS entry whose vanilla and FC categories differ.
+
+The late breaks follow from the lag: ServerPlayerGameMode.handleBlockBreakAction (STOP_DESTROY_BLOCK,
+:179-199) measures progress in server game ticks, so at ~6 TPS the break becomes a delayed destroy;
+instant blocks are destroyed at START (:93).
+
+**Fix (general rule).** A replacement proxy counts for natural-spawn purposes in the MobCategory of
+the vanilla mob it replaced.
+- ProxyMob, ProxyAnimal and ProxyPathfinderMob keep a nullable replaced category
+  (`setReplacedCategory`) and override `getClassification(boolean forSpawnCount)`: the replaced
+  category when counting spawns and known, otherwise the registered one. NaturalSpawner.createState
+  is the method's only caller.
+- The category is saved next to FCClassName as the string tag `BTWSpawnCategory`
+  (`MobCategory.getName()`); ProxyMob.readSpawnCategory keeps the registered category for a missing
+  tag and for an unknown name (one WARN per name).
+- VanillaMobReplacer.replaceWithProxy, the single place a proxy is built from a vanilla entity (every
+  origin), sets it before FC init and addFreshEntity, so the next spawner count already sees it.
+- At ServerAboutToStart VanillaMobReplacer logs once (INFO) every REPLACEMENTS entry that crosses
+  categories (today only glow_squid).
+- Unchanged: entity type registrations, despawn (both categories use 128/32), FC code, FC squid
+  behaviour. Proxies not made by replacement keep their registered category.
+
+**Verified.** `:Forge:jar` green; LinkAudit and BridgeAudit unchanged; a dedicated server boots with 0
+ERROR lines and logs the category line. Still to check in game: in a fresh world near cave water,
+after 10+ minutes `/execute if entity @e[type=betterthanwolves:fc_squid]` stays small, no "Can't keep
+up" appears, logs break on time, and `/data get entity` on a converted glow squid shows
+`BTWSpawnCategory: "underground_water_creature"`.
+
+**Caveats.** Over-populated test worlds are not cleaned up, and their untagged fc_squid still count as
+WATER_CREATURE. Biome spawn costs (the potential-charge budget) are keyed by EntityType, so proxies add
+no charge after their spawn tick; in soul sand valley and warped forest, spacing comes only from the
+MONSTER and local caps (not a lag source; 1.5.2 had no charge system). A BiomeModifier copying each
+replaced type's spawn cost to its fc type would close it (review W7-R1).

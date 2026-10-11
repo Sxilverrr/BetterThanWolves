@@ -188,6 +188,9 @@ public class ProxyBlockEntity extends BlockEntity {
 
     /** Creates a minimal client-side World for FC tile entity particle spawning. */
     private static btw.modern.World createClientWorld(Level level) {
+        // Client-local sounds and aux effects go to the shared client sink only for a real client level
+        // (a dedicated server never builds this world, nor loads the client-only sink class).
+        final boolean clientSink = level.isClientSide();
         return new btw.modern.World() {
             { this.isRemote = true; this.rand = new java.util.Random();
               // 1.5.2 worlds always have a provider: frozen Entity.<init> reads
@@ -229,15 +232,42 @@ public class ProxyBlockEntity extends BlockEntity {
             public void notifyBlockChange(int x, int y, int z, int id) {}
             public boolean spawnEntityInWorld(btw.modern.Entity e) { return false; }
             public btw.modern.BiomeGenBase getBiomeGenForCoords(int x, int z) { return btw.modern.BiomeGenBase.plains; }
+            // 1.5.2 WorldClient + RenderGlobal sound contract (audit sounds S1): the client ticker runs FC
+            // te.updateEntity() here (tick() below), and 1.5.2 TEs played their client-only sounds through
+            // World.playSound (e.g. the turntable click, FCTileEntityTurntable.java:88-108 `if
+            // (worldObj.isRemote)`), which WorldClient played locally (WorldClient.java:483-505).
+            // playSoundEffect / playSoundAtEntity stay no-ops as in RenderGlobal (:1812, :1817).
             public void playSoundEffect(double x, double y, double z, String s, float v, float p) {}
             public void playSoundAtEntity(btw.modern.Entity e, String s, float v, float p) {}
-            public void playAuxSFX(int id, int x, int y, int z, int data) {}
-            public void playAuxSFXAtEntity(btw.modern.EntityPlayer p, int id, int x, int y, int z, int data) {}
+            @Override
+            public void playSound(double x, double y, double z, String s, float v, float p, boolean distanceDelay) {
+                if (clientSink) btw.forge.client.LegacyClientSound.playLocal(x, y, z, s, v, p, distanceDelay);
+            }
+            // vanilla/client World.java:4994-4997: the 6-arg overload is the 7-arg one without delay.
+            @Override
+            public void playSound(double x, double y, double z, String s, float v, float p) {
+                playSound(x, y, z, s, v, p, false);
+            }
+            // RenderGlobal.playAuxSFX / broadcastSound, FC ids through FC's own client handler.
+            public void playAuxSFX(int id, int x, int y, int z, int data) {
+                if (clientSink) btw.forge.client.LegacyClientSound.playAux(id, x, y, z, data);
+            }
+            public void playAuxSFXAtEntity(btw.modern.EntityPlayer p, int id, int x, int y, int z, int data) {
+                playAuxSFX(id, x, y, z, data);
+            }
+            @Override
+            public void func_82739_e(int id, int x, int y, int z, int data) {
+                if (clientSink) btw.forge.client.LegacyClientSound.playAux(id, x, y, z, data, true);
+            }
             public boolean isRaining() { return false; }
             public boolean isBlockGettingPowered(int x, int y, int z) { return false; }
             public boolean isBlockIndirectlyGettingPowered(int x, int y, int z) { return false; }
             public btw.modern.IChunkProvider createChunkProvider() { return null; }
             public boolean destroyBlock(int x, int y, int z, boolean drop) { return false; }
+            // Deliberately not a re-mesh (unlike ClientFcWorld, MPR-6): FC calls this only from
+            // readNBTFromPacket (FCTileEntityCookingVessel/Hopper/Campfire/...), which runs for every data
+            // packet (load -> applySyncData; the server resends each FC TE every 20 ticks). onDataPacket
+            // re-meshes once, and only when FC's description data changed.
             public void markBlockRangeForRenderUpdate(int x1, int y1, int z1, int x2, int y2, int z2) {}
             public boolean canBlockSeeTheSky(int x, int y, int z) { return level.canSeeSky(new net.minecraft.core.BlockPos(x,y,z)); }
             public btw.modern.WorldChunkManager getWorldChunkManager() { return null; }

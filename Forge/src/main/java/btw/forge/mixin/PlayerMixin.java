@@ -1,19 +1,26 @@
 package btw.forge.mixin;
 
 import btw.forge.PlayerBridge;
+import btw.forge.ProxyItem;
 import btw.forge.ProxyRegistry;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
@@ -29,6 +36,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *   <li>Blasting oil detonation on damage (combat #18)</li>
  *   <li>Melee damage modifier from penalties (combat #20)</li>
  *   <li>FC block movement modifier on ground (getSpeed) and FC penalty while airborne (getFlyingSpeed)</li>
+ *   <li>FC step sounds: low-health grunt, soulforged boots (playStepSound)</li>
+ *   <li>No vanilla burp where FC's onEaten owns the eat (eat)</li>
  * </ul>
  */
 @Mixin(Player.class)
@@ -287,6 +296,95 @@ public abstract class PlayerMixin implements PlayerBridge.Holder {
         float modifier = btw.forge.FCMovementBonus.getSyncedPenaltyModifier(self);
         if (modifier < 0.99F) {
             cir.setReturnValue(0.02F * modifier + (self.isSprinting() ? 0.006F : 0.0F));
+        }
+    }
+
+    // ================================================================
+    // FC step sounds: low-health grunt, soulforged boots (audit sounds S11)
+    // ================================================================
+
+    @Unique
+    private static final org.apache.logging.log4j.Logger BTW$LOGGER =
+            org.apache.logging.log4j.LogManager.getLogger("BTW-PlayerSounds");
+
+    @Unique
+    private static volatile boolean btw$stepSoundFailureLogged;
+
+    /**
+     * FC's EntityPlayer.playStepSound override (vanilla/server EntityPlayer.java:2454-2492), ported to Modern-Common
+     * EntityPlayer.PlayStepGrunt / PlaySoulforgedBootsStep: a grunt with every step while the health/exhaustion
+     * modifier is below 0.26, and with soulforged boots a quieter, lower step in place of the regular one. Both
+     * are server playSoundAtEntity broadcasts that reach the stepping player too; the 1.5.2 client's own copy
+     * went to WorldClient's no-op playSoundAtEntity.
+     * <ul>
+     *   <li>Server: runs the port through the player's bridge on the block 1.20.1 steps on (getOnPosLegacy, the
+     *       1.5.2 posY - 0.2 ground block); the 1.20.1 step is cancelled only when the boots step replaced it.</li>
+     *   <li>Client: 1.20.1 plays the player's own step locally (Player.playSound to itself); with the boots on,
+     *       1.5.2 played none there, so that local step is dropped and the server's boots step is the one heard.</li>
+     *   <li>In water the 1.20.1 swim sound and muffled step stay (1.5.2 played liquid.swim on its own, and the
+     *       boots branch is silent on a liquid); only the grunt is added.</li>
+     * </ul>
+     */
+    @Inject(method = "playStepSound", at = @At("HEAD"), cancellable = true)
+    private void btw$fcStepSound(BlockPos pos, BlockState state, CallbackInfo ci) {
+        Player self = (Player) (Object) this;
+        try {
+            if (self instanceof ServerPlayer sp) {
+                PlayerBridge pb = PlayerBridge.getOrCreate(sp);
+                if (pb.worldObj == null) return;
+                pb.PlayStepGrunt();
+                if (!self.isInWater()) {
+                    int blockId = pb.worldObj.getBlockId(pos.getX(), pos.getY(), pos.getZ());
+                    if (pb.PlaySoulforgedBootsStep(pos.getX(), pos.getY(), pos.getZ(), blockId)) {
+                        ci.cancel();
+                    }
+                }
+            } else if (self.level().isClientSide() && !self.isInWater() && btw$wearsSoulforgedBoots(self)) {
+                ci.cancel();
+            }
+        } catch (Throwable t) {
+            // Entity.move, inside the movement packet handler (server) or the player tick (client)
+            if (!btw$stepSoundFailureLogged) {
+                btw$stepSoundFailureLogged = true;
+                BTW$LOGGER.warn("FC step sound failed; vanilla step sounds stay (logged once): {}", t.toString(), t);
+            }
+        }
+    }
+
+    /** The client half of EntityPlayer.IsWearingSoulforgedBoots: the same test on the synced boots slot. */
+    @Unique
+    private static boolean btw$wearsSoulforgedBoots(Player player) {
+        ItemStack boots = player.getItemBySlot(EquipmentSlot.FEET);
+        return !boots.isEmpty() && btw.modern.EntityPlayer.IsSoulforgedBootsItem(ProxyItem.fcItemFor(boots.getItem()));
+    }
+
+    // ================================================================
+    // No vanilla burp where FC's onEaten owns the eat (audit sounds S10)
+    // ================================================================
+
+    /** Whether the eat Player.eat is running belongs to FC (read by {@link #btw$fcOwnsBurp}). */
+    @Unique
+    private boolean btw$fcOwnedEat;
+
+    @Inject(method = "eat(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/item/ItemStack;)Lnet/minecraft/world/item/ItemStack;",
+            at = @At("HEAD"))
+    private void btw$noteFcOwnedEat(Level level, ItemStack stack, CallbackInfoReturnable<ItemStack> cir) {
+        this.btw$fcOwnedEat = ((Object) stack) instanceof ProxyItem.FcOwnedEat owned && owned.btw$isFcOwnedEat();
+    }
+
+    /**
+     * 1.5.2 burps once, in ItemFood.onEaten (vanilla/server ItemFood.java:71, broadcast), which FC's food code
+     * runs at ItemStack.finishUsingItem HEAD (ItemStackMixin.btw$finishUsing) before vanilla's Item.finishUsingItem
+     * reaches Player.eat. When FC fed this eat (ProxyItem.FcOwnedEat) Player.eat's PLAYER_BURP would be a second
+     * burp: it is skipped. Every other eat (modern-only foods, eats FC did not feed) keeps vanilla's.
+     */
+    @Redirect(method = "eat(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/item/ItemStack;)Lnet/minecraft/world/item/ItemStack;",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/level/Level;playSound(Lnet/minecraft/world/entity/player/Player;DDDLnet/minecraft/sounds/SoundEvent;Lnet/minecraft/sounds/SoundSource;FF)V"))
+    private void btw$fcOwnsBurp(Level level, Player except, double x, double y, double z,
+                                SoundEvent sound, SoundSource source, float volume, float pitch) {
+        if (!this.btw$fcOwnedEat) {
+            level.playSound(except, x, y, z, sound, source, volume, pitch);
         }
     }
 }

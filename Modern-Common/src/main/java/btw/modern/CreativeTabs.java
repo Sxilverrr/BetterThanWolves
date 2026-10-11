@@ -34,4 +34,17 @@ public class CreativeTabs {
     public String getTabLabel() {
         return this.tabLabel;
     }
+
+    // 1.5.2 CreativeTabs.displayAllReleventItems (vanilla/client CreativeTabs.java:134-147): every item whose
+    // getCreativeTab() is this tab, expanded through its getSubItems, in Item.itemsList order. (The 1.5.2 Combat and
+    // Tools tab subclasses also appended enchanted books through func_92116_a, which FC emptied.) BTWCreativeTab
+    // applies the same rule to the FC-owned item ids only.
+    @SuppressWarnings("rawtypes")
+    public void displayAllReleventItems(java.util.List list) {
+        for (Item item : Item.itemsList) {
+            if (item != null && item.getCreativeTab() == this) {
+                item.getSubItems(item.itemID, this, list);
+            }
+        }
+    }
 }

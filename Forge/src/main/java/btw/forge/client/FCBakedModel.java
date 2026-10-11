@@ -6,13 +6,19 @@ import btw.forge.ProxyBlock;
 import btw.forge.ProxyBlockEntity;
 import btw.forge.ProxyRegistry;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.renderer.block.model.BlockElement;
 import net.minecraft.client.renderer.block.model.ItemOverrides;
+import net.minecraft.client.renderer.block.model.ItemTransforms;
 import net.minecraft.client.renderer.texture.MissingTextureAtlasSprite;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.BakedModel;
+import net.minecraft.client.resources.model.BlockModelRotation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.resources.ResourceLocation;
@@ -22,6 +28,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraftforge.client.model.data.ModelData;
 import net.minecraftforge.client.model.data.ModelProperty;
+import net.minecraftforge.client.model.geometry.UnbakedGeometryHelper;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import javax.annotation.Nullable;
@@ -42,8 +49,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Created during model baking with just a reference to the FC block. On first
  * use it runs FC's {@code RenderBlock} once per metadata value through the
  * Tessellator capture pipeline against a fake world ({@link StaticAccess}) and
- * converts the captured vertices to BakedQuads. Those static quads serve items
- * and every meta whose output cannot vary with position.
+ * converts the captured vertices to BakedQuads. Those static quads serve every
+ * meta whose output cannot vary with position.
+ *
+ * <p>The block's item ({@code <block>#inventory}) is served through {@link #getOverrides}: per
+ * item damage, FC's {@code RenderBlockAsItem} captured the same way, or the flat icon where
+ * 1.5.2 drew one (see {@link #itemModelFor}). World quads come from RenderBlock, item quads from
+ * RenderBlockAsItem, as in 1.5.2.
  *
  * <p>While capturing, {@link StaticAccess} records whether a meta's render read
  * a neighbour, a tile entity or opacity, and a second capture at (1,0,0)
@@ -51,6 +63,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * every chunk rebuild against the real chunk snapshot ({@link LiveAccess}),
  * through the Forge {@link #getModelData} hook -- 1.5.2's WorldRenderer ran
  * RenderBlock for every block on every rebuild (WorldRenderer.java:162-222).
+ *
+ * <p>The live set is not limited to the gear boxes, clutches and axles whose getBlockTexture reads
+ * neighbours. RenderBlocks.renderStandardBlock / RenderStandardFullBlock gate every face on
+ * block.shouldSideBeRendered (1.5.2 RenderBlocks.java:6047-6187, 10103-10175), so every meta of a
+ * block whose override reads a neighbour is live too: FCBlockAestheticOpaque and FCBlockSlab
+ * (getBlockId / isBlockOpaqueCube), and the sidings, corners, mouldings, stairs, planters and panes
+ * (grates, slats) that go through ShouldSideBeRenderedBasedOnCurrentBounds (getBlockId). Each such block
+ * costs one FC RenderBlock per chunk-section rebuild, serialised on {@link #CAPTURE_LOCK}; that buys
+ * 1.5.2's face culling, which the static quads (air neighbours, every face drawn) lack. The log line
+ * "live-capture metas" lists the live metas per block.
  */
 public class FCBakedModel implements BakedModel {
 
@@ -69,11 +91,11 @@ public class FCBakedModel implements BakedModel {
     private btw.modern.Block fcBlock;
     private int legacyBlockId;
 
-    /** Static quads for item rendering (no world context). Null until first item getQuads(). */
-    private volatile Map<Integer, List<BakedQuad>> itemQuadsByMeta;
+    /** Static per-meta RenderBlock quads (no world context). Null until first use. */
+    private volatile Map<Integer, List<BakedQuad>> staticQuadsByMeta;
     /** Bit m set => meta m's RenderBlock output depends on world context (neighbour/TE/opacity read
-     *  or coordinate parity) and is captured live per position. Written before itemQuadsByMeta is
-     *  published, so any reader that saw itemQuadsByMeta != null sees the final mask. */
+     *  or coordinate parity) and is captured live per position. Written before staticQuadsByMeta is
+     *  published, so any reader that saw staticQuadsByMeta != null sees the final mask. */
     private volatile int liveMetaMask;
     private volatile TextureAtlasSprite particleSprite;
     /** Whether icons have been registered for this block. */
@@ -81,6 +103,12 @@ public class FCBakedModel implements BakedModel {
 
     /** One WARN per (block, meta) for live-capture failures (static quads are used instead). */
     private static final Set<Integer> LIVE_FAIL_LOGGED = ConcurrentHashMap.newKeySet();
+
+    /** Item damage -> item model, built on first use (see {@link #itemModelFor}). */
+    private final Map<Integer, BakedModel> itemModelsByDamage = new ConcurrentHashMap<>();
+    private final ItemOverrides itemOverrides = new DamageOverrides();
+    /** item/generated model whose transforms the flat (icon) item models use; null = block transforms. */
+    private BakedModel flatItemTemplate;
 
     // ================================================================
     // Factory
@@ -91,9 +119,18 @@ public class FCBakedModel implements BakedModel {
      * until the first getQuads() call on the render thread.
      */
     public static FCBakedModel deferred(btw.modern.Block fcBlock, int legacyId) {
+        return deferred(fcBlock, legacyId, null);
+    }
+
+    /**
+     * As {@link #deferred(btw.modern.Block, int)}; {@code flatItemTemplate} (an item/generated model)
+     * supplies the display transforms of the item damages 1.5.2 drew as a flat icon.
+     */
+    public static FCBakedModel deferred(btw.modern.Block fcBlock, int legacyId, @Nullable BakedModel flatItemTemplate) {
         FCBakedModel model = new FCBakedModel();
         model.fcBlock = fcBlock;
         model.legacyBlockId = legacyId;
+        model.flatItemTemplate = flatItemTemplate;
         return model;
     }
 
@@ -178,11 +215,11 @@ public class FCBakedModel implements BakedModel {
         }
     }
 
-    /** Ensure static item quads are built (for item rendering without world context). */
-    private void ensureItemQuadsBuilt() {
-        if (itemQuadsByMeta != null) return;
+    /** Ensure the static per-meta RenderBlock quads are built (position-independent metas, fallbacks). */
+    private void ensureStaticQuadsBuilt() {
+        if (staticQuadsByMeta != null) return;
         synchronized (CAPTURE_LOCK) {
-            if (itemQuadsByMeta != null) return;
+            if (staticQuadsByMeta != null) return;
             try {
                 ensureIconsRegistered();
                 doCaptureAndBuild();
@@ -192,7 +229,7 @@ public class FCBakedModel implements BakedModel {
                 LOGGER.error("BTW: static capture failed for block {}; it renders empty", legacyBlockId, t);
                 this.liveMetaMask = 0;
                 if (this.particleSprite == null) this.particleSprite = getMissingSprite();
-                this.itemQuadsByMeta = Collections.emptyMap();
+                this.staticQuadsByMeta = Collections.emptyMap();
             }
         }
     }
@@ -221,9 +258,18 @@ public class FCBakedModel implements BakedModel {
      * leftover face shade or colour multiplier would tint the next capture (triage R1-M1).
      */
     private Capture runFcRender(btw.modern.IBlockAccess access, int x, int y, int z) {
+        return runFcRender(access, x, y, z, false);
+    }
+
+    /**
+     * {@code renderAllFaces}: 1.5.2 RenderBlocks.renderAllFaces, which skips the shouldSideBeRendered face gate
+     * (renderBlockAllFaces, vanilla/client RenderBlocks.java:402-407, what 1.5.2 drew a piston-moved block with).
+     */
+    private Capture runFcRender(btw.modern.IBlockAccess access, int x, int y, int z, boolean renderAllFaces) {
         btw.modern.Block block = this.fcBlock;
         btw.modern.RenderBlocks renderer = new btw.modern.RenderBlocks();
         renderer.blockAccess = access;
+        renderer.SetRenderAllFaces(renderAllFaces);
         btw.modern.Tessellator tess = btw.modern.Tessellator.instance;   // thread-local
         // Block geometry is emitted in block coords via render bounds; no GL matrix may apply. A
         // same-thread FC TESR could have left tracking enabled (see GL11 javadoc).
@@ -262,8 +308,8 @@ public class FCBakedModel implements BakedModel {
         // Detach the access: blocksList is JVM-static and keeps block.m_currentBlockRenderer, so a
         // LiveAccess left here would pin the chunk snapshot (and through it the ClientLevel) after
         // the player leaves the world. The renderer itself stays assigned, non-null as 1.5.2 left it
-        // after chunk meshing (RenderBlocks.java:9444); FC only calls the stateless
-        // ShouldSideBeRenderedBasedOnCurrentBounds through it.
+        // after chunk meshing (RenderBlocks.java:9444); FC calls ShouldSideBeRenderedBasedOnCurrentBounds
+        // through it, which draws the face (returns true) while blockAccess is null.
         renderer.blockAccess = null;
         return new Capture(quads, failure);
     }
@@ -449,16 +495,14 @@ public class FCBakedModel implements BakedModel {
     private void doCaptureAndBuild() {
         btw.modern.Block block = this.fcBlock;
         if (block == null) {
-            itemQuadsByMeta = Collections.emptyMap();
+            staticQuadsByMeta = Collections.emptyMap();
             particleSprite = getMissingSprite();
             return;
         }
 
-        // Step 2: For each meta, capture vertices from FC's rendering code.
-        // We use RenderBlock (in-world rendering) which uses FC's FCModelBlock
-        // system for correct shapes. RenderBlockAsItem produces standard cubes
-        // for many blocks (via RenderInvBlockWithMetadata) which is wrong for
-        // in-world display. StaticAccess provides the metadata to FC and records
+        // Step 2: For each meta, capture vertices from FC's in-world RenderBlock, which uses FC's
+        // FCModelBlock system for correct shapes (items run RenderBlockAsItem instead, see
+        // itemModelFor). StaticAccess provides the metadata to FC and records
         // whether the meta's output depends on world context (live capture).
         // RenderBlock returns false for TESR blocks (chest, ender chest, end portal)
         // — those are rendered by FCBlockEntityRenderer via the TESR capture pipeline.
@@ -491,6 +535,14 @@ public class FCBakedModel implements BakedModel {
             if (live) liveMask |= 1 << meta;
 
             List<btw.modern.Tessellator.CapturedQuad> captured = cap.quads;
+            if (live && cap.failure == null) {
+                // The static quads of a live meta are drawn where no live capture runs (piston-moved block,
+                // breaking overlay, live-capture fallback). The first pass culled faces against StaticAccess's
+                // fake neighbours (the same block at y+-1), so take them from an all-faces pass, as 1.5.2 drew
+                // a moving block. A non-live meta read no neighbour: its first pass is its in-world geometry.
+                Capture all = runFcRender(new StaticAccess(block, meta, 0, 0, 0), 0, 0, 0, true);
+                if (all.failure == null && !all.quads.isEmpty()) captured = all.quads;
+            }
 
             if (captured.isEmpty() && meta == 0) {
                 LOGGER.warn("BTW: Block {} ({}) produced 0 quads for meta 0. blockIcon={}",
@@ -545,8 +597,8 @@ public class FCBakedModel implements BakedModel {
 
         LOGGER.info("BTW: Block {} ({}) live-capture metas: 0x{}",
                 legacyBlockId, block.getClass().getSimpleName(), Integer.toHexString(liveMask));
-        this.liveMetaMask = liveMask;      // publish before the map: readers gate on itemQuadsByMeta != null
-        this.itemQuadsByMeta = result;
+        this.liveMetaMask = liveMask;      // publish before the map: readers gate on staticQuadsByMeta != null
+        this.staticQuadsByMeta = result;
     }
 
     // ================================================================
@@ -590,6 +642,438 @@ public class FCBakedModel implements BakedModel {
             }
             return null;
         }
+    }
+
+    // ================================================================
+    // Item models — FC's RenderBlockAsItem per item damage
+    // ================================================================
+
+    /** Distinct item damages cached per block; further damages show damage 0 instead of re-capturing each frame. */
+    private static final int MAX_ITEM_DAMAGE_MODELS = 256;
+
+    /** One WARN per block whose item render threw or drew nothing (its RenderBlock quads are drawn instead). */
+    private static final Set<Integer> ITEM_FAIL_LOGGED = ConcurrentHashMap.newKeySet();
+
+    /**
+     * The model of this block's item stack with the given damage, built on first use and cached.
+     * 1.5.2 drew a block item from the stack's damage: RenderItem.renderItemIntoGUI (RenderItem.java:374)
+     * and ItemRenderer.renderItem (ItemRenderer.java:57) take the 3D branch when
+     * {@code stack.getItemSpriteNumber() == 0 && block.DoesItemRenderAsBlock(damage)} and call
+     * renderBlockAsItem(block, damage, 1F) (RenderItem.java:398, ItemRenderer.java:61), which hands the
+     * draw to FC's Block.RenderBlockAsItem (RenderBlocks.java:9453-9456); otherwise they draw the stack's
+     * icon flat (RenderItem.java:402-460). So every subtype stack (sidings, corners, mouldings, wool
+     * slabs, ...) gets its own model, and torches, plants and other flat-icon blocks are flat. Never throws.
+     */
+    private BakedModel itemModelFor(int damage) {
+        BakedModel cached = itemModelsByDamage.get(damage);
+        if (cached != null) return cached;
+        if (damage != 0 && itemModelsByDamage.size() >= MAX_ITEM_DAMAGE_MODELS) return itemModelFor(0);
+        if (btw.modern.Tessellator.instance.isCapturing()) {
+            // Asked from inside an FC capture on this thread: the Tessellator holds one capture per
+            // thread, so capturing now would wipe that capture's quads. Serve the meta-0 RenderBlock
+            // quads this once (uncached); the item model is built on a later call.
+            return staticItemModel(0);
+        }
+        BakedModel built;
+        try {
+            built = buildItemModel(damage);
+        } catch (Throwable t) {
+            if (ITEM_FAIL_LOGGED.add(legacyBlockId)) {
+                LOGGER.warn("BTW: item model of block {} damage {} failed -- drawing its RenderBlock quads: {}",
+                        legacyBlockId, damage, t.toString());
+            }
+            built = staticItemModel(0);
+        }
+        BakedModel raced = itemModelsByDamage.putIfAbsent(damage, built);
+        return raced != null ? raced : built;
+    }
+
+    /** What FC decides for one item damage (read under CAPTURE_LOCK; FC Block instances keep scratch fields). */
+    private static final class ItemPlan {
+        boolean asBlock;
+        /** getColorFromItemStack per drawn layer (3D: one, the GL colour of the block draw). */
+        int[] colors = {0xFFFFFF};
+        /** Flat: icon name per render pass (null = no icon for that pass). */
+        String[] iconNames = new String[0];
+        /** The item's placed metadata (FC Item.getMetadata), for the RenderBlock fallback. */
+        int fallbackMeta;
+    }
+
+    private BakedModel buildItemModel(int damage) {
+        ensureStaticQuadsBuilt();
+        btw.modern.Block block = this.fcBlock;
+        if (block == null) return staticItemModel(0);
+
+        ItemPlan plan;
+        Capture cap = null;
+        synchronized (CAPTURE_LOCK) {
+            plan = planItem(block, damage);
+            if (plan.asBlock) cap = runFcItemRender(damage, plan.colors[0]);
+        }
+
+        if (plan.asBlock) {
+            // Conversion outside the lock: lookupSprite's cache is a ConcurrentHashMap.
+            List<BakedQuad> quads = cap.failure == null ? toBakedQuads(cap.quads) : Collections.emptyList();
+            if (!quads.isEmpty()) {
+                return new ItemModel(quads, true, particleOrMissing(), FC_ITEM_TRANSFORMS);
+            }
+            if (ITEM_FAIL_LOGGED.add(legacyBlockId)) {
+                LOGGER.warn("BTW: RenderBlockAsItem of block {} ({}) damage {} {} -- drawing its RenderBlock quads"
+                                + " (meta {}) for its item instead",
+                        legacyBlockId, block.getClass().getSimpleName(), damage,
+                        cap.failure != null ? "threw " + cap.failure : "drew nothing", plan.fallbackMeta);
+            }
+            return staticItemModel(plan.fallbackMeta);
+        }
+
+        List<BakedQuad> quads = new ArrayList<>();
+        TextureAtlasSprite particle = null;
+        for (int layer = 0; layer < plan.iconNames.length; layer++) {
+            String name = plan.iconNames[layer];
+            TextureAtlasSprite sprite = name != null ? lookupSprite(name) : null;
+            if (sprite == null || sprite.contents().name().equals(MissingTextureAtlasSprite.getLocation())) continue;
+            if (particle == null) particle = sprite;
+            quads.addAll(flatLayerQuads(sprite, layer, plan.colors[layer]));
+        }
+        if (quads.isEmpty()) {
+            // 1.5.2 drew the missing icon here (RenderItem.java:442-445); the RenderBlock quads at least
+            // show the block.
+            if (ITEM_FAIL_LOGGED.add(legacyBlockId)) {
+                LOGGER.warn("BTW: no item icon for block {} ({}) damage {} -- drawing its RenderBlock quads (meta {})",
+                        legacyBlockId, block.getClass().getSimpleName(), damage, plan.fallbackMeta);
+            }
+            return staticItemModel(plan.fallbackMeta);
+        }
+        BakedModel template = this.flatItemTemplate;
+        return new ItemModel(quads, false, particle,
+                template != null ? template.getTransforms() : ItemTransforms.NO_TRANSFORMS);
+    }
+
+    /**
+     * 1.5.2 RenderItem.renderItemIntoGUI's branch choice and inputs (RenderItem.java:362-460) for a stack
+     * of this block with the given damage. An FC block without an FC item behaves as a plain ItemBlock
+     * (vanilla/client ItemBlock.java:42-56: sprite 0 unless the block names an item icon, the block's top
+     * icon). The caller holds CAPTURE_LOCK.
+     */
+    private ItemPlan planItem(btw.modern.Block block, int damage) {
+        ItemPlan plan = new ItemPlan();
+        int id = this.legacyBlockId;
+        btw.modern.Item item = id > 0 && id < btw.modern.Item.itemsList.length ? btw.modern.Item.itemsList[id] : null;
+        btw.modern.ItemStack stack = new btw.modern.ItemStack(id, 1, damage);
+        if (item != null) {
+            try {
+                int meta = item.getMetadata(damage);
+                plan.fallbackMeta = meta >= 0 && meta < 16 ? meta : 0;
+            } catch (Throwable ignored) {}
+        }
+        int spriteNumber = item != null ? item.getItemSpriteNumber() : (block.getItemIconName() != null ? 1 : 0);
+        plan.asBlock = spriteNumber == 0 && block.DoesItemRenderAsBlock(damage);
+        if (plan.asBlock) {
+            // :386-394 the stack's colour is the GL colour of the block draw; renderBlockAsItemVanilla
+            // replaces it with the block's render colour (useInventoryTint), FC item renders keep it.
+            plan.colors = new int[] {itemColor(item, stack, 0)};
+            return plan;
+        }
+        if (item != null && item.requiresMultipleRenderPasses()) {
+            // :406-428 two passes, each with its own icon and colour.
+            plan.iconNames = new String[] {
+                    iconName(item.getIconFromDamageForRenderPass(damage, 0)),
+                    iconName(item.getIconFromDamageForRenderPass(damage, 1))};
+            plan.colors = new int[] {itemColor(item, stack, 0), itemColor(item, stack, 1)};
+        } else {
+            // :429-460 the stack's icon in the stack's colour.
+            plan.iconNames = new String[] {
+                    iconName(item != null ? stack.getIconIndex() : block.getBlockTextureFromSide(1))};
+            plan.colors = new int[] {itemColor(item, stack, 0)};
+        }
+        return plan;
+    }
+
+    private static int itemColor(@Nullable btw.modern.Item item, btw.modern.ItemStack stack, int pass) {
+        if (item == null) return 0xFFFFFF;
+        try {
+            return item.getColorFromItemStack(stack, pass) & 0xFFFFFF;
+        } catch (Throwable t) {
+            return 0xFFFFFF;
+        }
+    }
+
+    @Nullable
+    private static String iconName(@Nullable btw.modern.Icon icon) {
+        return icon != null ? icon.getIconName() : null;
+    }
+
+    /**
+     * The RenderBlocks of an item capture, like 1.5.2's RenderItem.itemRenderBlocks and
+     * ItemRenderer.renderBlocksInstance (blockAccess null). It dispatches the captured block as
+     * btw.modern.RenderBlocks.renderBlockAsItem does -- FC's RenderBlockAsItem, whose default (1.5.2
+     * Block.java:3701-3704) and super calls re-enter here and get renderBlockAsItemVanilla -- but records
+     * a throw instead of swallowing it, so the capture can fall back to the RenderBlock quads. Other
+     * blocks an FC item render draws take the inherited dispatch.
+     */
+    private static final class ItemCaptureRenderBlocks extends btw.modern.RenderBlocks {
+        private btw.modern.Block dispatching;
+        Throwable failure;
+
+        @Override
+        public void renderBlockAsItem(btw.modern.Block block, int damage, float brightness) {
+            if (block == null) return;
+            if (block == dispatching) {
+                renderBlockAsItemVanilla(block, damage, brightness);
+                return;
+            }
+            if (dispatching != null) {
+                super.renderBlockAsItem(block, damage, brightness);
+                return;
+            }
+            dispatching = block;
+            try {
+                block.RenderBlockAsItem(this, damage, brightness);
+            } catch (Throwable t) {
+                failure = t;
+            } finally {
+                dispatching = null;
+            }
+        }
+
+        /**
+         * 1.5.2 renderBlockAsItemVanilla's stairs branch (RenderBlocks.java:7939-8010), which the
+         * Modern-Common port does not have (it draws an unported render type as its cube): FC's stairs
+         * (FCBlockStairsBase render type 10, no RenderBlockAsItem override; ids 190, 1003, 1009, ...)
+         * are a full-height back half and a half-height front step, each face's icon at the item damage
+         * (FCMOD), after the useInventoryTint colour (:7830-7843, without the brightness factor, as the
+         * port). Every other render type takes the inherited port.
+         */
+        @Override
+        public void renderBlockAsItemVanilla(btw.modern.Block block, int damage, float brightness) {
+            if (block == null || block.getRenderType() != 10) {
+                super.renderBlockAsItemVanilla(block, damage, brightness);
+                return;
+            }
+            btw.modern.Tessellator t = btw.modern.Tessellator.instance;
+            if (this.useInventoryTint) {
+                int color = block.getRenderColor(damage);
+                btw.modern.GL11.glColor4f((float) (color >> 16 & 255) / 255.0F, (float) (color >> 8 & 255) / 255.0F,
+                        (float) (color & 255) / 255.0F, 1.0F);
+            }
+            for (int box = 0; box < 2; box++) {
+                if (box == 0) {
+                    this.setRenderBounds(0.0D, 0.0D, 0.0D, 1.0D, 1.0D, 0.5D);
+                } else {
+                    this.setRenderBounds(0.0D, 0.0D, 0.5D, 1.0D, 0.5D, 1.0D);
+                }
+                btw.modern.GL11.glTranslatef(-0.5F, -0.5F, -0.5F);
+                t.startDrawingQuads();
+                t.setNormal(0.0F, -1.0F, 0.0F);
+                this.renderFaceYNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 0, damage));
+                t.draw();
+                t.startDrawingQuads();
+                t.setNormal(0.0F, 1.0F, 0.0F);
+                this.renderFaceYPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 1, damage));
+                t.draw();
+                t.startDrawingQuads();
+                t.setNormal(0.0F, 0.0F, -1.0F);
+                this.renderFaceZNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 2, damage));
+                t.draw();
+                t.startDrawingQuads();
+                t.setNormal(0.0F, 0.0F, 1.0F);
+                this.renderFaceZPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 3, damage));
+                t.draw();
+                t.startDrawingQuads();
+                t.setNormal(-1.0F, 0.0F, 0.0F);
+                this.renderFaceXNeg(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 4, damage));
+                t.draw();
+                t.startDrawingQuads();
+                t.setNormal(1.0F, 0.0F, 0.0F);
+                this.renderFaceXPos(block, 0.0D, 0.0D, 0.0D, this.getBlockIconFromSideAndMetadata(block, 5, damage));
+                t.draw();
+                btw.modern.GL11.glTranslatef(0.5F, 0.5F, 0.5F);
+            }
+        }
+    }
+
+    /**
+     * 1.5.2 RenderItem.renderItemIntoGUI's 3D branch (RenderItem.java:374-399): the stack's colour as the
+     * GL colour (:386-394), then renderBlockAsItem(block, damage, 1F) (:398). FC item renders draw centred
+     * on the origin, either through GL11.glTranslatef(-0.5) (FCClientUtilsRender.RenderInvBlockWithMetadata,
+     * FCUtilsPrimitiveQuad.RenderAsItemBlock) or with -0.5 vertex offsets (renderBlockAsItemVanilla's plant
+     * branches), and the vanilla cube branch turns 90 degrees about Y first (RenderBlocks.java:8318). So
+     * GL11 matrix tracking is on and a base glTranslatef(+0.5) puts both styles in the model's 0..1 space
+     * (a tessellator offset would miss the glTranslatef style); 1.20.1 ItemRenderer.render's
+     * translate(-0.5) (ItemRenderer.java:113) undoes it, so every display context draws FC's item
+     * geometry exactly as FC drew it. The
+     * per-context turns 1.5.2 applied around that geometry (RenderItem's glRotatef(-90) about Y for the
+     * GUI, :396; none in first person) live in {@link #FC_ITEM_TRANSFORMS}, not in model space. The caller
+     * must hold {@link #CAPTURE_LOCK}. Leaves this thread's Tessellator/GL11 state clean, as
+     * {@link #runFcRender}.
+     */
+    private Capture runFcItemRender(int damage, int itemColor) {
+        btw.modern.Block block = this.fcBlock;
+        ItemCaptureRenderBlocks renderer = new ItemCaptureRenderBlocks();
+        btw.modern.Tessellator tess = btw.modern.Tessellator.instance;   // thread-local
+        tess.startCapturing();                       // also resets the GL colour and render state
+        btw.modern.GL11.enableMatrixTracking();      // identity modelview stack
+        btw.modern.GL11.glTranslatef(0.5F, 0.5F, 0.5F);
+        btw.modern.GL11.glColor4f((float) (itemColor >> 16 & 255) / 255.0F, (float) (itemColor >> 8 & 255) / 255.0F,
+                (float) (itemColor & 255) / 255.0F, 1.0F);
+        Throwable failure = null;
+        try {
+            renderer.renderBlockAsItem(block, damage, 1.0F);
+            failure = renderer.failure;
+        } catch (Throwable t) {
+            failure = t;
+        }
+        List<btw.modern.Tessellator.CapturedQuad> quads;
+        try {
+            quads = tess.stopCapturing();
+        } catch (Throwable t) {
+            quads = Collections.emptyList();
+            if (failure == null) failure = t;
+        }
+        // Block captures on this thread run untransformed (runFcRender disables tracking too).
+        btw.modern.GL11.disableMatrixTracking();
+        tess.setTranslation(0, 0, 0);
+        tess.setColorOpaque_F(1, 1, 1);
+        btw.modern.GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+        return new Capture(quads, failure);
+    }
+
+    private List<BakedQuad> toBakedQuads(List<btw.modern.Tessellator.CapturedQuad> captured) {
+        String fallbackTex = fallbackTexture(fcBlock);
+        List<BakedQuad> out = new ArrayList<>(captured.size());
+        for (btw.modern.Tessellator.CapturedQuad cq : captured) {
+            if (cq == null || cq.vertices == null) continue;
+            BakedQuad bq = convertCapturedQuad(cq, fallbackTex);
+            if (bq != null) out.add(bq);
+        }
+        return out;
+    }
+
+    /**
+     * The static RenderBlock quads of one meta as a 3D item model (the item fallback). World geometry in
+     * block space, so block.json's transforms, as 1.20.1 draws a block model's item.
+     */
+    private BakedModel staticItemModel(int meta) {
+        Map<Integer, List<BakedQuad>> statics = staticQuadsByMeta;
+        List<BakedQuad> quads = statics == null ? Collections.emptyList()
+                : statics.getOrDefault(meta, statics.getOrDefault(0, Collections.emptyList()));
+        return new ItemModel(quads, true, particleOrMissing(), BLOCK_TRANSFORMS);
+    }
+
+    private TextureAtlasSprite particleOrMissing() {
+        TextureAtlasSprite sprite = particleSprite;
+        return sprite != null ? sprite : getMissingSprite();
+    }
+
+    /**
+     * One flat item layer (1.5.2 RenderItem.java:406-460: the icon in getColorFromItemStack's colour) as
+     * item/generated geometry, baked the way Forge's ItemLayerModel bakes a layer
+     * (UnbakedGeometryHelper.createUnbakedItemElements + bakeElements). The colour is baked into the
+     * vertices with tint index -1, so a registered item colour handler cannot tint it a second time.
+     */
+    private List<BakedQuad> flatLayerQuads(TextureAtlasSprite sprite, int layer, int color) {
+        List<BakedQuad> baked;
+        try {
+            List<BlockElement> elements = UnbakedGeometryHelper.createUnbakedItemElements(layer, sprite.contents());
+            baked = UnbakedGeometryHelper.bakeElements(elements, material -> sprite, BlockModelRotation.X0_Y0,
+                    new ResourceLocation(BTWForgeMod.MOD_ID, "item/block_" + legacyBlockId));
+        } catch (Throwable t) {
+            // The sprite's pixels could not be read: front and back faces without the edge strips.
+            baked = flatFrontAndBack(sprite);
+        }
+        List<BakedQuad> out = new ArrayList<>(baked.size());
+        for (BakedQuad quad : baked) out.add(withColor(quad, color));
+        return out;
+    }
+
+    /** The quad with each vertex colour multiplied by an 0xRRGGBB colour, untinted (tint index -1). */
+    private static BakedQuad withColor(BakedQuad quad, int color) {
+        int[] data = quad.getVertices().clone();
+        int stride = data.length / 4;
+        float r = (float) (color >> 16 & 255) / 255.0F;
+        float g = (float) (color >> 8 & 255) / 255.0F;
+        float b = (float) (color & 255) / 255.0F;
+        for (int i = 0; i < 4; i++) {
+            int c = data[i * stride + 3];   // ABGR
+            data[i * stride + 3] = (c & 0xFF000000)
+                    | (int) ((c >> 16 & 255) * b) << 16
+                    | (int) ((c >> 8 & 255) * g) << 8
+                    | (int) ((c & 255) * r);
+        }
+        return new BakedQuad(data, -1, quad.getDirection(), quad.getSprite(), quad.isShade());
+    }
+
+    /** item/generated's front (south) and back (north) faces at z 8.5/16 and 7.5/16, white, normals packed. */
+    private static List<BakedQuad> flatFrontAndBack(TextureAtlasSprite sprite) {
+        float u0 = sprite.getU0(), u1 = sprite.getU1(), v0 = sprite.getV0(), v1 = sprite.getV1();
+        float front = 8.5F / 16.0F, back = 7.5F / 16.0F;
+        int south = 127 << 16;
+        int north = (((byte) -127) & 0xFF) << 16;
+        List<BakedQuad> quads = new ArrayList<>(2);
+        quads.add(new BakedQuad(flatQuadData(new float[] {
+                0, 1, front, u0, v0,   0, 0, front, u0, v1,   1, 0, front, u1, v1,   1, 1, front, u1, v0}, south),
+                -1, Direction.SOUTH, sprite, false));
+        quads.add(new BakedQuad(flatQuadData(new float[] {
+                1, 1, back, u1, v0,   1, 0, back, u1, v1,   0, 0, back, u0, v1,   0, 1, back, u0, v0}, north),
+                -1, Direction.NORTH, sprite, false));
+        return quads;
+    }
+
+    private static int[] flatQuadData(float[] xyzuv, int packedNormal) {
+        int[] data = new int[32];
+        for (int i = 0; i < 4; i++) {
+            int base = i * 8, src = i * 5;
+            data[base] = Float.floatToRawIntBits(xyzuv[src]);
+            data[base + 1] = Float.floatToRawIntBits(xyzuv[src + 1]);
+            data[base + 2] = Float.floatToRawIntBits(xyzuv[src + 2]);
+            data[base + 3] = -1;
+            data[base + 4] = Float.floatToRawIntBits(xyzuv[src + 3]);
+            data[base + 5] = Float.floatToRawIntBits(xyzuv[src + 4]);
+            data[base + 6] = 0;
+            data[base + 7] = packedNormal;
+        }
+        return data;
+    }
+
+    /** FCBakedModel's item overrides: the stack's damage picks its model. */
+    private final class DamageOverrides extends ItemOverrides {
+        @Override
+        public BakedModel resolve(BakedModel model, ItemStack stack, @Nullable ClientLevel level,
+                                  @Nullable LivingEntity entity, int seed) {
+            try {
+                return itemModelFor(Math.max(0, stack.getDamageValue()));
+            } catch (Throwable t) {
+                return model;
+            }
+        }
+    }
+
+    /** One item damage's model: its quads plus the 3D-block or flat-icon display settings. */
+    private static final class ItemModel implements BakedModel {
+        private final List<BakedQuad> quads;
+        private final boolean block3d;
+        private final TextureAtlasSprite particle;
+        private final ItemTransforms transforms;
+
+        ItemModel(List<BakedQuad> quads, boolean block3d, TextureAtlasSprite particle, ItemTransforms transforms) {
+            this.quads = quads;
+            this.block3d = block3d;
+            this.particle = particle;
+            this.transforms = transforms;
+        }
+
+        @Override
+        public List<BakedQuad> getQuads(@Nullable BlockState state, @Nullable Direction side, RandomSource rand) {
+            return side == null ? quads : Collections.emptyList();
+        }
+
+        @Override public boolean useAmbientOcclusion() { return block3d; }
+        @Override public boolean isGui3d() { return block3d; }
+        @Override public boolean usesBlockLight() { return block3d; }
+        @Override public boolean isCustomRenderer() { return false; }
+        @Override public TextureAtlasSprite getParticleIcon() { return particle; }
+        @Override public ItemTransforms getTransforms() { return transforms; }
+        @Override public ItemOverrides getOverrides() { return ItemOverrides.EMPTY; }
     }
 
     // ================================================================
@@ -669,7 +1153,7 @@ public class FCBakedModel implements BakedModel {
     @Override
     public ModelData getModelData(BlockAndTintGetter level, BlockPos pos, BlockState state, ModelData modelData) {
         if (fcBlock == null) return modelData;
-        ensureItemQuadsBuilt();
+        ensureStaticQuadsBuilt();
         if ((liveMetaMask & (1 << metaOf(state))) == 0) return modelData;
         return modelData.derive()
                 .with(BLOCK_GETTER, level)
@@ -682,7 +1166,11 @@ public class FCBakedModel implements BakedModel {
                                      ModelData extraData,
                                      @Nullable net.minecraft.client.renderer.RenderType renderType) {
         if (side != null) return Collections.emptyList();
-        ensureItemQuadsBuilt();
+        // No block state: an item draw (ItemRenderer.renderModelLists). The stack's damage is chosen by
+        // getOverrides; a caller that skips the overrides gets damage 0's item quads (under this model's
+        // block transforms, not FC_ITEM_TRANSFORMS).
+        if (state == null) return itemModelFor(0).getQuads(null, null, rand);
+        ensureStaticQuadsBuilt();
         int meta = metaOf(state);
 
         // Position-dependent meta with real world data: run FC's RenderBlock LIVE with real
@@ -696,15 +1184,16 @@ public class FCBakedModel implements BakedModel {
             }
         }
 
-        // Items, the breaking overlay and position-independent metas: static per-meta cache.
-        return itemQuadsByMeta.getOrDefault(meta, Collections.emptyList());
+        // The breaking overlay and position-independent metas: static per-meta cache.
+        return staticQuadsByMeta.getOrDefault(meta, Collections.emptyList());
     }
 
     @Override
     public List<BakedQuad> getQuads(@Nullable BlockState state, @Nullable Direction side, RandomSource rand) {
         if (side != null) return Collections.emptyList();
-        ensureItemQuadsBuilt();
-        return itemQuadsByMeta.getOrDefault(metaOf(state), Collections.emptyList());
+        if (state == null) return itemModelFor(0).getQuads(null, null, rand);
+        ensureStaticQuadsBuilt();
+        return staticQuadsByMeta.getOrDefault(metaOf(state), Collections.emptyList());
     }
 
     private static int metaOf(@Nullable BlockState state) {
@@ -716,7 +1205,7 @@ public class FCBakedModel implements BakedModel {
     @Override public boolean usesBlockLight() { return true; }
     @Override public boolean isCustomRenderer() { return false; }
 
-    /** Standard block display transforms from minecraft:block/block.json */
+    /** Standard block display transforms from minecraft:block/block.json (this model, RenderBlock item fallbacks). */
     private static final net.minecraft.client.renderer.block.model.ItemTransforms BLOCK_TRANSFORMS =
             new net.minecraft.client.renderer.block.model.ItemTransforms(
                     // thirdperson_lefthand
@@ -758,6 +1247,73 @@ public class FCBakedModel implements BakedModel {
                             new org.joml.Vector3f(0.5f, 0.5f, 0.5f))
             );
 
+    /**
+     * Display transforms of the item models captured from FC's RenderBlockAsItem ({@link #runFcItemRender}:
+     * FC's item geometry G, centred on the origin, in model space unturned). block.json's tilt, offset and
+     * scale, with each context's turn about Y chosen so G faces the way 1.5.2 drew it:
+     * <ul>
+     * <li>gui: RenderItem.renderItemIntoGUI (RenderItem.java:381-398) draws S(1,1,-1) Rx(210) Ry(45) Ry(-90) G
+     *     = S(1,-1,1) Rx(30) Ry(-45) G; GuiGraphics.renderItem already scales (1,-1,1), so (30, 315, 0) --
+     *     block.json's 225 plus 90 (a gear box's input on the right, as in a 1.5.2 inventory).</li>
+     * <li>firstperson_righthand: ItemRenderer.renderItemInFirstPerson (ItemRenderer.java:421-431, then
+     *     renderItem :57-61) draws Ry(45) S(0.4) G after the arm translate and swing turns, which
+     *     ItemInHandRenderer.applyItemArmTransform / applyItemArmAttackTransform reproduce: block.json's (0, 45, 0).</li>
+     * <li>thirdperson: RenderPlayer.renderSpecials (RenderPlayer.java:316-338, RenderBiped the same) draws
+     *     Rx(20) Ry(45) S(-0.375, -0.375, 0.375) G in the arm frame; behind ItemInHandLayer's Rx(-90) Ry(180)
+     *     that is rotation (70, -45, 0). Kept at block.json's 75-degree tilt: (75, -45, 0).</li>
+     * <li>head: RenderPlayer.java:214-218 draws Ry(90) S(0.625, -0.625, -0.625) G; CustomHeadLayer.translateToHead
+     *     turns Ry(180) before the same scale, so (0, 90, 0).</li>
+     * <li>fixed: RenderItemFrame.java:96 turns Ry(180 + yaw) and RenderItem.doRenderItem's renderInFrame branch
+     *     Ry(-90) (RenderItem.java:96-101); ItemFrameRenderer's Ry(180 - yRot) is 180 degrees from 1.5.2's
+     *     turn for the same wall face, so (0, 90, 0).</li>
+     * <li>ground and firstperson_lefthand: block.json (dropped items spin; 1.5.2 had no left hand). The wicker
+     *     basket's GROUND draw matches FCTileEntityBasketWickerRenderer's unturned EntityItem (:48-75).</li>
+     * </ul>
+     */
+    private static final ItemTransforms FC_ITEM_TRANSFORMS =
+            new ItemTransforms(
+                    // thirdperson_lefthand (apply() mirrors the Y/Z turns for the left arm, as block.json)
+                    new net.minecraft.client.renderer.block.model.ItemTransform(
+                            new org.joml.Vector3f(75, -45, 0),
+                            new org.joml.Vector3f(0, 2.5f / 16f, 0),
+                            new org.joml.Vector3f(0.375f, 0.375f, 0.375f)),
+                    // thirdperson_righthand
+                    new net.minecraft.client.renderer.block.model.ItemTransform(
+                            new org.joml.Vector3f(75, -45, 0),
+                            new org.joml.Vector3f(0, 2.5f / 16f, 0),
+                            new org.joml.Vector3f(0.375f, 0.375f, 0.375f)),
+                    // firstperson_lefthand
+                    new net.minecraft.client.renderer.block.model.ItemTransform(
+                            new org.joml.Vector3f(0, 225, 0),
+                            new org.joml.Vector3f(0, 0, 0),
+                            new org.joml.Vector3f(0.4f, 0.4f, 0.4f)),
+                    // firstperson_righthand
+                    new net.minecraft.client.renderer.block.model.ItemTransform(
+                            new org.joml.Vector3f(0, 45, 0),
+                            new org.joml.Vector3f(0, 0, 0),
+                            new org.joml.Vector3f(0.4f, 0.4f, 0.4f)),
+                    // head
+                    new net.minecraft.client.renderer.block.model.ItemTransform(
+                            new org.joml.Vector3f(0, 90, 0),
+                            new org.joml.Vector3f(0, 0, 0),
+                            new org.joml.Vector3f(1, 1, 1)),
+                    // gui
+                    new net.minecraft.client.renderer.block.model.ItemTransform(
+                            new org.joml.Vector3f(30, 315, 0),
+                            new org.joml.Vector3f(0, 0, 0),
+                            new org.joml.Vector3f(0.625f, 0.625f, 0.625f)),
+                    // ground
+                    new net.minecraft.client.renderer.block.model.ItemTransform(
+                            new org.joml.Vector3f(0, 0, 0),
+                            new org.joml.Vector3f(0, 3f / 16f, 0),
+                            new org.joml.Vector3f(0.25f, 0.25f, 0.25f)),
+                    // fixed (item frame)
+                    new net.minecraft.client.renderer.block.model.ItemTransform(
+                            new org.joml.Vector3f(0, 90, 0),
+                            new org.joml.Vector3f(0, 0, 0),
+                            new org.joml.Vector3f(0.5f, 0.5f, 0.5f))
+            );
+
     @Override
     public net.minecraft.client.renderer.block.model.ItemTransforms getTransforms() {
         return BLOCK_TRANSFORMS;
@@ -765,12 +1321,13 @@ public class FCBakedModel implements BakedModel {
 
     @Override
     public TextureAtlasSprite getParticleIcon() {
-        ensureItemQuadsBuilt();
+        ensureStaticQuadsBuilt();
         return particleSprite != null ? particleSprite : getMissingSprite();
     }
 
+    /** The {@code <block>#inventory} model is this one; its overrides pick the stack damage's item model. */
     @Override
-    public ItemOverrides getOverrides() { return ItemOverrides.EMPTY; }
+    public ItemOverrides getOverrides() { return itemOverrides; }
 
     // ================================================================
     // Texture sprite lookup

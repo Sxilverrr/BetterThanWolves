@@ -227,9 +227,12 @@ public class FCContainerMenu extends AbstractContainerMenu {
             if (isPlayerSlot) {
                 this.addSlot(new Slot(playerInv, origSlotIndex, x, y));
             } else {
+                boolean craftResult = buf.readBoolean();
                 // Assign sequential index to avoid collisions between
                 // different FC inventories (result vs grid vs others)
-                this.addSlot(new Slot(dummyContainer, nextContainerSlot++, x, y));
+                int index = nextContainerSlot++;
+                this.addSlot(craftResult ? new ClientCraftResultSlot(dummyContainer, index, x, y)
+                        : new Slot(dummyContainer, index, x, y));
             }
         }
 
@@ -321,6 +324,8 @@ public class FCContainerMenu extends AbstractContainerMenu {
 
         if (slot instanceof ContainerMappedSlot cms) {
             cms.onQuickMoved(player, originalStack, slotStack.getCount());
+        } else if (slot instanceof ClientCraftResultSlot) {
+            slot.onTake(player, originalStack); // slotStack is drained (empty after a full move)
         } else {
             slot.onTake(player, slotStack);
         }
@@ -577,6 +582,32 @@ public class FCContainerMenu extends AbstractContainerMenu {
         PlayerMappedSlot(Inventory inventory, btw.modern.Slot fcSlot) {
             super(inventory, fcSlot.slotIndex, fcSlot.xDisplayPosition, fcSlot.yDisplayPosition);
             this.fcSlot = fcSlot;
+        }
+    }
+
+    /**
+     * Client mirror of an FC crafting result (1.5.2 SlotCrafting: FC workbench, soulforge). 1.5.2 ran
+     * SlotCrafting.onPickupFromSlot -> Item.onCreated on the client too (vanilla/client SlotCrafting.java:72-75,
+     * :184), and FC plays its crafting sounds only there (world.isRemote, e.g. FCItemArmor.onCreated). The
+     * server's SlotCrafting (ContainerMappedSlot.pickupFc) stays silent under that guard, so this is the one
+     * owner of the sound.
+     */
+    private static final class ClientCraftResultSlot extends Slot {
+        ClientCraftResultSlot(net.minecraft.world.Container container, int index, int x, int y) {
+            super(container, index, x, y);
+        }
+
+        @Override
+        public boolean mayPlace(ItemStack stack) {
+            return false; // SlotCrafting.isItemValid
+        }
+
+        @Override
+        public void onTake(Player player, ItemStack stack) {
+            if (player.level().isClientSide()) {
+                ProxyItem.runFcOnCreated(stack, player.level(), player);
+            }
+            super.onTake(player, stack);
         }
     }
 

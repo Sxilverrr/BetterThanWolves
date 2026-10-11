@@ -2,15 +2,20 @@
 
 This is a research-only triage of player comments on the CurseForge page. It is diagnosis only: no code was changed. *(status: fixes were made afterwards, in the working tree; see [Fix status](#fix-status-2026-10-10-uncommitted-working-tree).)*
 
-**Method.** Seven investigators each traced one group of complaints through the bridge, the FC sources, the 1.5.2 vanilla sources (`vanilla/`) and the dev logs. Six independent checkers then tried to refute every finding (the release/guidance group had no checker). Claims were checked in two places: the source, and the shipped jar via `javap` on `Forge/build/libs/BetterThanWolves-1.20.1-1.3.0-alpha.3.jar`. The corrections the checkers made are already folded in below. File:line references are against HEAD `9569443`.
+**Method.** Seven investigators each traced one group of complaints through the bridge, the FC sources, the 1.5.2 vanilla sources (`vanilla/`) and the dev logs. Six independent checkers then tried to refute every finding (the release/guidance group had no checker). Claims were checked in two places: the source, and the shipped jar via `javap` on `Forge/build/libs/BetterThanWolves-1.20.1-1.3.0-alpha.3.jar`. The corrections the checkers made are already folded in below. File:line references are against HEAD `48e9825`.
 
 **Verdict key.** *confirmed* means a code-verified bug. *likely* means the mechanism is verified but its effect has not been seen at runtime. *possible* means it may contribute. *authentic* means it is real BTW 4.B behaviour. *ruled out* means the code does not support it.
+
+**FC code is read-only (user directive, 2026-10-10).** Never modify FC code. FC code is FlowerChild's BTW sources (`net.minecraft.src.btw.*` under `Common/`, `Client/`, `Server/`), the 1.5.2 vanilla sources with FC's FCMOD edits under `vanilla/`, the frozen compiled classes in root `build/classes/java/{main,server}`, FlowerChild's original 4.B release files kept in the repo (`Src/`, `SrcServer/` and `SrcClient/`, holding the flat sources and the `patch.txt` files that `setupVanilla` applies to build `vanilla/`, plus `BTWMod4-B0000003.zip`), and FlowerChild's own files such as `Readme.txt`. The FC and `vanilla/` file:line references below are evidence only. Every fix direction in this triage, and every fix made for it, lands outside FC code:
+- in the Forge bridge (`btw.forge`, mixins on 1.20.1 classes, data packs);
+- in Modern-Common (the `btw.modern` stand-ins such as `Tessellator`, `RenderLiving`, `BlockFluid` and `EntityAITasks`, which are port code, not FC code);
+- or in the planned subproject (name not chosen yet) that extends FC code and patches it at build or load time without writing back to FC files. The build-time ASM transforms in `Forge/build.gradle` (`widenFcHookDescriptors`, `openUpEntityAccess`, `extendFcPathingBuildRange`) are its precursors and are expected to move into it.
 
 ## Which build players are running
 
 - The public CurseForge files are 0.1.0-alpha.1 (Apr 5), 0.2.0-alpha.2 (Apr 13), 0.3.0-alpha.2 (Apr 21), 0.3.0-alpha.3 (May 16) and **1.3.0-alpha.3 (Jul 9, the most downloaded)**.
-- 1.3.0-alpha.3 is git HEAD `9569443`. The local jar was built from that tree 7 seconds before the version-bump commit. It contains all the Jul-9 suffocation and "red tint" commits (`ac6b20e`, `6c99d20`, `534884e`, `a832245`).
-- **The red tint only exists in 1.3.0-alpha.3.** It was introduced by `bd8f23f` (Jul 9 02:34, the XP-orb renderer), which no earlier public build contains. A complaint about red mobs therefore comes from the current release, and the Jul-9 "fixes" did not fix it (see R4).
+- 1.3.0-alpha.3 is git HEAD `48e9825`. The local jar was built from that tree 7 seconds before the version-bump commit. It contains all the Jul-9 suffocation and "red tint" commits (`581d5a2`, `253bca0`, `85fdd2d`, `b1ab3c7`).
+- **The red tint only exists in 1.3.0-alpha.3.** It was introduced by `c2e15f3` (Jul 9 02:34, the XP-orb renderer), which no earlier public build contains. A complaint about red mobs therefore comes from the current release, and the Jul-9 "fixes" did not fix it (see R4).
 - The release metadata does not map onto git (CTX-2):
   - There are no tags and no CHANGELOG.
   - The version jumped from 0.4.0-alpha.3 to 1.3.0-alpha.3.
@@ -41,13 +46,14 @@ This is a research-only triage of player comments on the CurseForge page. It is 
 
 ## Fix status (2026-10-10, uncommitted working tree)
 
-On 2026-10-10 the suggested fix order below was carried out in five implementation waves (W1-W5), together with the fixes from the earlier design pass (B1-B4, U1-U10, E1). Each wave was reviewed, and the review findings were then fixed, deferred or rejected. Everything is **uncommitted** on top of 1.3.0-alpha.3 (HEAD `9569443`) and is listed in player terms under `[Unreleased]` in `CHANGELOG.md`. The technical write-ups are `STUB_CATALOGUE.md` entries 2026-10-10 (w) to (am), and the older entries this triage corrects ((f), (u) and (v)) now carry 2026-10-10 correction notes. The analysis sections below are unchanged. Their file:line references are still against HEAD and have since moved.
+On 2026-10-10 the suggested fix order below was carried out in five implementation waves (W1-W5), together with the fixes from the earlier design pass (B1-B4, U1-U10, E1). Each wave was reviewed, and the review findings were then fixed, deferred or rejected. W1-W5 were committed on 2026-10-10 as `f6ec9be`, on top of 1.3.0-alpha.3 (HEAD `48e9825`); a sixth wave (W6, 2026-10-11) fixed bugs the maintainer found in mechanical power, sounds and the creative tab and is still uncommitted. All of it is listed in player terms under `[Unreleased]` in `CHANGELOG.md`. The technical write-ups are `STUB_CATALOGUE.md` entries 2026-10-10 (w) to (am) and 2026-10-11 (an) to (aq), and the older entries this triage corrects ((f), (u) and (v)) now carry 2026-10-10 correction notes. The analysis sections below are unchanged. Their file:line references are still against HEAD and have since moved.
 
 - **W1:** render capture core and the 1.5.2 mob renderers, mob puppets (kill credit, health link, breathing, client animation), player bridge, world wiring, jar class precedence, AI scheduler and non-solid blocks, live FC block rendering, inventory write-back, recipes, JEI and the login handshake.
 - **W2:** mining speed, render follow-ups, item use and the nether portal, Modern-Common collision and crafting, mob spawn init and replacement, block-id mapping and aux-sound translation.
 - **W3:** logging cleanup, FC login payloads to the client, Modern-Common render fidelity, pathing below y=0, dropped items visible to FC, item use and pickup.
 - **W4:** client follow-ups (live render ids, "Obstructed" name tags), held-block rendering, foods fed once, projectile damage sources.
 - **W5:** entity names, eager block icons, grass item colour, 1.5.2 food values, bowls and drink containers.
+- **W6 (2026-10-11):** not a triage wave. It fixes bugs the maintainer found (mechanical power rendering and logic, sounds, the BTW creative tab) after an audit-and-prove pass; ids MPR, F, S and CT. It also changes GH2 and GH6 below.
 
 **What was verified.**
 - `:Forge:jar` built green after every wave.
@@ -112,11 +118,11 @@ On 2026-10-10 the suggested fix order below was carried out in five implementati
 | Finding | Status | Wave: what changed | What remains / how to verify in game |
 |---|---|---|---|
 | GH1 | fixed | W2: the new `AuxSfxMapping` translates every 1.5.2 aux-sound and particle id at all three WorldBridge entry points. Unknown ids are dropped, never forwarded raw. | Turn subtitles on and `/summon minecraft:bat ~ ~2 ~` in open air: no "Ghast shoots". |
-| GH2 | fixed | W2: the witch idle sound maps to `GHAST_SCREAM`, the file BTW actually uses. Biome modifiers remove natural witch spawns outside swamps and add a swamp entry; with vanilla's 5 plus 5 added, the witch share is about 1.9%, the same as 1.5.2. | Swamp huts still spawn witches, as they did in 1.5.2. |
+| GH2 | fixed | W2: the witch idle sound maps to `GHAST_SCREAM`, the file BTW actually uses. W6 (S4): every 1.5.2 sound name now resolves through `LegacySounds` to its own 1.5.2 file, here `mob/ghast/affectionate_scream`, the same file; FC witch hurt and death are now silent, as in 1.5.2 (no witch sound file existed). Biome modifiers remove natural witch spawns outside swamps and add a swamp entry; with vanilla's 5 plus 5 added, the witch share is about 1.9%, the same as 1.5.2. | Swamp huts still spawn witches, as they did in 1.5.2. |
 | GH3 | fixed | W2: 1016 now maps to 1026 (zombie infects villager, plus FC's extra moan) and 1017 to 1027 (zombie villager cured). | none |
 | GH4 | ruled out | `PossessionDiagnostics` and the `[GHAST-SPAWN]` warning are kept (restored after review ITEMS-R4). | Retire both once a client confirms GH1. |
 | GH5 | fixed | W2: `NetherPortalBlockMixin` runs `FCBlockPortal`'s random tick: possession seeding and the nether-accessed flag. It cancels vanilla's pigman spawns, as FC does. | Possession near Overworld portals now runs for the first time. That is authentic, so real ghast moans near portals are BTW behaviour. |
-| GH6 | not a bug (authentic BTW) | Not changed. | The millstone and wet-cement display-tick sounds are still silent: the client display world's `playSound` is a no-op. |
+| GH6 | not a bug (authentic BTW) | The verdict stands. W6 (S1): the client display world's `playSound` now plays locally through `LegacyClientSound`, so the millstone and wet-cement display-tick sounds play again. | A running millstone grinds and wet cement moans now and then (its pitch is capped at 2.0 by 1.20.1). Client not runtime-tested. |
 
 **Hostile mobs don't attack, creepers**
 
@@ -195,7 +201,7 @@ On 2026-10-10 the suggested fix order below was carried out in five implementati
 - **Other colours:** player-owned orbs leak yellow-green. Lightning, lifted redstone and `RenderBlocks` shading leak blue-white or grey. These match "textures that turn" other colours.
 - **Log evidence:** across the Jul-9 dev runs, every run that drew a dragon orb had red mobs (for example 59/60, 80/96, 104/112 tinted first-renders). Every run with no orb had 0 red mobs.
   - Today's `latest.log` shows mobs white until the first `EntityXPOrb` capture at line ~1215, and red-signature colours (alpha 0.50) after it.
-  - The run before `bd8f23f` was 151/151 white.
+  - The run before `c2e15f3` was 151/151 white.
 - **1.5.2:** mobs are only red during the real hurt/death pass. Orb colours never leak.
 - **Confirm:** let a zombie burn at dawn, or one-hit a size-1 slime. When the red orb appears, every FC mob on screen turns dark red.
 - **Fix direction:** give the Tessellator 1.5.2 `hasColor` semantics, i.e. reset on every `startDrawing*` / `startCapturing`, and default uncoloured vertices to the tracked GL11 colour (white).
@@ -219,14 +225,14 @@ Dragon orbs from burning, falling, drowning or starvation deaths are real BTW 4.
 
 ### R4. The Jul-9 "red tint" fixes chased a mechanism that doesn't exist (ruled out)
 
-- `a832245` blamed FC `RenderLiving`'s hurtTime damage pass, and `534884e` blamed the MC hurt overlay.
+- `b1ab3c7` blamed FC `RenderLiving`'s hurtTime damage pass, and `85fdd2d` blamed the MC hurt overlay.
 - Neither exists in the port:
   - The Modern-Common `RenderLiving` has no hurtTime/deathTime pass (`RenderLiving.java:22-66`).
   - `rotateCorpse` is a no-op (`:85`).
   - `GL11.glColor4f` is never consumed by the capture (R6).
   - `FCEntityRenderer` uses `NO_OVERLAY`.
 - The logged tint has alpha **0.50**, which matches `RenderXPOrb.setColorRGBA_I(color, 128)`. A damage pass would give 0.40.
-- The confirmation run for `a832245` (17:04) happened to draw no orbs.
+- The confirmation run for `b1ab3c7` (17:04) happened to draw no orbs.
 - **Consequences:**
   - STUB_CATALOGUE.md entries 2026-07-09 (u) and (v) record a wrong root cause. *(status: corrected; each entry now carries a 2026-10-10 correction note)*
   - FC mobs currently show **no** authentic red hurt flash and no death tilt at all. *(status: both restored in W1, see Fix status)*
@@ -234,7 +240,7 @@ Dragon orbs from burning, falling, drowning or starvation deaths are real BTW 4.
 
 ### R5. Residual FC self-suffocation (possible, low)
 
-- `FCEnvHurtGuard` reverts health only when its post-move MC probe agrees (`FCEnvHurtGuard.java:46-66`, `:90-107`). `534884e` itself documents that this probe can diverge from FC's own check.
+- `FCEnvHurtGuard` reverts health only when its post-move MC probe agrees (`FCEnvHurtGuard.java:46-66`, `:90-107`). `85fdd2d` itself documents that this probe can diverge from FC's own check.
 - Any remaining FC-side suffocation deaths produce more dragon orbs.
 - The "0 KILLED removals" metric used to validate the Jul-9 fixes can't see FC-side deaths. Those end through `fcEntity.isDead → discard()` (`ProxyMob.java:464-466`) and are logged as DISCARDED, the same as despawns.
 
@@ -281,7 +287,7 @@ Dragon orbs from burning, falling, drowning or starvation deaths are real BTW 4.
   - `super.tick()` → `LivingEntity.baseTick` → `ForgeHooks.onLivingBreathe` (`ForgeHooks.java:1575-1608`) drains air underwater. At air ≤ −20 the squid takes `hurt(drown, 2)` every 20 ticks and dies about 25 s after submerging.
   - FC's death path then drops the authentic squid loot: 1–3 ink sacs, a gland 1 in 8, and a Respiration scroll 1 in 250 (`FCEntitySquid.java:139-152`, `:579-587`). That is the ink in lakes.
 - **Audible too:** proxies don't override the hurt/death sounds, so each drown hit plays MC's generic player "oof" (D-M1).
-- **Why it was missed:** `ac6b20e` ruled out drowning "on land". `[MOB-DMG]` logging only exists in `ProxyMob.hurt`, not in `ProxyPathfinderMob`.
+- **Why it was missed:** `581d5a2` ruled out drowning "on land". `[MOB-DMG]` logging only exists in `ProxyMob.hurt`, not in `ProxyPathfinderMob`.
 - **1.5.2:** `EntityWaterMob.canBreatheUnderwater()` is true. Squids drown only out of water.
 - **Confirm:** `/summon betterthanwolves:fc_squid` in open water and poll its `Air`. It counts down from 300 to −20, then the squid takes drown hits and dies at about 25 s.
 - **Fix direction:** give the squid puppet water-mob breathing on the MC side, and leave FC's own `EntityWaterMob` air logic as the only air logic. Consider honouring FC `getCanSpawnHere` (squids spawn only in darkness in BTW) when replacing.
@@ -324,7 +330,7 @@ Dragon orbs from burning, falling, drowning or starvation deaths are real BTW 4.
 
 ### D7. Pre-1.3.0 builds: MC suffocation on every puppet (fixed in 1.3.0-alpha.3)
 
-- `ac6b20e` and `6c99d20` fixed this. Players on 0.3.0-alpha.3 or earlier still have it: constant damage, and death in about 10 s.
+- `581d5a2` and `253bca0` fixed this. Players on 0.3.0-alpha.3 or earlier still have it: constant damage, and death in about 10 s.
 
 ### D8 and D9. Ruled out
 
@@ -371,7 +377,7 @@ Endermen take water damage. In 1.5.2, land mobs (including undead) drown. Squid 
   - 1.20.1 puts witches in most Overworld monster tables at weight 5. BTW 4.B spawns them only in swamps at weight 1.
 - Impact is about 1% of monster spawns, audible within 16 blocks.
 
-### GH4. The possessed-squid → ghast theory from `7341cb5` is not reachable (ruled out)
+### GH4. The possessed-squid → ghast theory from `c449199` is not reachable (ruled out)
 
 - Spontaneous possession only starts in the Nether: `EntityCreature.java:494` checks `dimensionId == -1`, and WorldBridge sets that only for `Level.NETHER` (`WorldBridge.java:85-105`).
 - Zero `BTW-Possession` or `[GHAST-SPAWN]` lines appear in any instrumented log.
@@ -386,7 +392,7 @@ Endermen take water damage. In 1.5.2, land mobs (including undead) drown. Squid 
 ### GH6. FC block and item ghast sounds (authentic)
 
 - These are all player-driven: lighting fires with the fireball whoosh, soul mechanics, and player-placed netherrack falling with a moan.
-- Some are silent in the port: millstone and wet-cement display-tick sounds go through a no-op `playSound`.
+- Some are silent in the port: millstone and wet-cement display-tick sounds go through a no-op `playSound`. *(status: playing again since W6, S1)*
 
 ---
 
@@ -571,8 +577,8 @@ There is no `ModelZombieVillager` switch in the stub `RenderZombie`. They look l
 
 ## Corrections to the record
 
-1. **`a832245` / `534884e` and STUB_CATALOGUE.md 2026-07-09 (u)/(v)** name a hurtTime damage pass and the MC hurt overlay as the cause of the red tint. Neither exists in the port; the cause is R1. The hurtTime-clearing code in `FCEnvHurtGuard` (`:55-61`) has no visual effect. *(status: corrected in STUB_CATALOGUE.md under (u) and (v); `CHANGELOG.md` 1.3.0-alpha.3 now says those commits did not fix the tint)*
-2. **`7341cb5`'s possessed-squid → ghast theory** is unreachable (GH4). The "ghast_hurt in a fresh world" event (STUB_CATALOGUE (f)) is almost certainly GH1, if it was identified by ear. GH1 is GHAST_WARN, with subtitle "Ghast shoots". *(status: corrected in STUB_CATALOGUE.md under (f))*
+1. **`b1ab3c7` / `85fdd2d` and STUB_CATALOGUE.md 2026-07-09 (u)/(v)** name a hurtTime damage pass and the MC hurt overlay as the cause of the red tint. Neither exists in the port; the cause is R1. The hurtTime-clearing code in `FCEnvHurtGuard` (`:55-61`) has no visual effect. *(status: corrected in STUB_CATALOGUE.md under (u) and (v); `CHANGELOG.md` 1.3.0-alpha.3 now says those commits did not fix the tint)*
+2. **`c449199`'s possessed-squid → ghast theory** is unreachable (GH4). The "ghast_hurt in a fresh world" event (STUB_CATALOGUE (f)) is almost certainly GH1, if it was identified by ear. GH1 is GHAST_WARN, with subtitle "Ghast shoots". *(status: corrected in STUB_CATALOGUE.md under (f))*
 3. **The "0 KILLED removals" verification** used for the suffocation fixes can't see FC-side deaths, which are logged as DISCARDED (R5).
 4. **design_mining B3-CLIENT** understates the PlayerBridge aliasing. It also breaks hostile AI (HAI-1) and leaves penalties stuck after a death (RE-M1).
 

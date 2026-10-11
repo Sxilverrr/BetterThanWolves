@@ -4,14 +4,19 @@ public class BlockChest extends BlockContainer {
 
     public int isTrapped;
 
+    // vanilla/client BlockChest.java:31 sets tabDecorations in the (only) 1.5.2 constructor: FC's chest 1035
+    // (FCBlockChest, no tab of its own) is listed under Decorations through it. FC hides the vanilla-id chest 54
+    // afterwards with setCreativeTab(null) (vanilla/client Block.java:223).
     protected BlockChest(int id) {
         super(id, Material.wood);
+        this.setCreativeTab(CreativeTabs.tabDecorations);
         this.setBlockBounds(0.0625F, 0.0F, 0.0625F, 0.9375F, 0.875F, 0.9375F);
     }
 
     protected BlockChest(int id, int chestType) {
         super(id, Material.wood);
         this.isTrapped = chestType;
+        this.setCreativeTab(CreativeTabs.tabDecorations);
         this.setBlockBounds(0.0625F, 0.0F, 0.0625F, 0.9375F, 0.875F, 0.9375F);
     }
 

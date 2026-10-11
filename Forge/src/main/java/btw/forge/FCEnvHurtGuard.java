@@ -29,7 +29,7 @@ import java.util.List;
  * {@code EntityLiving.damageEntity} (vanilla/client EntityLiving.java:1277-1286) logs every
  * health-changing hit, with its source and post-armour amount, in the entity's
  * {@code CombatTracker} (CombatTracker.java:58-67). Nothing re-probes MC geometry, whose
- * {@code isSuffocating} diverges from FC's {@code isBlockNormalCube} (534884e). FC's other
+ * {@code isSuffocating} diverges from FC's {@code isBlockNormalCube} (85fdd2d). FC's other
  * self-damage is left untouched:</p>
  * <ul>
  *   <li><b>Fall / cactus / lava / fire / drowning</b> still hurt and kill. Reverting them would

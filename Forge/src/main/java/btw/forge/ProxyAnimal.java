@@ -5,6 +5,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.AgeableMob;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Animal;
@@ -41,6 +42,8 @@ public class ProxyAnimal extends Animal
     private final FCPuppetSupport.AnimSender animSender = new FCPuppetSupport.AnimSender();
     /** RE7: set while readAdditionalSaveData runs, so ensureFcEntity keeps the loaded Health. */
     private boolean loadingSaveData = false;
+    /** W7: category of the replaced vanilla mob, or null — see ProxyMob.replacedCategory. */
+    private MobCategory replacedCategory;
 
     public ProxyAnimal(EntityType<? extends Animal> type, Level level) {
         super(type, level);
@@ -79,6 +82,18 @@ public class ProxyAnimal extends Animal
             fcClassName = BTWEntityRegistration.getFcClassName(getType());
         }
         return fcClassName;
+    }
+
+    /** W7: VanillaMobReplacer passes the replaced vanilla type's category before adding the proxy. */
+    public void setReplacedCategory(MobCategory category) {
+        this.replacedCategory = category;
+    }
+
+    /** W7: natural-spawn caps count a replacement in the replaced mob's category — see ProxyMob.getClassification. */
+    @Override
+    public MobCategory getClassification(boolean forSpawnCount) {
+        if (forSpawnCount && replacedCategory != null) return replacedCategory;
+        return super.getClassification(forSpawnCount);
     }
 
     /**
@@ -158,7 +173,9 @@ public class ProxyAnimal extends Animal
         if (fcEntity == null) return;
         fcEntity.entityId = getId();
         fcEntity.ticksExisted = tickCount;
-        fcEntity.inWater = isInWater();
+        // S8: FC's handleWaterMovement owns inWater on the server (its water-entry edge is the 1.5.2
+        // splash); MC's state stands in only for the non-simulating client FC entity. See ProxyMob.syncToFc.
+        if (level().isClientSide) fcEntity.inWater = isInWater();
         // Two-way fire sync — only raise on external MC ignition; FC's
         // onEntityUpdate decrements. See ProxyMob.syncToFc for rationale.
         int mcFire = getRemainingFireTicks();
@@ -258,7 +275,7 @@ public class ProxyAnimal extends Animal
             setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
             fcEntity.entityId = getId();
             fcEntity.ticksExisted = tickCount;
-            fcEntity.inWater = isInWater();
+            // S8: inWater keeps FC's own previous-tick value so FC's splash fires — see ProxyMob.tick.
             // Two-way fire sync — only raise on external MC ignition; FC's
             // onEntityUpdate decrements. See ProxyMob.syncToFc for rationale.
             int mcFire = getRemainingFireTicks();
@@ -430,6 +447,16 @@ public class ProxyAnimal extends Animal
 
     @Override
     protected net.minecraft.sounds.SoundEvent getDeathSound() { return null; }
+
+    /** S8: FC's handleWaterMovement owns the water-entry splash sound and particles — see ProxyMob.doWaterSplashEffect. */
+    @Override
+    protected void doWaterSplashEffect() {
+        if (fcEntity == null) {
+            super.doWaterSplashEffect();
+            return;
+        }
+        if (!level().isClientSide) gameEvent(net.minecraft.world.level.gameevent.GameEvent.SPLASH);
+    }
 
     /** D1: FC's air logic is the only one; MC never drowns a puppet — see ProxyMob. */
     @Override
@@ -636,6 +663,7 @@ public class ProxyAnimal extends Animal
                 }
             }
         }
+        replacedCategory = ProxyMob.readSpawnCategory(tag, replacedCategory, LOGGER); // W7
         if (fcEntity != null && tag.contains("FCData")) {
             CompoundTag fcCompound = tag.getCompound("FCData");
             ForgeNBTCompound wrapper = new ForgeNBTCompound(fcCompound);
@@ -664,6 +692,7 @@ public class ProxyAnimal extends Animal
     public void addAdditionalSaveData(CompoundTag tag) {
         super.addAdditionalSaveData(tag);
         tag.putString("FCClassName", fcClassName);
+        if (replacedCategory != null) tag.putString(ProxyMob.SPAWN_CATEGORY_TAG, replacedCategory.getName()); // W7
         if (fcEntity != null) {
             CompoundTag fcCompound = new CompoundTag();
             ForgeNBTCompound wrapper = new ForgeNBTCompound(fcCompound);

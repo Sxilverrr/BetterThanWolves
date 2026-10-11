@@ -49,77 +49,80 @@ public class BTWCreativeTab {
                     .build()
     );
 
+    /** First Item.itemsList index of FC's standalone items (ParseID 222 + the 256 item offset). */
+    private static final int FIRST_FC_ITEM_ID = 478;
+
+    /** Item ids whose FC creative-tab query failed: logged once per id, the build goes on without them. */
+    private static final java.util.Set<Integer> FC_FAILURES_LOGGED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     /**
-     * Populates the creative tab with all BTW blocks and items.
+     * Fills the BTW tab exactly as 1.5.2 filled its creative tabs: CreativeTabs.displayAllReleventItems
+     * (vanilla/client CreativeTabs.java:134-147) lists every item whose getCreativeTab() is the tab, expanded
+     * through its getSubItems (an ItemBlock: its block's tab and getSubBlocks, ItemBlock.java:216-227). The FC
+     * tabs are walked in creativeTabArray order (Search and Inventory hold nothing of their own), over the
+     * FC-owned item ids only: the block items of FC blocks (ProxyBlocks, ids 175-4095) and FC's standalone
+     * items (ProxyItems, ids 478 and up).
+     *
+     * <p>Visibility, subtypes and names all come from FC. Walking the registries instead showed every
+     * technical block FC hides with a null tab (burning/lit/crop states, axle power source, legacy siding and
+     * moulding blocks, ...) and FC's untabbed items, added each block only at metadata 0 (missing the aesthetic
+     * blocks, wool slab colours, ...), and hid nothing from the vanilla Search tab or JEI, which both read this
+     * tab's search contents. Hidden blocks and items stay registered (world data, drops, /give); only their
+     * creative listing follows 1.5.2.</p>
      */
     @SubscribeEvent
     public static void buildContents(BuildCreativeModeTabContentsEvent event) {
-        if (event.getTabKey() == BTW_TAB.getKey()) {
-            int blocksAdded = 0;
-            int itemsAdded = 0;
+        if (event.getTabKey() != BTW_TAB.getKey()) return;
 
-            // Add all BTW blocks (IDs 175-4095)
-            for (int id = 175; id < 4096; id++) {
-                ProxyBlock proxy = ProxyRegistry.getProxy(id);
-                if (proxy != null) {
-                    try {
-                        event.accept(proxy);
-                        blocksAdded++;
-                    } catch (Exception e) {
-                        // Skip blocks that can't be added
-                    }
-                }
-            }
-
-            // Add all BTW standalone items
-            // FC items start at index 478 (ParseID 222 + 256 offset).
-            // Skip indices 222-477 which are either blocks or vanilla items.
-            for (int id = 478; id < 32000; id++) {
-                net.minecraft.world.item.Item item = ProxyRegistry.getModernItem(id);
-                if (item != null && item != net.minecraft.world.item.Items.AIR) {
-                    // Skip block items (already added above)
-                    if (item instanceof net.minecraft.world.item.BlockItem) {
-                        continue;
-                    }
-                    // Skip vanilla items that leaked into ProxyRegistry
-                    net.minecraft.resources.ResourceLocation regName =
-                            net.minecraftforge.registries.ForgeRegistries.ITEMS.getKey(item);
-                    if (regName != null && !BTWForgeMod.MOD_ID.equals(regName.getNamespace())) {
-                        continue;
-                    }
-                    try {
-                        // Ask FC for valid subtypes via getSubItems.
-                        // FC items with subtypes (scrolls, wool, candles, etc.)
-                        // populate the list with their valid variants.
-                        btw.modern.Item fcItem = (id < btw.modern.Item.itemsList.length)
-                                ? btw.modern.Item.itemsList[id] : null;
-                        if (fcItem != null && fcItem.getHasSubtypes()) {
-                            java.util.List<btw.modern.ItemStack> subItems = new java.util.ArrayList<>();
-                            fcItem.getSubItems(id, null, subItems);
-                            if (!subItems.isEmpty()) {
-                                for (btw.modern.ItemStack fcSub : subItems) {
-                                    ItemStack mcSub = ItemStackHelper.toMcStack(fcSub);
-                                    if (!mcSub.isEmpty()) {
-                                        event.accept(mcSub);
-                                        itemsAdded++;
-                                    }
-                                }
-                            } else {
-                                // FC didn't populate subtypes — add the base item
-                                event.accept(item);
-                                itemsAdded++;
-                            }
-                        } else {
-                            event.accept(item);
-                            itemsAdded++;
-                        }
-                    } catch (Exception e) {
-                        // Skip items that can't be added
-                    }
-                }
-            }
-
-            LOGGER.info("Added {} blocks and {} items to BTW creative tab.", blocksAdded, itemsAdded);
+        // FC-owned Item.itemsList indices, in index order (the 1.5.2 order within a tab)
+        java.util.List<Integer> fcOwned = new java.util.ArrayList<>();
+        for (int id = 175; id < btw.modern.Item.itemsList.length; id++) {
+            if (btw.modern.Item.itemsList[id] != null && isFcOwned(id)) fcOwned.add(id);
         }
+
+        int blockEntries = 0;
+        int itemEntries = 0;
+        for (btw.modern.CreativeTabs fcTab : btw.modern.CreativeTabs.creativeTabArray) {
+            if (fcTab == null || fcTab == btw.modern.CreativeTabs.tabAllSearch
+                    || fcTab == btw.modern.CreativeTabs.tabInventory) {
+                continue;
+            }
+            for (int id : fcOwned) {
+                btw.modern.Item fcItem = btw.modern.Item.itemsList[id];
+                try {
+                    if (fcItem.getCreativeTab() != fcTab) continue;
+                    java.util.List<Object> subItems = new java.util.ArrayList<>();
+                    fcItem.getSubItems(fcItem.itemID, fcTab, subItems);
+                    for (Object sub : subItems) {
+                        if (!(sub instanceof btw.modern.ItemStack fcSub)) continue;
+                        ItemStack mcSub = ItemStackHelper.toMcStack(fcSub);   // the subtype rides the Damage tag
+                        if (mcSub.isEmpty()) continue;
+                        mcSub.setCount(1);   // creative tab contents must be single stacks (CreativeModeTab.java:370)
+                        // listed in the Search tab (and so JEI) exactly as in this tab; hidden entries in neither
+                        event.accept(mcSub, CreativeModeTab.TabVisibility.PARENT_AND_SEARCH_TABS);
+                        if (id < 4096 && ProxyRegistry.getProxy(id) != null) blockEntries++; else itemEntries++;
+                    }
+                } catch (Throwable t) {
+                    if (FC_FAILURES_LOGGED.add(id)) {
+                        LOGGER.warn("FC item {} creative-tab listing failed; it is left out of the BTW tab: {}",
+                                id, t.toString(), t);
+                    }
+                }
+            }
+        }
+
+        LOGGER.info("Added {} block and {} item entries to the BTW creative tab from FC's creative-tab membership"
+                + " ({} FC-owned item ids).", blockEntries, itemEntries, fcOwned.size());
+    }
+
+    /**
+     * True for an Item.itemsList index whose item this mod registered for FC: the block item of an FC block
+     * (a ProxyBlock id, 175-4095) or an FC standalone item (a ProxyItem / ProxyArmorItem, id 478 and up).
+     * Vanilla-id items FC replaces (256-477, the records) keep their 1.20.1 items and tabs.
+     */
+    private static boolean isFcOwned(int id) {
+        if (id < 4096 && ProxyRegistry.getProxy(id) != null) return true;
+        return id >= FIRST_FC_ITEM_ID && ProxyRegistry.getModernItem(id) instanceof LegacyProxyItem;
     }
 }

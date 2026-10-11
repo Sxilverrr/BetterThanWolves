@@ -128,6 +128,10 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
 
     public static btw.modern.World createDummyClientWorld(net.minecraft.world.level.Level mcLevel) {
         final net.minecraft.world.level.Level level = mcLevel;
+        // Client-local sound / aux / render calls go to the shared client sink only for a real client
+        // level (never from a server thread's world, and never on a dedicated server, where the
+        // client-only sink class is not loaded); without a level they are dropped.
+        final boolean clientSink = level != null && level.isClientSide();
         return new btw.modern.World() {
             { this.isRemote = true; this.rand = new java.util.Random();
               this.provider = new btw.modern.WorldProvider() {}; }
@@ -217,16 +221,43 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
             public void notifyBlockChange(int x, int y, int z, int id) {}
             public boolean spawnEntityInWorld(btw.modern.Entity e) { return false; }
             public btw.modern.BiomeGenBase getBiomeGenForCoords(int x, int z) { return btw.modern.BiomeGenBase.plains; }
+            // 1.5.2 WorldClient + RenderGlobal sound contract (audit sounds S1). Client FC entities run
+            // onUpdate / handleHealthUpdate / client events here (tick() below, FCPuppetSupport
+            // .forwardEntityEvent): e.g. the cow kick, villager restock pop and zombie-cure moan play
+            // through World.playSound, which WorldClient played locally (WorldClient.java:483-505).
+            // playSoundEffect / playSoundAtEntity stay no-ops as in RenderGlobal (:1812, :1817): the
+            // server broadcasts those.
             public void playSoundEffect(double x, double y, double z, String s, float v, float p) {}
             public void playSoundAtEntity(btw.modern.Entity e, String s, float v, float p) {}
-            public void playAuxSFX(int id, int x, int y, int z, int data) {}
-            public void playAuxSFXAtEntity(btw.modern.EntityPlayer p, int id, int x, int y, int z, int data) {}
+            @Override
+            public void playSound(double x, double y, double z, String s, float v, float p, boolean distanceDelay) {
+                if (clientSink) btw.forge.client.LegacyClientSound.playLocal(x, y, z, s, v, p, distanceDelay);
+            }
+            // vanilla/client World.java:4994-4997: the 6-arg overload is the 7-arg one without delay.
+            @Override
+            public void playSound(double x, double y, double z, String s, float v, float p) {
+                playSound(x, y, z, s, v, p, false);
+            }
+            // RenderGlobal.playAuxSFX / broadcastSound, FC ids through FC's own client handler.
+            public void playAuxSFX(int id, int x, int y, int z, int data) {
+                if (clientSink) btw.forge.client.LegacyClientSound.playAux(id, x, y, z, data);
+            }
+            public void playAuxSFXAtEntity(btw.modern.EntityPlayer p, int id, int x, int y, int z, int data) {
+                playAuxSFX(id, x, y, z, data);
+            }
+            @Override
+            public void func_82739_e(int id, int x, int y, int z, int data) {
+                if (clientSink) btw.forge.client.LegacyClientSound.playAux(id, x, y, z, data, true);
+            }
             public boolean isRaining() { return false; }
             public boolean isBlockGettingPowered(int x, int y, int z) { return false; }
             public boolean isBlockIndirectlyGettingPowered(int x, int y, int z) { return false; }
             public btw.modern.IChunkProvider createChunkProvider() { return null; }
             public boolean destroyBlock(int x, int y, int z, boolean drop) { return false; }
-            public void markBlockRangeForRenderUpdate(int x1, int y1, int z1, int x2, int y2, int z2) {}
+            // 1.5.2 RenderGlobal.markBlockRangeForRenderUpdate re-meshed the range on the client (MPR-6).
+            public void markBlockRangeForRenderUpdate(int x1, int y1, int z1, int x2, int y2, int z2) {
+                if (clientSink) btw.forge.client.ClientFcWorld.markRangeDirty(x1, y1, z1, x2, y2, z2);
+            }
             public boolean canBlockSeeTheSky(int x, int y, int z) { return true; }
             public btw.modern.WorldChunkManager getWorldChunkManager() { return null; }
             public boolean setBlockToAir(int x, int y, int z) { return false; }
@@ -446,6 +477,38 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
             ensureFcEntity();
         }
         FCEntityStateCodec.applyState(buf, fcEntity);
+        if (level().isClientSide) {
+            playClientSpawnSound();
+        }
+    }
+
+    /**
+     * The sounds 1.5.2 played on the client when the spawn packet of a spider's web shot or a thrown soul-sand
+     * pile arrived: Client FCBetterThanWolves.java:2653 ("mob.slime.attack") and :2675 ("dig.sand"), in FC's
+     * custom spawn-packet handler. The port spawns both through Forge's spawn packet, so that handler never
+     * runs, and the server plays nothing for either (FCEntitySpider.SpitWeb :261-269,
+     * FCItemPileSoulSand.onItemRightClick :86-96). Like 1.5.2, they play each time a client starts tracking the
+     * entity. Forge has already placed the entity (PlayMessages.SpawnEntity.handle), on the main thread.
+     */
+    private void playClientSpawnSound() {
+        String className = getFcClassName();
+        if (className == null) return;
+        String simpleName = className.substring(className.lastIndexOf('.') + 1);
+        try {
+            net.minecraft.util.RandomSource rand = level().random;
+            if (simpleName.equals("FCEntitySpiderWeb")) {
+                btw.forge.client.LegacyClientSound.playLocal(getX(), getY(), getZ(), "mob.slime.attack", 1.0F,
+                        (rand.nextFloat() - rand.nextFloat()) * 0.2F + 0.6F, false);
+            } else if (simpleName.equals("FCEntitySoulSand")) {
+                btw.forge.client.LegacyClientSound.playLocal(getX(), getY(), getZ(), "dig.sand", 1.0F,
+                        1.0F + (rand.nextFloat() - rand.nextFloat()) * 0.2F, false);
+            }
+        } catch (Throwable t) {
+            if (LOGGED_TICK_FAILURES.add("spawnsound|" + simpleName + '|' + t.getClass().getName())) {
+                LOGGER.warn("FC spawn sound for {} failed: {}: {}", simpleName,
+                        t.getClass().getSimpleName(), t.getMessage());
+            }
+        }
     }
 
     @Override

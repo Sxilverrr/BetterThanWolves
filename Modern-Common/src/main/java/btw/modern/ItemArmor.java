@@ -12,6 +12,9 @@ public class ItemArmor extends Item {
         this.armorType = armorType;
         this.renderIndex = renderIndex;
         this.maxStackSize = 1;
+        // vanilla/client ItemArmor.java:58 (1.5.2 has only the material constructor, which chains through here). FC
+        // armour (FCItemArmor and its subclasses) sets no tab of its own and is listed under Combat through this one.
+        this.setCreativeTab(CreativeTabs.tabCombat);
     }
 
     public ItemArmor(int id, EnumArmorMaterial material, int renderIndex, int armorType) {

@@ -41,6 +41,11 @@ public class BTWForgeMod {
         // before datapack scan runs.
         btw.forge.data.BTWLootModifiers.LOOT_MODIFIERS.register(modEventBus);
 
+        // One SoundEvent per 1.5.2 sound name (assets/betterthanwolves/sounds.json), so FC's
+        // legacy sound names play their 1.5.2 files (LegacySounds, audit S4). DeferredRegister
+        // entries must exist before RegisterEvent fires, i.e. during mod construction.
+        LegacySounds.register(modEventBus);
+
         // Register network channel early so both sides agree on the protocol
         // before any packets are sent. Must happen during mod construction
         // (before FMLCommonSetupEvent) so the channel exists when the server
@@ -96,6 +101,8 @@ public class BTWForgeMod {
         // Startup self-audit: catch registry/physics regressions at launch (renderer coverage
         // runs client-side after the render map is built; block speed-factor sanity here).
         event.enqueueWork(BridgeSelfAudit::runCommon);
+        // Every literal 1.5.2 sound name FC plays must resolve to a legacy sound event.
+        event.enqueueWork(SoundMapping::verifyCoverage);
     }
 
     @SubscribeEvent

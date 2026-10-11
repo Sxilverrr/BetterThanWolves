@@ -34,7 +34,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * For vanilla items with FC replacements, this mixin is the ONLY path to FC code.
  */
 @Mixin(ItemStack.class)
-public abstract class ItemStackMixin {
+public abstract class ItemStackMixin implements ProxyItem.FcOwnedEat {
 
     /**
      * Look up the FC item for this MC ItemStack: the 1.5.2 item id first, a BlockItem's block only when
@@ -57,10 +57,25 @@ public abstract class ItemStackMixin {
     @Unique
     private boolean btw$fcBowlReturned;
 
+    /**
+     * S10: set by {@link #btw$finishUsing} when FC's 1.5.2 ItemFood.onEaten fed this eat (PlayerBridge.fcFedForEat)
+     * and so played its own 'random.burp' (vanilla/server ItemFood.java:71); cleared at the RETURN of the same
+     * call. While set, vanilla's closing eat sounds of this eat are silenced: Player.eat's PLAYER_BURP
+     * (PlayerMixin.btw$fcOwnsBurp) and LivingEntity.eat's eat sound ({@link #btw$silenceClosingEatSound}).
+     */
+    @Unique
+    private boolean btw$fcOwnedEat;
+
+    @Override
+    public boolean btw$isFcOwnedEat() {
+        return this.btw$fcOwnedEat;
+    }
+
     @Inject(method = "finishUsingItem", at = @At("HEAD"))
     private void btw$finishUsing(Level level, LivingEntity entity,
                                   CallbackInfoReturnable<ItemStack> cir) {
         this.btw$fcBowlReturned = false;
+        this.btw$fcOwnedEat = false;
         // ProxyItems run onEaten in ProxyItem.finishUsingItem. Doing it here too
         // would double-apply nutrition now that ItemFood.onEaten is no longer a
         // no-op. This path handles only vanilla items with FC replacements.
@@ -101,6 +116,9 @@ public abstract class ItemStackMixin {
                     ProxyItem.logFcFailureOnce("onEaten", fcItem.itemID, t);
                 }
                 pb.syncToReal();
+                // S10: FC fed this eat, so its ItemFood.onEaten played the 1.5.2 burp: one owner for the eat's
+                // closing sounds (vanilla's are silenced for the rest of this call).
+                this.btw$fcOwnedEat = fcDone && PlayerBridge.fcFedForEat(self.getItem(), player);
                 // FC bowl foods (FCItemMushroomSoup, the 1.5.2 mushroom stew 282: Common FCItemMushroomSoup.java:29-41)
                 // return their bowl with player.inventory.addItemStackToInventory, which only reaches the
                 // InventoryBridge snapshot, while vanilla BowlFoodItem.finishUsingItem hands back its own bowl.
@@ -141,10 +159,42 @@ public abstract class ItemStackMixin {
     @Inject(method = "finishUsingItem", at = @At("RETURN"), cancellable = true)
     private void btw$finishUsingResult(Level level, LivingEntity entity,
                                         CallbackInfoReturnable<ItemStack> cir) {
+        this.btw$fcOwnedEat = false;
         if (this.btw$fcBowlReturned) {
             this.btw$fcBowlReturned = false;
             cir.setReturnValue((ItemStack) (Object) this);
         }
+    }
+
+    /**
+     * S10: LivingEntity.eat (via Item.finishUsingItem -> Player.eat -> super.eat, this same stack) closes every
+     * eat with one more eating sound at volume 1.0; 1.5.2 had none (its closing sounds were updateItemUse's eat
+     * sound, which 1.20.1's completeUsingItem -> triggerItemUseEffects keeps, and ItemFood.onEaten's burp). While
+     * FC owns the eat ({@link #btw$fcOwnedEat}) it is made silent. The sounds while eating are untouched: the
+     * flag is only set inside finishUsingItem.
+     */
+    @Inject(method = "getEatingSound", at = @At("HEAD"), cancellable = true)
+    private void btw$silenceClosingEatSound(CallbackInfoReturnable<net.minecraft.sounds.SoundEvent> cir) {
+        if (this.btw$fcOwnedEat) {
+            cir.setReturnValue(ProxyItem.SILENT_SOUND);
+        }
+    }
+
+    // ================================================================
+    // onCraftedBy → FC onCreated
+    // ================================================================
+
+    /**
+     * S9: a vanilla item with an FC replacement taken from a crafting or smelting result runs FC's onCreated
+     * (FCItemTool / FCItemSword / FCItemArmor / FCItemShears crafting sounds), after the crafting stat, where 1.5.2
+     * ItemStack.onCrafting called it (vanilla/client ItemStack.java:501-504). ProxyItems run it in
+     * ProxyItem.onCraftedBy; ProxyArmorItems (no override there) come through here.
+     */
+    @Inject(method = "onCraftedBy", at = @At("TAIL"))
+    private void btw$onCraftedBy(Level level, Player player, int amount, CallbackInfo ci) {
+        ItemStack self = (ItemStack) (Object) this;
+        if (self.isEmpty() || self.getItem() instanceof ProxyItem) return;
+        ProxyItem.runFcOnCreated(self, level, player);
     }
 
     /** Vanilla items whose finishUsingItem hands back a bowl outside creative (1.20.1 Items.java:830). */

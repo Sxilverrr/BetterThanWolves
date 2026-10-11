@@ -72,4 +72,76 @@ public class BlockFire extends Block {
             || this.canBlockCatchFire(world, x, y, z - 1)
             || this.canBlockCatchFire(world, x, y, z + 1);
     }
+
+    // 1.5.2 BlockFire.randomDisplayTick (vanilla/client BlockFire.java:400-479): the crackle and the smoke. FCBlockFire and
+    // FCBlockFireStoked do not override it, so stoked fire (251, a ProxyBlock: ProxyBlock.animateTick) was silent and
+    // smokeless on Block's empty body. The sound goes through the client FC world's playSound. Block.fire is FC's
+    // FCBlockFire after BTWLifecycle replaces id 51 (as 1.5.2 Block.java:220); this block stands in if it is unset.
+    @Override
+    public void randomDisplayTick(World world, int x, int y, int z, java.util.Random random) {
+        if (random.nextInt(24) == 0) {
+            world.playSound((double) ((float) x + 0.5F), (double) ((float) y + 0.5F), (double) ((float) z + 0.5F),
+                    "fire.fire", 1.0F + random.nextFloat(), random.nextFloat() * 0.7F + 0.3F, false);
+        }
+
+        BlockFire fireBlock = Block.fire != null ? Block.fire : this;
+        int i;
+        float fx;
+        float fy;
+        float fz;
+
+        if (!world.doesBlockHaveSolidTopSurface(x, y - 1, z) && !fireBlock.canBlockCatchFire(world, x, y - 1, z)) {
+            if (fireBlock.canBlockCatchFire(world, x - 1, y, z)) {
+                for (i = 0; i < 2; ++i) {
+                    fx = (float) x + random.nextFloat() * 0.1F;
+                    fy = (float) y + random.nextFloat();
+                    fz = (float) z + random.nextFloat();
+                    world.spawnParticle("largesmoke", (double) fx, (double) fy, (double) fz, 0.0D, 0.0D, 0.0D);
+                }
+            }
+
+            if (fireBlock.canBlockCatchFire(world, x + 1, y, z)) {
+                for (i = 0; i < 2; ++i) {
+                    fx = (float) (x + 1) - random.nextFloat() * 0.1F;
+                    fy = (float) y + random.nextFloat();
+                    fz = (float) z + random.nextFloat();
+                    world.spawnParticle("largesmoke", (double) fx, (double) fy, (double) fz, 0.0D, 0.0D, 0.0D);
+                }
+            }
+
+            if (fireBlock.canBlockCatchFire(world, x, y, z - 1)) {
+                for (i = 0; i < 2; ++i) {
+                    fx = (float) x + random.nextFloat();
+                    fy = (float) y + random.nextFloat();
+                    fz = (float) z + random.nextFloat() * 0.1F;
+                    world.spawnParticle("largesmoke", (double) fx, (double) fy, (double) fz, 0.0D, 0.0D, 0.0D);
+                }
+            }
+
+            if (fireBlock.canBlockCatchFire(world, x, y, z + 1)) {
+                for (i = 0; i < 2; ++i) {
+                    fx = (float) x + random.nextFloat();
+                    fy = (float) y + random.nextFloat();
+                    fz = (float) (z + 1) - random.nextFloat() * 0.1F;
+                    world.spawnParticle("largesmoke", (double) fx, (double) fy, (double) fz, 0.0D, 0.0D, 0.0D);
+                }
+            }
+
+            if (fireBlock.canBlockCatchFire(world, x, y + 1, z)) {
+                for (i = 0; i < 2; ++i) {
+                    fx = (float) x + random.nextFloat();
+                    fy = (float) (y + 1) - random.nextFloat() * 0.1F;
+                    fz = (float) z + random.nextFloat();
+                    world.spawnParticle("largesmoke", (double) fx, (double) fy, (double) fz, 0.0D, 0.0D, 0.0D);
+                }
+            }
+        } else {
+            for (i = 0; i < 3; ++i) {
+                fx = (float) x + random.nextFloat();
+                fy = (float) y + random.nextFloat() * 0.5F + 0.5F;
+                fz = (float) z + random.nextFloat();
+                world.spawnParticle("largesmoke", (double) fx, (double) fy, (double) fz, 0.0D, 0.0D, 0.0D);
+            }
+        }
+    }
 }

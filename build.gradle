@@ -56,6 +56,102 @@ def MCP_MEDIAFIRE_PAGE = 'https://www.mediafire.com/file/95vlzp1a4n4wjqw/mcp751.
 def PYTHON2 = System.getenv('PYTHON2') ?: (org.gradle.internal.os.OperatingSystem.current().isWindows()
     ? 'C:/Python27/python.exe' : 'python2')
 
+def sha1Of = { File f ->
+    def md = java.security.MessageDigest.getInstance('SHA-1')
+    f.withInputStream { is ->
+        byte[] buf = new byte[65536]
+        int n
+        while ((n = is.read(buf)) > 0) md.update(buf, 0, n)
+    }
+    md.digest().encodeHex().toString()
+}
+
+// Downloads url to dest and checks its SHA-1 (3 attempts). A partial or corrupt download never ends
+// up at dest. Plain java.net (no Ant), so it is safe to call from several threads.
+def fetchVerified = { String url, String expected, File dest ->
+    dest.parentFile.mkdirs()
+    def tmp = new File(dest.parentFile, dest.name + '.part')
+    for (int attempt = 1; ; attempt++) {
+        try {
+            def conn = new URL(url).openConnection()
+            conn.connectTimeout = 15000
+            conn.readTimeout = 60000
+            conn.inputStream.withStream { is -> tmp.withOutputStream { os -> os << is } }
+            def actual = sha1Of(tmp)
+            if (actual != expected) throw new IOException("SHA-1 mismatch: expected ${expected}, got ${actual}")
+            java.nio.file.Files.move(tmp.toPath(), dest.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            return
+        } catch (IOException e) {
+            tmp.delete()
+            if (attempt >= 3) throw new GradleException("Download failed: ${url} (${e.message})", e)
+        }
+    }
+}
+
+// Downloads a Mojang launcher URL to dest unless dest already holds the right bytes. These URLs embed
+// the file's SHA-1 (.../objects/<sha1>/client.jar, .../packages/<sha1>/pre-1.6.json).
+def fetchMojangObject = { String url, File dest ->
+    def expected = (url =~ /\/(?:objects|packages)\/([0-9a-f]{40})\//)[0][1]
+    if (dest.isFile() && sha1Of(dest) == expected) return false
+    logger.lifecycle("Downloading ${dest.name} (MC 1.5.2)...")
+    fetchVerified(url, expected, dest)
+    return true
+}
+
+// The vanilla 1.5.2 jars live in the MCP cache. setupVanilla fetches them on a first setup but skips
+// everything once vanilla/ exists, so a fresh or moved .gradle/ left :MCP:runClient without the
+// client jar and its /lang and /achievement resources (NPE in StringTranslate / AchievementMap).
+task downloadMinecraftJars {
+    group = 'setup'
+    description = 'Downloads the vanilla MC 1.5.2 client and server jars into .gradle/mc-cache (SHA-1 checked)'
+    doLast {
+        def jars = file('.gradle/mc-cache/mcp751/jars')
+        fetchMojangObject(MC_CLIENT_URL, new File(jars, 'bin/minecraft.jar'))
+        fetchMojangObject(MC_SERVER_URL, new File(jars, 'minecraft_server.jar'))
+    }
+}
+
+// 1.5.2's sounds and music. The game fetched them from an Amazon S3 listing that no longer exists, so
+// :MCP:runClient ran silent. Mojang still serves them through the "pre-1.6" asset index (the one the
+// launcher uses for 1.5.2; URL from piston-meta's 1.5.2 version JSON). With the files laid out by
+// resource path under <data dir>/resources/, 1.5.2's own fallback installs them when the S3 listing
+// fails (vanilla/client ThreadDownloadResources.run -> loadResource). :MCP:runClient's data dir is run/.
+def MC_ASSET_INDEX_URL = 'https://launchermeta.mojang.com/v1/packages/3d8e55480977e32acd9844e545177e69a52f594b/pre-1.6.json'
+
+task downloadLegacyResources {
+    group = 'setup'
+    description = "Downloads 1.5.2's sounds and music (Mojang pre-1.6 asset index, ~50 MB) into run/resources"
+    doLast {
+        try {
+            def index = file('.gradle/mc-cache/assets/pre-1.6.json')
+            fetchMojangObject(MC_ASSET_INDEX_URL, index)
+            def objects = new groovy.json.JsonSlurper().parse(index).objects
+            def resources = file('run/resources')
+            def missing = objects.findAll { path, o ->
+                def f = new File(resources, path)
+                !(f.isFile() && f.length() == (o.size as long))
+            }
+            if (missing.isEmpty()) return
+            logger.lifecycle("Downloading ${missing.size()} of ${objects.size()} 1.5.2 sound/music files...")
+            def pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+            try {
+                def jobs = missing.collect { path, o ->
+                    pool.submit({
+                        fetchVerified("https://resources.download.minecraft.net/${o.hash.substring(0, 2)}/${o.hash}",
+                                o.hash, new File(resources, path))
+                    } as java.util.concurrent.Callable)
+                }
+                jobs*.get()
+            } finally {
+                pool.shutdownNow()
+            }
+        } catch (Exception e) {
+            // Sound is optional: never block the run (e.g. offline before the first download).
+            logger.warn("1.5.2 sounds/music could not be downloaded; the 1.5.2 client will run silent: ${e}")
+        }
+    }
+}
+
 task setupVanilla {
     group = 'setup'
     description = 'Downloads MCP 7.51, decompiles MC 1.5.2, applies BTW patches'
@@ -100,16 +196,8 @@ task setupVanilla {
         // --- Download MC 1.5.2 jars ---
         def clientJar = new File(mcpDir, 'jars/bin/minecraft.jar')
         def serverJar = new File(mcpDir, 'jars/minecraft_server.jar')
-
-        if (!clientJar.exists()) {
-            logger.lifecycle('Downloading MC 1.5.2 client...')
-            clientJar.parentFile.mkdirs()
-            ant.get(src: MC_CLIENT_URL, dest: clientJar)
-        }
-        if (!serverJar.exists()) {
-            logger.lifecycle('Downloading MC 1.5.2 server...')
-            ant.get(src: MC_SERVER_URL, dest: serverJar)
-        }
+        fetchMojangObject(MC_CLIENT_URL, clientJar)
+        fetchMojangObject(MC_SERVER_URL, serverJar)
 
         // --- Copy LWJGL libs into MCP workspace ---
         def binDir = new File(mcpDir, 'jars/bin')

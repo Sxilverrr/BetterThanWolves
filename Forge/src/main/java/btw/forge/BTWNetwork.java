@@ -2,6 +2,7 @@ package btw.forge;
 
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.DistExecutor;
@@ -36,7 +37,8 @@ public class BTWNetwork {
     private static final Logger LOGGER = LogManager.getLogger("BTW-Network");
     // "2": FCAnimSync added (message ids are positional, so a mismatched peer must be refused).
     // "3": FCPayload added (FC login handshake payloads).
-    private static final String PROTOCOL_VERSION = "3";
+    // "4": FcAuxSfx added (1.5.2 Packet61 aux effects run by the client's FC handler).
+    private static final String PROTOCOL_VERSION = "4";
 
     /** FCBetterThanWolves.fcCustomPacketChannelVersionCheck (Client FCBetterThanWolves.java:666). */
     public static final String FC_CHANNEL_VERSION_CHECK = "FC|VC";
@@ -115,6 +117,12 @@ public class BTWNetwork {
                 FCPayload::encode, FCPayload::decode, FCPayload::handle,
                 java.util.Optional.of(net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT));
 
+        // 1.5.2 aux effects (Packet61DoorChange): server -> client only (the handler runs client FC code).
+        // Id 5.
+        CHANNEL.registerMessage(nextMessageId++, FcAuxSfx.class,
+                FcAuxSfx::encode, FcAuxSfx::decode, FcAuxSfx::handle,
+                java.util.Optional.of(net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT));
+
         LOGGER.info("BTW network channel registered.");
     }
 
@@ -142,6 +150,62 @@ public class BTWNetwork {
                 LOGGER.warn("Sending FC payload '{}' to {} failed: {}",
                         channel, player.getGameProfile().getName(), t.toString());
             }
+        }
+    }
+
+    /**
+     * Sends a 1.5.2 aux effect to clients, which play it through the client sink
+     * (btw.forge.client.LegacyClientSound.playAux): FC ids (&gt;= 2222) run FC's own
+     * FCAddOnHandler.ClientPlayCustomAuxFX there, with FC's exact sounds and particles (audit sounds S3).
+     * 1.5.2 WorldManager sent Packet61DoorChange the same way (vanilla/server WorldManager.java:103-111):
+     * <ul>
+     *   <li>{@code global} (World.func_82739_e / broadcastSound): every player, in every dimension;</li>
+     *   <li>otherwise (playAuxSFX / playAuxSFXAtEntity): players within 64 blocks of (x, y, z) except
+     *       {@code except}, the actor whose client already played it (null: nobody excluded).</li>
+     * </ul>
+     * Never throws.
+     */
+    public static void sendFcAuxSfx(ServerLevel level, @javax.annotation.Nullable ServerPlayer except,
+                                    int sfxId, int x, int y, int z, int data, boolean global) {
+        if (CHANNEL == null || level == null) return;
+        try {
+            FcAuxSfx msg = new FcAuxSfx(sfxId, x, y, z, data, global);
+            if (global) {
+                // 1.5.2 WorldManager.broadcastSound: sendPacketToAllPlayers, every dimension (vanilla/server
+                // WorldManager.java:108-111), as 1.20.1 ServerLevel.globalLevelEvent also does
+                CHANNEL.send(PacketDistributor.ALL.noArg(), msg);
+            } else {
+                PacketDistributor.TargetPoint near = new PacketDistributor.TargetPoint(
+                        except, x, y, z, 64.0D, level.dimension());
+                CHANNEL.send(PacketDistributor.NEAR.with(() -> near), msg);
+            }
+        } catch (Throwable t) {
+            if (FCPuppetSupport.firstFailure("fcAuxSfx|" + sfxId + "|" + t.getClass().getName())) {
+                LOGGER.warn("Sending aux-SFX {} at {},{},{} failed: {}", sfxId, x, y, z, t.toString());
+            }
+        }
+    }
+
+    /**
+     * The 1.20.1 level event and data for a vanilla 1.5.2 aux-SFX id (&lt; 2222) as {@code {event, data}}, or
+     * null when 1.20.1 has no such event or cannot express the data. {@code global} maps a
+     * World.func_82739_e id to its global level event instead. Public face of the package-private
+     * {@link AuxSfxMapping} for the client sink (btw.forge.client.LegacyClientSound), so the client plays the
+     * same translation the server's WorldBridge sends. Pure lookup; never throws.
+     */
+    @javax.annotation.Nullable
+    public static int[] legacyAuxToLevelEvent(int legacyId, int legacyData, boolean global) {
+        try {
+            if (global) {
+                int event = AuxSfxMapping.toModernGlobalEvent(legacyId);
+                return event != AuxSfxMapping.NONE ? new int[] {event, legacyData} : null;
+            }
+            int event = AuxSfxMapping.toModernEvent(legacyId, legacyData);
+            if (event == AuxSfxMapping.NONE) return null;
+            int data = AuxSfxMapping.toModernData(legacyId, legacyData);
+            return data != AuxSfxMapping.INVALID_DATA ? new int[] {event, data} : null;
+        } catch (Throwable t) {
+            return null;
         }
     }
 
@@ -458,6 +522,58 @@ public class BTWNetwork {
                 ctx.enqueueWork(() -> DistExecutor.unsafeRunWhenOn(Dist.CLIENT,
                         () -> () -> btw.forge.client.FCClientPayloadHandler.handle(msg.channel, msg.data)));
             }
+            ctx.setPacketHandled(true);
+        }
+    }
+
+    // =================================================================
+    // Packet: FcAuxSfx (server -> client) - 1.5.2 Packet61DoorChange
+    // =================================================================
+
+    /**
+     * A 1.5.2 aux effect (Packet61DoorChange: id, x, y, z, data, and the broadcastSound flag;
+     * vanilla/server WorldManager.java:103-111). The client handled Packet61 with WorldClient.playAuxSFX
+     * or func_82739_e (NetClientHandler.handleDoorChange), i.e. RenderGlobal.playAuxSFX / broadcastSound;
+     * here btw.forge.client.LegacyClientSound.playAux, reached through DistExecutor so a dedicated server
+     * never loads it. Registered PLAY_TO_CLIENT. Sent by {@link #sendFcAuxSfx}.
+     */
+    public static class FcAuxSfx {
+        final int sfxId;
+        final int x;
+        final int y;
+        final int z;
+        final int data;
+        final boolean global;
+
+        public FcAuxSfx(int sfxId, int x, int y, int z, int data, boolean global) {
+            this.sfxId = sfxId;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.data = data;
+            this.global = global;
+        }
+
+        public static void encode(FcAuxSfx msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.sfxId);
+            buf.writeInt(msg.x);
+            buf.writeInt(msg.y);
+            buf.writeInt(msg.z);
+            buf.writeInt(msg.data);
+            buf.writeBoolean(msg.global);
+        }
+
+        public static FcAuxSfx decode(FriendlyByteBuf buf) {
+            return new FcAuxSfx(buf.readVarInt(), buf.readInt(), buf.readInt(), buf.readInt(), buf.readInt(),
+                    buf.readBoolean());
+        }
+
+        public static void handle(FcAuxSfx msg,
+                Supplier<net.minecraftforge.network.NetworkEvent.Context> ctxSupplier) {
+            net.minecraftforge.network.NetworkEvent.Context ctx = ctxSupplier.get();
+            ctx.enqueueWork(() -> DistExecutor.unsafeRunWhenOn(Dist.CLIENT,
+                    () -> () -> btw.forge.client.LegacyClientSound.playAux(
+                            msg.sfxId, msg.x, msg.y, msg.z, msg.data, msg.global)));
             ctx.setPacketHandled(true);
         }
     }

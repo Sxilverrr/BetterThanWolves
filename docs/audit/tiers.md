@@ -10,6 +10,23 @@ committed to not shifting that ceiling (Protocol #5).
 Source of FC tiers: `vanilla/server/net/minecraft/src/EnumToolMaterial.java:29-34`
 and `vanilla/server/net/minecraft/src/EnumArmorMaterial.java:24-29`.
 
+> **FC code is read-only. Never modify it.** FC code is FlowerChild's
+> sources (`net.minecraft.src.btw.*` under `Common/`, `Client/`,
+> `Server/`), the FCMOD-edited 1.5.2 sources under `vanilla/`, the frozen
+> compiled classes in root `build/classes/java/{main,server}`,
+> FlowerChild's original 4.B release files kept in the repo (`Src/`,
+> `SrcServer/` and `SrcClient/`, holding the flat sources and the
+> `patch.txt` files that `setupVanilla` applies to build `vanilla/`, plus
+> `BTWMod4-B0000003.zip`), and FlowerChild's own files such as
+> `Readme.txt`. The FC files cited here
+> are references only. Every change in this audit lands outside FC code:
+> in the Forge bridge (mixins and access transformers on 1.20.1 classes,
+> `btw.forge` code, data packs), in Modern-Common (the port's `btw.modern`
+> stand-ins, which are port code), or in the planned subproject that
+> extends and patches FC code at build or load time without writing back
+> to FC files (the build-time ASM transforms in `Forge/build.gradle` are
+> its precursors).
+
 ---
 
 ## FC tier ladder (reference)
@@ -137,10 +154,13 @@ deferred table after `#003`.
 
 ---
 
-## FC sides that need tag-driven consumption (Phase 2 `#006`)
+## FC recipes that need tag-driven replacements (port side, Phase 2 `#006`)
 
-The audit exposes which FC-side recipes currently ID-check wood/stone/iron
-ingredients and need to accept modern equivalents:
+The audit exposes which FC recipes currently ID-check wood/stone/iron
+ingredients; port code must supply replacements that accept modern
+equivalents. `FCRecipes.java` is read-only: the remediation replaces or re-registers these recipes from port
+code (the bridge's recipe injection, or the planned FC extension/patch
+subproject), never by editing FC's recipe sources:
 
 | FC recipe | Ingredient ID check | Target tag |
 |---|---|---|
@@ -153,8 +173,9 @@ ingredients and need to accept modern equivalents:
 **Note:** each entry above becomes a separate row in the Phase 2 `#006`
 tag-remediation entry's scope. Concrete file:line references must be
 gathered during Phase 2 implementation by greppin
-`Common/src/main/java/net/minecraft/src/btw/crafting/FCRecipes.java` for
-`Block.planks`, `Item.ingotIron`, etc.
+`Client/src/main/java/net/minecraft/src/btw/crafting/FCRecipes.java` (and
+its `Server/` twin) for `Block.planks`, `Item.ingotIron`, etc. Those references locate the recipes
+to override; the file itself is never changed.
 
 ---
 
@@ -180,7 +201,7 @@ gathered during Phase 2 implementation by greppin
 |---|---|---|
 | Phase 2 `#005` | `data/minecraft/recipes/netherite_smithing_upgrade.json` | Add FC reagent ingredients |
 | Phase 2 `#005` | `data/minecraft/recipes/lodestone.json` | Swap netherite → soulforged steel |
-| Phase 2 `#006` | FC side: `FCRecipes.java` | Swap hardcoded ID checks for tag-driven where practical; may require new mixin or new FC method `IsPlankMaterial(ItemStack)` that checks `#minecraft:planks` tag |
+| Phase 2 `#006` | Port side, for the recipes in FC's `FCRecipes.java` (read-only) | Replace or re-register those recipes from port code so they match by tag where practical. Never edit `FCRecipes.java` or add methods to FC classes; a helper such as `IsPlankMaterial(ItemStack)` that checks the `#minecraft:planks` tag lives in port code (bridge or the planned FC extension/patch subproject). *(2026-10-10: replaces the earlier "new FC method" wording.)* |
 | Phase 8 `#052` | `Forge/src/main/java/btw/forge/mixin/NetheriteTierMixin.java` or access transformer | Re-tier NETHERITE enum constants |
 | Phase 8 `#052` | `Forge/src/main/resources/accesstransformer.cfg` (may need creation) | Expose Tiers.NETHERITE fields for mutation |
 | Phase 8 `#053` | Phase 2 recipe overrides + no additional code | Pure data |
