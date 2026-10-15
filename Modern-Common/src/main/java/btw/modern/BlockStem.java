@@ -11,6 +11,8 @@ public class BlockStem extends BlockFlower {
     protected BlockStem(int id, Block fruitBlock) {
         super(id, Material.plants);
         this.fruitType = fruitBlock;
+        // 1.5.2 BlockStem constructor (vanilla/server BlockStem.java:32)
+        setTickRandomly(true);
     }
 
     // 1.5.2 BlockStem.getRenderType (vanilla/client BlockStem.java:229-232). FCBlockStem draws itself in-world

@@ -4,6 +4,9 @@ public class BlockGrass extends Block {
 
     protected BlockGrass(int id) {
         super(id, Material.grass);
+        // 1.5.2 BlockGrass constructor (vanilla/server BlockGrass.java:23): FCBlockGrass.updateTick (death in low
+        // natural light, spread) runs on the random tick
+        setTickRandomly(true);
     }
 
     /**

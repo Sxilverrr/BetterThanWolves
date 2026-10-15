@@ -51,18 +51,19 @@ public class WorldBridge extends btw.modern.WorldServer {
 
     /**
      * Metadata storage for vanilla blocks that don't have ProxyBlock.META.
-     * FC code sets metadata on vanilla blocks (e.g., cracked flag on stone),
-     * but vanilla MC blocks have no META property. This map stores the FC
-     * metadata keyed by block position so getBlockMetadata can return it.
+     * FC code sets metadata on vanilla blocks (sapling growth stage, leaf decay flag, stem growth 0-14,
+     * jack o'lantern placed flag), but vanilla MC blocks have no META property and their state cannot
+     * hold every bit. The overlay stores the FC metadata keyed by block position so getBlockMetadata can
+     * return it, and is persisted with the level (FcMetaOverlay, data/btw_fc_meta.dat): it used to be an
+     * in-memory map cleared at server stop, so FC lost all of it on every restart.
      * Entries are removed when FC changes the block at that position, and ignored (then dropped) once the
-     * MC block there is no longer the one FC wrote to: MC replaces blocks without going through WorldBridge
-     * (explosions, player placement, pistons, fluids), and a stale value used to win over the derived one.
-     * Concurrent: the read path now also removes, and FC shape/bounds code can read neighbours off-thread.
+     * MC block there is no longer the one FC wrote to, or no longer derives to what it derived to after FC's
+     * write: MC replaces and changes blocks without going through WorldBridge (explosions, player placement,
+     * pistons, fluids, bone meal), and a stale value used to win over the derived one. Only metadata that
+     * differs from the derived value is stored (see putMetaOverride).
+     * Null once detached (the data stays with the level's storage).
      */
-    private final Map<BlockPos, MetaOverride> vanillaMetaOverrides = new java.util.concurrent.ConcurrentHashMap<>();
-
-    /** FC metadata written to a vanilla block, valid only while {@code block} is still the block at its position. */
-    private record MetaOverride(net.minecraft.world.level.block.Block block, int meta) {}
+    private FcMetaOverlay vanillaMetaOverrides;
 
     private static final Map<ServerLevel, WorldBridge> cache = new WeakHashMap<>();
 
@@ -94,7 +95,8 @@ public class WorldBridge extends btw.modern.WorldServer {
     private void detach() {
         fcToForgeEntity.clear();
         projectileTargets.clear();
-        vanillaMetaOverrides.clear();
+        // Persisted: the level's DimensionDataStorage already saved it at stop; only drop the reference.
+        vanillaMetaOverrides = null;
         level = null;
     }
 
@@ -179,6 +181,8 @@ public class WorldBridge extends btw.modern.WorldServer {
             // Runs inside getOrCreate during chunk/entity loads -- never let it escape (RE1).
             LOGGER.warn("Could not attach FC world saved data: {}", t.toString());
         }
+        // FC metadata of vanilla blocks, per dimension; never throws (falls back to an unpersisted overlay).
+        this.vanillaMetaOverrides = FcMetaOverlay.attach(level);
     }
 
     /**
@@ -218,16 +222,49 @@ public class WorldBridge extends btw.modern.WorldServer {
         if (state.hasProperty(ProxyBlock.META)) {
             return state.getValue(ProxyBlock.META);
         }
-        // Check side map for vanilla blocks with FC metadata overrides, valid only while the block FC wrote is
-        // still there (never stored where the MC state is the whole truth, see isMetaFullyDerived)
-        MetaOverride override = vanillaMetaOverrides.get(pos);
-        if (override != null) {
-            if (override.block() == state.getBlock()) return override.meta();
-            vanillaMetaOverrides.remove(pos); // MC replaced the block behind FC's back: derive instead
-        }
-
         // Derive metadata from MC 1.20.1 BlockState properties for vanilla blocks
-        return deriveVanillaMetadata(level, state, pos);
+        int derived = deriveVanillaMetadata(level, state, pos);
+
+        // The persisted overlay holds the FC bits the state cannot (never stored where the MC state is the whole
+        // truth, see isMetaFullyDerived), valid only while the block FC wrote is still there and still derives
+        // to what it derived to after FC's write
+        FcMetaOverlay overlay = vanillaMetaOverrides;
+        if (overlay != null) {
+            FcMetaOverlay.MetaOverride override = overlay.get(pos);
+            if (override != null) {
+                if (override.block() == state.getBlock() && override.derivedAtWrite() == derived) {
+                    return override.meta();
+                }
+                overlay.remove(pos, override); // MC changed the block behind FC's back: derive instead
+            }
+        }
+        return derived;
+    }
+
+    /**
+     * FC metadata {@code meta} written at {@code pos}, whose 1.20.1 state is (or is about to be) {@code stateAfterWrite}:
+     * kept in the overlay only where the state does not already derive to it. Stored before the 1.20.1 write, as
+     * before: the write's neighbour notifications run FC code that reads this position back.
+     */
+    private void putMetaOverride(BlockPos pos, BlockState stateAfterWrite, int meta) {
+        FcMetaOverlay overlay = vanillaMetaOverrides;
+        if (overlay == null) return;
+        net.minecraft.world.level.block.Block block = stateAfterWrite.getBlock();
+        int derived = block instanceof ProxyBlock || isMetaFullyDerived(block)
+                ? meta : deriveVanillaMetadata(level, stateAfterWrite, pos);
+        if (derived == meta) {
+            overlay.remove(pos);
+        } else {
+            overlay.put(pos, block, derived, meta);
+        }
+    }
+
+    /** Drops any FC metadata stored for {@code pos} (FC replaced the block there). */
+    private void clearMetaOverride(BlockPos pos) {
+        FcMetaOverlay overlay = vanillaMetaOverrides;
+        if (overlay != null) {
+            overlay.remove(pos);
+        }
     }
 
     /**
@@ -235,13 +272,23 @@ public class WorldBridge extends btw.modern.WorldServer {
      * through WorldBridge: FenceGateBlock.use toggles OPEN without calling super (BlockBehaviorMixin never
      * sees it), and MC merges a placed slab into a DOUBLE one. A vanillaMetaOverrides entry FC wrote earlier
      * would go stale, so these always derive (and never store an override). Trapdoors (MC toggles OPEN on use
-     * the same way) and stairs: every 1.5.2 meta bit round-trips through the derive/apply pair.
+     * the same way) and stairs: every 1.5.2 meta bit round-trips through the derive/apply pair. So it does for
+     * the plants and fire whose ticks TickPolicy routes to FC: crops (AGE), nether wart, cactus, sugar cane, fire,
+     * farmland (MOISTURE), cocoa and vines, which 1.20.1 also changes itself (bone meal, its own survival ticks).
      */
     private static boolean isMetaFullyDerived(net.minecraft.world.level.block.Block block) {
         return block instanceof net.minecraft.world.level.block.FenceGateBlock
                 || block instanceof net.minecraft.world.level.block.SlabBlock
                 || block instanceof net.minecraft.world.level.block.TrapDoorBlock
-                || block instanceof net.minecraft.world.level.block.StairBlock;
+                || block instanceof net.minecraft.world.level.block.StairBlock
+                || block instanceof net.minecraft.world.level.block.CropBlock
+                || block instanceof net.minecraft.world.level.block.NetherWartBlock
+                || block instanceof net.minecraft.world.level.block.CactusBlock
+                || block instanceof net.minecraft.world.level.block.SugarCaneBlock
+                || block instanceof net.minecraft.world.level.block.FireBlock
+                || block instanceof net.minecraft.world.level.block.FarmBlock
+                || block instanceof net.minecraft.world.level.block.CocoaBlock
+                || block instanceof net.minecraft.world.level.block.VineBlock;
     }
 
     /**
@@ -288,11 +335,12 @@ public class WorldBridge extends btw.modern.WorldServer {
             return 0;
         }
 
-        // Logs: axis property → orientation, bottom log → stump
+        // Logs: axis property → orientation, bottom log → stump. Also the bark and stripped forms of the four species,
+        // which FC reads as log 17 (ProxyRegistry.getWorldBlockId).
         if (block instanceof net.minecraft.world.level.block.RotatedPillarBlock) {
-            int legacyId = ProxyRegistry.getBlockId(block);
-            if (legacyId == 17) { // Block.wood (log)
-                int meta = 0; // wood type defaults to 0 (oak)
+            int species = ProxyRegistry.getTreeLogSpecies(block);
+            if (species >= 0) { // Block.wood (log)
+                int meta = 0;
                 // Axis → orientation: Y=0, X(east-west)=1<<2=4, Z(north-south)=2<<2=8
                 if (state.hasProperty(net.minecraft.world.level.block.RotatedPillarBlock.AXIS)) {
                     net.minecraft.core.Direction.Axis axis = state.getValue(
@@ -307,18 +355,14 @@ public class WorldBridge extends btw.modern.WorldServer {
                     BlockPos below = pos.below();
                     BlockState belowState = level.getBlockState(below);
                     boolean logBelow = belowState.getBlock() instanceof net.minecraft.world.level.block.RotatedPillarBlock
-                            && ProxyRegistry.getBlockId(belowState.getBlock()) == 17;
+                            && ProxyRegistry.getTreeLogSpecies(belowState.getBlock()) >= 0;
                     if (!logBelow && !belowState.isAir() && belowState.isSolidRender(level, below)) {
                         meta = 12; // stump: both orientation bits set (3 << 2)
                     }
                 }
 
-                // Wood type from block type
-                if (block == net.minecraft.world.level.block.Blocks.SPRUCE_LOG) meta = (meta & 12) | 1;
-                else if (block == net.minecraft.world.level.block.Blocks.BIRCH_LOG) meta = (meta & 12) | 2;
-                else if (block == net.minecraft.world.level.block.Blocks.JUNGLE_LOG) meta = (meta & 12) | 3;
-
-                return meta;
+                // Wood type (1.5.2 log species, bits 0-1)
+                return (meta & 12) | species;
             }
         }
 
@@ -404,6 +448,78 @@ public class WorldBridge extends btw.modern.WorldServer {
             return 0;
         }
 
+        // Plant and fire growth counters. Every branch below the farmland one must precede the generic FACING /
+        // HORIZONTAL_FACING / POWERED branches (cocoa, attached stems and carved pumpkins carry HORIZONTAL_FACING
+        // with their own encoding). Each one is reversed in applyFcMetadataToVanillaBlock.
+        // Crops (wheat 59, carrots 141, potatoes 142): 1.5.2 growth level = meta & 7 (vanilla/server
+        // BlockCrops.java:338-359, GetGrowthLevel / SetGrowthLevel) = AGE 0-7. Keyed on AGE_7 itself: the
+        // modern-only BeetrootBlock / TorchflowerCropBlock extend CropBlock with other age properties.
+        if (block instanceof net.minecraft.world.level.block.CropBlock
+                && state.hasProperty(net.minecraft.world.level.block.CropBlock.AGE)) {
+            return state.getValue(net.minecraft.world.level.block.CropBlock.AGE);
+        }
+        // Nether wart: 1.5.2 growth meta 0-3 (vanilla/server BlockNetherStalk.java:51-62) = AGE_3.
+        if (block instanceof net.minecraft.world.level.block.NetherWartBlock) {
+            return state.getValue(net.minecraft.world.level.block.NetherWartBlock.AGE);
+        }
+        // Cactus / sugar cane: 1.5.2 growth counter 0-15 before the next segment (vanilla/server
+        // BlockCactus.java:43-53, BlockReed.java:44-53) = AGE_15.
+        if (block instanceof net.minecraft.world.level.block.CactusBlock) {
+            return state.getValue(net.minecraft.world.level.block.CactusBlock.AGE);
+        }
+        if (block instanceof net.minecraft.world.level.block.SugarCaneBlock) {
+            return state.getValue(net.minecraft.world.level.block.SugarCaneBlock.AGE);
+        }
+        // Fire: 1.5.2 fire age 0-15 (vanilla/server BlockFire.java:162-166) = AGE_15. The face booleans are 1.20.1
+        // rendering only; soul fire (no AGE) is not FC fire.
+        if (block instanceof net.minecraft.world.level.block.FireBlock
+                && state.hasProperty(net.minecraft.world.level.block.FireBlock.AGE)) {
+            return state.getValue(net.minecraft.world.level.block.FireBlock.AGE);
+        }
+        // Cocoa: 1.5.2 meta = direction of the jungle log the pod hangs on (0=S, 1=W, 2=N, 3=E: Direction.offsetX /
+        // offsetZ in canBlockStay, vanilla/server BlockCocoa.java:54-61) | age << 2 (0-2, :31-49). 1.20.1 FACING
+        // also points at the log (CocoaBlock.canSurvive), and get2DDataValue numbers it the same way. The generic
+        // HORIZONTAL_FACING branch answered 2-5, so FC's canBlockStay checked the wrong side and dropped the pod.
+        if (block instanceof net.minecraft.world.level.block.CocoaBlock) {
+            return state.getValue(net.minecraft.world.level.block.CocoaBlock.FACING).get2DDataValue()
+                    | state.getValue(net.minecraft.world.level.block.CocoaBlock.AGE) << 2;
+        }
+        // Vines: 1.5.2 meta = the faces the vine covers, 1 = south, 2 = west, 4 = north, 8 = east (the bounds in
+        // vanilla/server BlockVine.java:61-130); 0 = hanging from the block above only. 1.20.1 UP is that
+        // ceiling attachment, which 1.5.2 never stored: a vine with side faces reads its sides only.
+        if (block instanceof net.minecraft.world.level.block.VineBlock) {
+            int meta = 0;
+            if (state.getValue(net.minecraft.world.level.block.VineBlock.SOUTH)) meta |= 1;
+            if (state.getValue(net.minecraft.world.level.block.VineBlock.WEST)) meta |= 2;
+            if (state.getValue(net.minecraft.world.level.block.VineBlock.NORTH)) meta |= 4;
+            if (state.getValue(net.minecraft.world.level.block.VineBlock.EAST)) meta |= 8;
+            return meta;
+        }
+        // Stems: FC growth 0-14 and 15 = fruit attached (Server FCBlockStem.java:202-272, ValidateFruitState /
+        // CheckForGrowth). An attached stem is 15 (the generic HORIZONTAL_FACING branch answered 2-5, so FC never
+        // saw an attached stem); a StemBlock reads AGE * 2, its exact 0-14 value lives in the overlay.
+        if (block instanceof net.minecraft.world.level.block.AttachedStemBlock) {
+            return 15;
+        }
+        if (block instanceof net.minecraft.world.level.block.StemBlock) {
+            return state.getValue(net.minecraft.world.level.block.StemBlock.AGE) * 2;
+        }
+        // Leaves: species (variant table) | 4 when player placed (1.5.2 ItemLeaves.getMetadata: damage | 4, the
+        // no-decay bit FCBlockLeaves.updateTick checks, Server FCBlockLeaves.java:96) = PERSISTENT. It was written
+        // on apply but never read back, so player-placed leaves read as natural to FC. The decay-check bit 8
+        // (vanilla/server BlockLeaves.java:52-53) has no state and lives in the overlay; DISTANCE is not read.
+        if (block instanceof net.minecraft.world.level.block.LeavesBlock
+                && state.hasProperty(net.minecraft.world.level.block.LeavesBlock.PERSISTENT)) {
+            int species = Math.max(ProxyRegistry.getLegacyVariantMeta(block), 0);
+            return state.getValue(net.minecraft.world.level.block.LeavesBlock.PERSISTENT) ? species | 4 : species;
+        }
+        // Carved pumpkins (86) and jack o'lanterns (91): 1.5.2 meta = direction the face looks (0=S, 1=W, 2=N,
+        // 3=E: from the placer's yaw, vanilla/server BlockPumpkin.java:120-121; FCBlockJackOLantern keeps it in
+        // bits 0-1) = FACING.get2DDataValue. The jack o'lantern's player-placed bit 8 lives in the overlay.
+        if (block instanceof net.minecraft.world.level.block.CarvedPumpkinBlock) {
+            return state.getValue(net.minecraft.world.level.block.CarvedPumpkinBlock.FACING).get2DDataValue();
+        }
+
         // Wall torches: FC uses 1=east, 2=west, 3=south, 4=north, 5=floor
         if (block instanceof net.minecraft.world.level.block.WallTorchBlock
                 || block instanceof net.minecraft.world.level.block.RedstoneWallTorchBlock) {
@@ -470,7 +586,9 @@ public class WorldBridge extends btw.modern.WorldServer {
         }
 
         // Flattened subtypes: wool colour, plank/sapling/leaf species, sandstone / stone-brick / infested /
-        // wall type, tall grass vs fern (ProxyRegistry variant table, the 1.5.2 subtype orders).
+        // wall type, tall grass vs fern (ProxyRegistry variant table, the 1.5.2 subtype orders). A sapling reads
+        // its species only: FC's growth stage (meta bits 2-3, Server FCBlockSapling.java:40-64) does not fit STAGE
+        // (0-1), lives in the overlay, and STAGE is left as 1.20.1 has it.
         int variant = ProxyRegistry.getLegacyVariantMeta(block);
         if (variant >= 0) return variant;
 
@@ -507,9 +625,77 @@ public class WorldBridge extends btw.modern.WorldServer {
     /**
      * Applies FC metadata to a vanilla MC block state (reverse of deriveVanillaMetadata).
      * Translates FC's integer metadata into the appropriate MC 1.20.1 BlockState properties.
+     * {@code pos} is where the state goes: fire faces, vine ceiling attachment and attached stems depend on
+     * the neighbours. May answer a state of another block (StemBlock <-> AttachedStemBlock).
      */
-    private BlockState applyFcMetadataToVanillaBlock(BlockState current, int metadata) {
+    private BlockState applyFcMetadataToVanillaBlock(BlockState current, int metadata, BlockPos pos) {
         net.minecraft.world.level.block.Block block = current.getBlock();
+
+        // Plant and fire growth counters: reverses of the deriveVanillaMetadata branches. All of them precede the
+        // generic HORIZONTAL_FACING / FACING branches below (cocoa and stems carry HORIZONTAL_FACING). Values
+        // outside a property's range are clamped: setValue throws on them.
+        if (block instanceof net.minecraft.world.level.block.CropBlock
+                && current.hasProperty(net.minecraft.world.level.block.CropBlock.AGE)) {
+            return current.setValue(net.minecraft.world.level.block.CropBlock.AGE, metadata & 7);
+        }
+        if (block instanceof net.minecraft.world.level.block.NetherWartBlock) {
+            return current.setValue(net.minecraft.world.level.block.NetherWartBlock.AGE, clampMeta(metadata, 3));
+        }
+        if (block instanceof net.minecraft.world.level.block.CactusBlock) {
+            return current.setValue(net.minecraft.world.level.block.CactusBlock.AGE, metadata & 15);
+        }
+        if (block instanceof net.minecraft.world.level.block.SugarCaneBlock) {
+            return current.setValue(net.minecraft.world.level.block.SugarCaneBlock.AGE, metadata & 15);
+        }
+        // Fire: the faces 1.20.1 would give a fire placed here (BaseFireBlock.getState -> FireBlock
+        // getStateForPlacement, as FireBlock.updateShape recomputes them), with FC's age. Where that would be soul
+        // fire (soul sand / soil below), the FC fire stays FIRE: 1.5.2 has no soul fire, and FC owns FIRE's ticks.
+        if (block instanceof net.minecraft.world.level.block.FireBlock
+                && current.hasProperty(net.minecraft.world.level.block.FireBlock.AGE)) {
+            BlockState placed = net.minecraft.world.level.block.BaseFireBlock.getState(level, pos);
+            BlockState base = placed.is(block) ? placed : current;
+            return base.setValue(net.minecraft.world.level.block.FireBlock.AGE, metadata & 15);
+        }
+        // Farmland: MOISTURE = 1.5.2 hydration 0-7 (FCBlockFarmlandLegacyBase SetFullyHydrated / DryIncrementally,
+        // Common FCBlockFarmlandLegacyBase.java:62-74). Derive existed; FC's writes used to reach only the overlay.
+        if (block instanceof net.minecraft.world.level.block.FarmBlock) {
+            return current.setValue(net.minecraft.world.level.block.FarmBlock.MOISTURE, metadata & 7);
+        }
+        // Cocoa: direction of the log (0=S, 1=W, 2=N, 3=E) | age << 2, see deriveVanillaMetadata. The generic
+        // HORIZONTAL_FACING branch read meta & 7 as a 3D facing (2-5).
+        if (block instanceof net.minecraft.world.level.block.CocoaBlock) {
+            return current
+                    .setValue(net.minecraft.world.level.block.CocoaBlock.FACING,
+                            net.minecraft.core.Direction.from2DDataValue(metadata & 3))
+                    .setValue(net.minecraft.world.level.block.CocoaBlock.AGE, clampMeta((metadata >> 2) & 3, 2));
+        }
+        // Vines: side bits 1 = south, 2 = west, 4 = north, 8 = east; UP when the vine only hangs from the block above
+        // (meta 0) or the block above holds it as 1.20.1 attaches vines (VineBlock.isAcceptableNeighbour, the rule
+        // VineBlock.updateShape keeps UP by). 1.5.2 drew the top face whenever that block was there.
+        if (block instanceof net.minecraft.world.level.block.VineBlock) {
+            boolean up = (metadata & 15) == 0 || net.minecraft.world.level.block.VineBlock.isAcceptableNeighbour(
+                    level, pos.above(), net.minecraft.core.Direction.DOWN);
+            return current
+                    .setValue(net.minecraft.world.level.block.VineBlock.SOUTH, (metadata & 1) != 0)
+                    .setValue(net.minecraft.world.level.block.VineBlock.WEST, (metadata & 2) != 0)
+                    .setValue(net.minecraft.world.level.block.VineBlock.NORTH, (metadata & 4) != 0)
+                    .setValue(net.minecraft.world.level.block.VineBlock.EAST, (metadata & 8) != 0)
+                    .setValue(net.minecraft.world.level.block.VineBlock.UP, up);
+        }
+        // Stems: growth 0-14 -> StemBlock AGE = growth / 2 (the exact value stays in the overlay); 15 -> the attached
+        // stem facing the fruit FC attached to it, or AGE 7 when there is none (FC's ValidateFruitState then resets
+        // the stem itself, Server FCBlockStem.java:202-212).
+        if (block instanceof net.minecraft.world.level.block.StemBlock
+                || block instanceof net.minecraft.world.level.block.AttachedStemBlock) {
+            return stemStateFor(ProxyRegistry.getBlockId(block), metadata, pos);
+        }
+
+        // Carved pumpkins / jack o'lanterns: face direction 0=S, 1=W, 2=N, 3=E (bit 8, the jack o'lantern's
+        // player-placed flag, stays in the overlay). The generic HORIZONTAL_FACING branch read it as a 3D facing.
+        if (block instanceof net.minecraft.world.level.block.CarvedPumpkinBlock) {
+            return current.setValue(net.minecraft.world.level.block.CarvedPumpkinBlock.FACING,
+                    net.minecraft.core.Direction.from2DDataValue(metadata & 3));
+        }
 
         // Logs: metadata bits 2-3 encode axis orientation
         if (block instanceof net.minecraft.world.level.block.RotatedPillarBlock
@@ -648,11 +834,66 @@ public class WorldBridge extends btw.modern.WorldServer {
         return current;
     }
 
+    /** {@code metadata} limited to a property's range 0..max (BlockState.setValue throws outside it). */
+    private static int clampMeta(int metadata, int max) {
+        return Math.max(0, Math.min(max, metadata));
+    }
+
+    /**
+     * 1.20.1 state of the pumpkin (104) / melon (105) stem with FC metadata {@code metadata} at {@code pos}: growth
+     * 0-14 -> StemBlock AGE min(7, growth / 2) (1.20.1's 8 stages; the exact growth stays in the overlay); 15 ->
+     * ATTACHED_*_STEM facing the fruit attached to it, else StemBlock AGE 7 (the overlay keeps the 15).
+     */
+    private BlockState stemStateFor(int stemId, int metadata, BlockPos pos) {
+        boolean melon = stemId == 105;
+        net.minecraft.world.level.block.Block stem = melon ? Blocks.MELON_STEM : Blocks.PUMPKIN_STEM;
+        if (metadata < 15) {
+            return stem.defaultBlockState().setValue(net.minecraft.world.level.block.StemBlock.AGE,
+                    Math.min(7, Math.max(0, metadata) / 2));
+        }
+        net.minecraft.core.Direction toFruit = attachedFruitDirection(stemId, pos);
+        if (toFruit != null) {
+            return (melon ? Blocks.ATTACHED_MELON_STEM : Blocks.ATTACHED_PUMPKIN_STEM).defaultBlockState()
+                    .setValue(net.minecraft.world.level.block.AttachedStemBlock.FACING, toFruit);
+        }
+        return stem.defaultBlockState().setValue(net.minecraft.world.level.block.StemBlock.AGE, 7);
+    }
+
+    /**
+     * Side of the stem at {@code pos} whose fruit is attached to it, by FC's own test: FCBlockStem
+     * GetConnectedFruitDirection (Server FCBlockStem.java:182-200) scans facings 2-5 for the stem's fruit id whose
+     * IsBlockAttachedToFacing names the stem (FCBlockGourd keeps that facing in its metadata, Server
+     * FCBlockGourd.java:134-148). The fruit is the FC fresh pumpkin 1006 (FCBetterThanWolves.java:1115-1116) or the
+     * melon 103; the live blocksList entry answers, not the stem's fruitType object. Null if none.
+     */
+    private net.minecraft.core.Direction attachedFruitDirection(int stemId, BlockPos pos) {
+        try {
+            btw.modern.Block[] blocks = btw.modern.Block.blocksList;
+            btw.modern.Block fcStem = stemId > 0 && stemId < blocks.length ? blocks[stemId] : null;
+            if (!(fcStem instanceof btw.modern.BlockStem stemBlock) || stemBlock.fruitType == null) return null;
+            int fruitId = stemBlock.fruitType.blockID;
+            btw.modern.Block fruit = fruitId > 0 && fruitId < blocks.length ? blocks[fruitId] : null;
+            if (fruit == null) return null;
+            for (int facing = 2; facing <= 5; facing++) {
+                net.minecraft.core.Direction dir = legacyFacingToDirection(facing);
+                BlockPos fruitPos = pos.relative(dir);
+                if (getBlockId(fruitPos.getX(), fruitPos.getY(), fruitPos.getZ()) == fruitId
+                        && fruit.IsBlockAttachedToFacing(this, fruitPos.getX(), fruitPos.getY(), fruitPos.getZ(),
+                                directionToLegacyFacing(dir.getOpposite()))) {
+                    return dir;
+                }
+            }
+        } catch (Throwable t) {
+            warnOncePerThrowSite("STEM-FRUIT", "finding the fruit of the stem at " + pos, t);
+        }
+        return null;
+    }
+
     /**
      * Resolves an FC block ID + metadata into the correct MC 1.20.1 BlockState.
      * Handles split blocks (e.g., floor torch vs wall torch) and applies facing/axis.
      */
-    private BlockState resolveVanillaBlockState(int blockID, int metadata) {
+    private BlockState resolveVanillaBlockState(int blockID, int metadata, BlockPos pos) {
         // Torches: FC metadata 1-4 = wall, 5 = floor
         // ID 50 = torch, ID 75 = redstone torch off, ID 76 = redstone torch on
         if (blockID == 50) {
@@ -681,6 +922,13 @@ public class WorldBridge extends btw.modern.WorldServer {
             return Blocks.REDSTONE_TORCH.defaultBlockState();
         }
 
+        // Huge mushroom caps 99/100 resolve to the cap block for every metadata, the trunk's 10 / 15 included: FC writes
+        // them only to have FCBlockMushroomCapLegacy.onBlockAdded turn them into its flammable caps 1078/1079 with the
+        // same metadata (Common FCBlockMushroomCapLegacy.java:31-47, through BlockBehaviorMixin.btw$onPlace), as 4.B's
+        // WorldGenBigMushroom trunks became FCBlockMushroomCap meta 10 (vanilla/server WorldGenBigMushroom.java:211). A
+        // MUSHROOM_STEM here has no legacy id, so the conversion never ran and FC read the trunk as a stand-in (not
+        // flammable, no FC drops, mobs spawn on it).
+
         // For other vanilla blocks, get the modern block and apply metadata. The subtype bits pick the
         // flattened variant first (spruce log 17:1, orange wool 35:1, cut sandstone 24:2, cobble slab 44:3),
         // else the id's canonical block; 43/125 are the double forms of the 44/126 slabs.
@@ -689,7 +937,7 @@ public class WorldBridge extends btw.modern.WorldServer {
             mcBlock = ProxyRegistry.getModernBlock(blockID);
         }
         if (mcBlock != null) {
-            BlockState state = applyFcMetadataToVanillaBlock(mcBlock.defaultBlockState(), metadata);
+            BlockState state = applyFcMetadataToVanillaBlock(mcBlock.defaultBlockState(), metadata, pos);
             if ((blockID == 43 || blockID == 125)
                     && state.hasProperty(net.minecraft.world.level.block.SlabBlock.TYPE)) {
                 state = state.setValue(net.minecraft.world.level.block.SlabBlock.TYPE,
@@ -764,7 +1012,7 @@ public class WorldBridge extends btw.modern.WorldServer {
     
     public boolean setBlock(int x, int y, int z, int blockID, int metadata, int flags) {
         BlockPos pos = new BlockPos(x, y, z);
-        vanillaMetaOverrides.remove(pos); // clear metadata override on block change
+        clearMetaOverride(pos); // clear metadata override on block change
 
         // Block ID 0 = air — handle directly since air has no proxy/mapping
         if (blockID == 0) {
@@ -814,11 +1062,9 @@ public class WorldBridge extends btw.modern.WorldServer {
         }
         // For vanilla block IDs without a ProxyBlock, try mapping to the MC block
         // and apply FC metadata → MC block state translation
-        BlockState vanillaState = resolveVanillaBlockState(blockID, metadata);
+        BlockState vanillaState = resolveVanillaBlockState(blockID, metadata, pos);
         if (vanillaState != null) {
-            if (!isMetaFullyDerived(vanillaState.getBlock())) {
-                vanillaMetaOverrides.put(pos.immutable(), new MetaOverride(vanillaState.getBlock(), metadata));
-            }
+            putMetaOverride(pos, vanillaState, metadata);
             // Use flags WITHOUT block-update bit for blocks that attach to faces
             // (torches, levers, etc.) — FC manages its own update chain and MC's
             // neighborChanged would break them via canSurvive checks during turntable
@@ -829,35 +1075,83 @@ public class WorldBridge extends btw.modern.WorldServer {
                     || vanillaBlock instanceof net.minecraft.world.level.block.RedstoneWallTorchBlock) {
                 placeFlags = flags & ~1; // strip BLOCK_UPDATE, keep SEND_TO_CLIENTS
             }
-            return level.setBlock(pos, vanillaState, placeFlags);
+            boolean placed = level.setBlock(pos, vanillaState, placeFlags);
+            if (placed) {
+                scheduleLeafDistanceUpdate(pos, vanillaState);
+            }
+            return placed;
         }
         return false;
+    }
+
+    /**
+     * Leaves FC places (FC tree generators, FCUtilsTrees / FCUtilsGenBigTree) come out of resolveVanillaBlockState
+     * with the default DISTANCE 7, and 1.20.1 only recomputes DISTANCE in LeavesBlock.tick, which its updateShape
+     * schedules for the neighbours a write touches, not for the placed leaf itself (LeavesBlock.java:58-77), so an
+     * FC canopy kept DISTANCE 7. One 1-tick LeavesBlock tick lets 1.20.1 compute it, as getStateForPlacement and
+     * its tree features do for the leaves 1.20.1 places. That tick stays 1.20.1's (TickPolicy: LeavesBlock
+     * overrides tick).
+     */
+    private void scheduleLeafDistanceUpdate(BlockPos pos, BlockState placed) {
+        if (placed.getBlock() instanceof net.minecraft.world.level.block.LeavesBlock) {
+            level.scheduleTick(pos, placed.getBlock(), 1);
+        }
     }
 
     
     public boolean setBlockToAir(int x, int y, int z) {
         BlockPos pos = new BlockPos(x, y, z);
-        vanillaMetaOverrides.remove(pos);
+        clearMetaOverride(pos);
         return level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
     }
 
+
+    /**
+     * The cell setBlockMetadata is switching to another 1.20.1 block for an FC metadata-only write. 1.5.2
+     * Chunk.setBlockMetadata never calls breakBlock / onBlockAdded (only setBlockIDWithMetadata does), so
+     * BlockBehaviorMixin's onRemove / onPlace hooks skip FC for this cell. Scoped to the cell: neighbour updates
+     * fired inside the same setBlock still reach FC normally.
+     */
+    private static final ThreadLocal<BlockPos> METADATA_ONLY_WRITE = new ThreadLocal<>();
+
+    public static boolean isMetadataOnlyWrite(BlockPos pos) {
+        BlockPos writing = METADATA_ONLY_WRITE.get();
+        return writing != null && writing.equals(pos);
+    }
 
     public boolean setBlockMetadata(int x, int y, int z, int metadata, int flags) {
         BlockPos pos = new BlockPos(x, y, z);
         BlockState current = level.getBlockState(pos);
         if (current.hasProperty(ProxyBlock.META)) {
             BlockState newState = current.setValue(ProxyBlock.META, Math.min(Math.max(metadata, 0), 15));
-            vanillaMetaOverrides.remove(pos); // clear any override
+            clearMetaOverride(pos); // clear any override
             return level.setBlock(pos, newState, flags);
         }
         // Vanilla block without META — translate FC metadata to MC block state
         int iOldMetadata = getBlockMetadata(x, y, z);   // as FC saw it, before the override below
-        if (!isMetaFullyDerived(current.getBlock())) {
-            vanillaMetaOverrides.put(pos.immutable(), new MetaOverride(current.getBlock(), metadata));
+        // A flattened subtype id switches block (1.5.2 metadata IS the subtype); else the state takes the bits
+        BlockState newState = variantStateFor(current, pos, metadata);
+        if (newState == null) {
+            newState = applyFcMetadataToVanillaBlock(current, metadata, pos);
         }
-        BlockState newState = applyFcMetadataToVanillaBlock(current, metadata);
+        putMetaOverride(pos, newState, metadata);
         if (newState != current) {
-            return level.setBlock(pos, newState, flags);
+            if (newState.getBlock() == current.getBlock()) {
+                return level.setBlock(pos, newState, flags);
+            }
+            // The 1.20.1 block changes (flattened subtype, stem <-> attached stem) but FC only wrote metadata. The
+            // previous value is restored, not removed, should such a write ever nest inside another one.
+            BlockPos outer = METADATA_ONLY_WRITE.get();
+            METADATA_ONLY_WRITE.set(pos);
+            try {
+                return level.setBlock(pos, newState, flags);
+            } finally {
+                if (outer != null) {
+                    METADATA_ONLY_WRITE.set(outer);
+                } else {
+                    METADATA_ONLY_WRITE.remove();
+                }
+            }
         }
         // Same MC state, only FC's stored metadata moved: the rest of 1.5.2 World.setBlockMetadata
         // (vanilla/server World.java:558-584), flag by flag -- nothing if the metadata did not change
@@ -876,6 +1170,39 @@ public class WorldBridge extends btw.modern.WorldServer {
     }
 
     
+    /**
+     * The state an FC metadata write on a flattened-subtype id switches to (ProxyRegistry.isVariantId: wool,
+     * planks, logs, leaves, saplings, sandstone, slabs, infested blocks, stone bricks, walls, tall grass), or null
+     * when the subtype bits still pick the block that is there. In 1.5.2 the subtype IS the metadata, so
+     * FCBlockStoneBrick.updateTick's setBlockMetadataWithNotify(1 / 2) makes the bricks mossy / cracked (Server
+     * FCBlockStoneBrick.java:42-74); the block used to stay STONE_BRICKS with the metadata in the overlay only.
+     * The new block takes over the 1.20.1-only properties both blocks share (WATERLOGGED, wall connections,
+     * leaf DISTANCE), then FC's metadata is applied to it as resolveVanillaBlockState would (slab half, log axis,
+     * leaf PERSISTENT); a double slab stays double. Keyed on the id FC reads (43 / 125 for double slabs). Only a block
+     * that is itself one of the table's variants switches: a 1.20.1 block that merely reads as a variant id (smooth
+     * sandstone 24, stone slab 44, the mossy / cracked / chiseled infested bricks 97, stripped logs and wood 17) keeps
+     * its identity, and FC's bits are applied to it in place.
+     */
+    private BlockState variantStateFor(BlockState current, BlockPos pos, int metadata) {
+        if (ProxyRegistry.getLegacyVariantMeta(current.getBlock()) < 0) return null;
+        int legacyId = ProxyRegistry.getWorldBlockId(current, level, pos);
+        if (!ProxyRegistry.isVariantId(legacyId)) return null;
+        net.minecraft.world.level.block.Block variant = ProxyRegistry.getModernBlockVariant(legacyId, metadata);
+        if (variant == null || variant == current.getBlock()) return null;
+        BlockState target = variant.defaultBlockState();
+        for (net.minecraft.world.level.block.state.properties.Property<?> property : current.getProperties()) {
+            if (target.hasProperty(property)) {
+                target = copyProperty(current, target, property);
+            }
+        }
+        return applyFcMetadataToVanillaBlock(target, metadata, pos);
+    }
+
+    private static <T extends Comparable<T>> BlockState copyProperty(
+            BlockState from, BlockState to, net.minecraft.world.level.block.state.properties.Property<T> property) {
+        return to.setValue(property, from.getValue(property));
+    }
+
     public boolean destroyBlock(int x, int y, int z, boolean dropItems) {
         return level.destroyBlock(new BlockPos(x, y, z), dropItems);
     }
@@ -1086,9 +1413,15 @@ public class WorldBridge extends btw.modern.WorldServer {
         return level.canSeeSky(new BlockPos(x, y, z));
     }
 
-    
+    // 1.5.2 World.getFullBlockLightValue (vanilla/server World.java:798-813) = Chunk.getBlockLightValue(x, y, z, 0):
+    // max(sky - 0, block), stored light NOT darkened by the time of day, which getBlockLightValue applies
+    // (skylightSubtracted). It used to answer getMaxLocalRawBrightness, i.e. getSkyDarken subtracted: FC's light
+    // rules on it read night as darkness -- BlockFlower.canBlockStay (full light >= 8 or sky, vanilla/server
+    // BlockFlower.java:143-147) would drop sky-lit plants under a roof every night, FCBlockMushroom (< 13, Common
+    // FCBlockMushroom.java:70) and FCBlockMushroomBrown (== 0, Common FCBlockMushroomBrown.java:60) would spread
+    // where 4.B forbids it. getRawBrightness(pos, 0) is exactly the undarkened max.
     public int getFullBlockLightValue(int x, int y, int z) {
-        return level.getMaxLocalRawBrightness(new BlockPos(x, y, z));
+        return level.getRawBrightness(new BlockPos(x, y, z), 0);
     }
 
     @Override
@@ -2568,6 +2901,39 @@ public class WorldBridge extends btw.modern.WorldServer {
     public int getFcMaxBuildHeight() {
         ServerLevel live = level;
         return live != null ? live.getMaxBuildHeight() : 256;
+    }
+
+    // FC's falling-block floor (Modern-Common Block.CheckForFall) reads the same contract: World.GetMinBuildHeight is
+    // an alias of getFcMinBuildHeight in the base class, so it is not overridden here.
+
+    /**
+     * Modern-Common World.GetModernSoilPlantSurvival (maintainer decision D3), asked by BlockFlower.checkFlowerChange
+     * for the FC plant at (x, y, z): when the block below has no 1.5.2 identity (a modern-only block that FC reads as
+     * a ModernBlockStandIn, water-holding plant or air: moss, podzol, nylium, mud, rooted dirt, red sand, terracotta,
+     * mangrove roots, ...), 1.20.1 put the plant there and its own survival rule decides: {@code canSurvive} of the
+     * live state, 1 to stay or 0 to go. On a 1.5.2 block (a mapped vanilla id or an FC block) it answers -1 and FC's
+     * 1.5.2 canBlockStay decides. Without it FC's light rule (BlockFlower.canBlockStay: light 8 or sky) removed the
+     * grass 1.20.1 grows on moss in dark lush caves (CaveFeatures MOSS_VEGETATION), and FCBlockMushroom's (light
+     * below 13) the mushrooms 1.20.1 keeps on podzol and nylium in full light (MushroomBlock.canSurvive). The live
+     * rule asks Block.canSustainPlant of the modern soil, which PlantSoilMixin leaves to 1.20.1. FC's own plants
+     * (ProxyBlocks) are never placed by 1.20.1, so FC's rule keeps deciding for them (-1).
+     */
+    @Override
+    public int GetModernSoilPlantSurvival(int x, int y, int z) {
+        ServerLevel live = level;
+        if (live == null) return -1;
+        try {
+            BlockPos pos = new BlockPos(x, y, z);
+            BlockState soil = live.getBlockState(pos.below());
+            if (ProxyRegistry.getBlockId(soil.getBlock()) != 0) return -1;
+            BlockState plant = live.getBlockState(pos);
+            if (plant.getBlock() instanceof ProxyBlock) return -1;
+            return plant.canSurvive(live, pos) ? 1 : 0;
+        } catch (Throwable t) {
+            // Runs inside FC plant ticks and neighbour changes: never throw out of them; FC's rule decides instead.
+            warnOncePerThrowSite("MODERN-SOIL", "the live survival check of the plant at " + x + "," + y + "," + z, t);
+            return -1;
+        }
     }
 
     // ================================================================

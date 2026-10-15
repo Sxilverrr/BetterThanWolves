@@ -109,6 +109,7 @@ public class BTWForgeMod {
     public void onServerStarting(ServerStartingEvent event) {
         LOGGER.info("Better Than Wolves: Server starting...");
         BTWLifecycle.onServerStarting(event.getServer());
+        BridgeSelfAudit.runServerStart();
 
         // Inject FC recipes into the MC recipe manager.
         // FC recipes take precedence — they're added after vanilla recipes load.

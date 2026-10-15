@@ -32,8 +32,9 @@ numbered, audited entry. Nothing gets silently modified.
      *patches* it (bytecode transforms or mixins applied at build or load
      time). Patches never write back to FC sources. The build-time ASM
      transforms in `Forge/build.gradle` (`widenFcHookDescriptors`,
-     `openUpEntityAccess`, `extendFcPathingBuildRange`) are its
-     precursors and are expected to move into it.
+     `openUpEntityAccess`, `extendFcPathingBuildRange`,
+     `extendFcTreeBuildRange`) are its precursors and are expected to
+     move into it.
 
    If FC behaviour must change, it changes through that extension/patch
    layer, never by editing FC files. Older port edits to FC code that
@@ -290,6 +291,100 @@ Under Protocol #8, prefer **D** and **B** (gated by BTW progression). A
 | **Verified by** | Refmap emits `m_5706_` for `attack` + `m_45976_` for `getEntitiesOfClass`. In-game: swing soulforged-steel sword at a sheep inside a 3-sheep clump → only the directly-targeted sheep takes damage |
 | **Net effect on FC loop** | Per-target exhaustion cost is enforced. Crowd control via AoE is no longer a free bypass of FC's swing economy |
 | **Under review (2026-10-10)** | Subtractive (enchantment made cosmetic). Direction: move Sweeping Edge onto an arcane scroll (source mob to decide) so a working sweep is a rare, earned top-tier enchantment. See [Integration directions](#integration-directions-2026-10-10), Enchanting. |
+
+### #012 — doFireTick governs BTW fire and lava
+
+| Field | Value |
+|-------|-------|
+| **Modern feature** | `/gamerule doFireTick`. 1.20.1 applies it to fire spread and burn-out (`FireBlock.tick`, FireBlock.java:129-130) and to lava ignition (`LavaFluid.randomTick`, LavaFluid.java:61) |
+| **Added** | MC 1.4 (the gamerule); lava obeys it in 1.20.1 |
+| **Conflict** | Since the tick-ownership change (`STUB_CATALOGUE.md` 2026-10-14 (as)), FC owns the FIRE scheduled tick and lava's random tick. FC's bodies never read the rule: 1.5.2 `BlockFire.updateTick` did (vanilla/server BlockFire.java:142), but FCMOD replaced it with `FCBlockFire.updateTick`, and 1.5.2 lava never read it. Left alone, `doFireTick false` would stop only unmapped soul fire, and servers that rely on it (spawn protection, build worlds) would get BTW fire spread and lava ignition anyway |
+| **Pattern** | **C** (rebalance: keep the gamerule and apply it to BTW's fire as 1.20.1 applies it to its own). Nothing is subtracted by default: the rule is an admin opt-in, and its default (true) is unchanged 4.B. Maintainer decision D1 |
+| **Implementation** | [`TickPolicy`](Forge/src/main/java/btw/forge/TickPolicy.java): `HONOUR_DO_FIRE_TICK = true`, `fireTickSuppressed`, `rescheduleSuppressedFire`, applied in `runRandom` / `runScheduled` (reached from [`BlockStateRandomTickMixin`](Forge/src/main/java/btw/forge/mixin/BlockStateRandomTickMixin.java) and [`BlockStateBaseTickMixin`](Forge/src/main/java/btw/forge/mixin/BlockStateBaseTickMixin.java)) and in [`ProxyBlock`](Forge/src/main/java/btw/forge/ProxyBlock.java) `tick` / `randomTick` |
+| **Effect** | With `doFireTick false`: a scheduled tick of any FC fire (`btw.modern.BlockFire`: fire 51, stoked fire 251, ...) only reschedules itself at `tickRate + nextInt(10)`, so the fire stays lit without spreading, burning blocks or burning out, as 1.20.1's fire does; FC fire and FC lava random ticks are skipped, so lava starts no fire and does not light or melt what it touches (campfires, BTW snow). With `true`: exactly 4.B |
+| **BTW adds** | BTW's own fire (smouldering logs, stoked fire, the hibachi, lava ignition of BTW blocks) answers the same admin switch as vanilla fire |
+| **Dual-sourced?** | Yes — the gamerule stays vanilla-native and reversible; unmapped soul fire keeps 1.20.1's own check |
+| **Data or code?** | Code: one constant and one check at dispatch time. Never in the random-tick gate, which must not read world state (`BRIDGE_SPEC.md`, Tick ownership) |
+| **Alt rejected** | (b) 4.B parity: FC fire and lava ignore the rule. Rejected under Protocol #8: with FC owning the FIRE tick, it would silently switch off a modern admin control for every fire except soul fire |
+| **Alt rejected (2)** | (c) Honour it for spread and ignition but keep lava's contact effects (melting BTW snow, lighting campfires). That needs FCBlockLavaStationary's body split in two outside FC code (Protocol #1): more port code for a corner case. Also rejected: reading the rule in the cached random-tick gate, which would drift chunk-section tick counts when the rule changes |
+| **Known limitation** | The burning ladder (`FCBlockLadderOnFire`, 1052, whose own updateTick calls `FCBlockFire.CheckForFireSpreadFromLocation`) and the campfire tile entity (`FCTileEntityCampfire`) still spread fire with the rule off; the fire they start obeys it |
+| **Verified by** | Compile, and the (as) runtime proofs with `doFireTick true`, where every fire and lava proof matched 4.B. `doFireTick false` has not been run yet. Proof to add: with the rule false, a fire beside wicker stays lit and the wicker survives 600 ticks, and lava beside wicker starts no fire |
+| **Net effect on FC loop** | None by default. Admins get one switch for all fire, BTW's included |
+
+### #013 — Modern soils and plant survival
+
+| Field | Value |
+|-------|-------|
+| **Modern feature** | Soils added after 1.5.2 and the plants 1.20.1 world generation puts on them: ferns, flowers, saplings and mushrooms on podzol, moss, mud, rooted and coarse dirt; grass on moss in dark lush caves; mushrooms on podzol and nylium in full light; cactus and cane on red sand; dead bushes on red sand and terracotta |
+| **Added** | MC 1.6 – 1.19 (terracotta 1.6, podzol and red sand 1.7, coarse dirt 1.8, nylium 1.16, moss and rooted dirt 1.17, mud 1.19) |
+| **Conflict** | Since the tick-ownership change, FC's plant rules run on vanilla-id plants (random ticks and neighbour changes, through `BlockFlower.checkFlowerChange`), and FC sees these soils as `ModernBlockStandIn`s with no soil hooks, so the plants on them would pop: FC's light rule (light 8 or sky) removed grass on moss in dark caves, and FCBlockMushroom's (light below 13) mushrooms on podzol and nylium. The other way round, 1.20.1's survival executors (BushBlock, CactusBlock, SugarCaneBlock, FarmBlock), which stay 1.20.1-owned, applied 1.20.1 soil rules to FC soils and destroyed cactus on planters, cane on loose dirt and crops on BTW farmland |
+| **Pattern** | **D** (FC-extend): modern soils get FC soil behaviour derived from their 1.20.1 tags, and FC soils get FC's rules inside 1.20.1's executors. Maintainer decision D3 |
+| **Implementation** | [`ModernBlockStandIn`](Forge/src/main/java/btw/forge/ModernBlockStandIn.java) soil hooks from the live state's tags: `CanWildVegetationGrowOnBlock` / `CanSaplingsGrowOnBlock` on `DIRT`, `CanReedsGrowOnBlock` on `DIRT` or `SAND`, `CanCactusGrowOnBlock` on `SAND`; crops, nether wart and hydration stay FC-only. [`WorldBridge`](Forge/src/main/java/btw/forge/WorldBridge.java)`.GetModernSoilPlantSurvival`, which overrides the Modern-Common `World` hook that `checkFlowerChange` asks first: on a soil with no 1.5.2 identity the live 1.20.1 `canSurvive` decides. [`PlantSoilMixin`](Forge/src/main/java/btw/forge/mixin/PlantSoilMixin.java) on Forge's `Block.canSustainPlant` (`remap = false`): on an FC soil, a 1.5.2 plant gets FC's soil clause (cactus, cane and lily pad have their own), and a modern-only plant gains the FC soils its kind accepts. `TickPolicy` keeps `DEAD_BUSH` off the FC random tick |
+| **Effect** | 1.20.1 world content on modern soils survives FC's rules; planters, loose dirt and BTW farmland hold their plants in 1.20.1's survival checks |
+| **BTW adds** | BTW's soils work for modern plants too: modern saplings, flowers and crops (beetroot) can be planted and stay on the BTW soils FC's hook for their kind accepts |
+| **Dual-sourced?** | Yes — 1.20.1's own rules still decide on modern soils and for modern plants on modern soils |
+| **Data or code?** | Code (one mixin and two port hooks) |
+| **Alt rejected** | (b) Strict 4.B rules: such plants disappear as they are random-ticked or their neighbours change, deleting 1.20.1 world generation content (Protocol #8). (c) Remap red sand to sand id 12, which would also change red sand's falling and crafting behaviour |
+| **Alt rejected (2)** | Mixins on each plant's `canSurvive` (five or more targets, and modded plants that ask `canSustainPlant` would still see 1.20.1 rules on FC soils). Replacing the 1.20.1 answer for modern-only plants as well: Forge types every unlisted plantable PLAINS, so seagrass on sand, gravel or clay, wither roses on netherrack and flowers on vanilla farmland would pop |
+| **Known limitation** | Dead bushes on grass blocks or dirt, which are FC soils (1.20.1 places some in swamps, mangrove swamps and giant taigas), are removed on a neighbour change: `FCBlockDeadBush` accepts only sand 12, both in FC's neighbour rule and through PlantSoilMixin (review R7; needs a D3 follow-up). Dead bushes on red sand and terracotta stay. Lily pads on ice are refused, as in 4.B. Waterlogged blocks are not water to FC, so cane and BTW farmland that rely on them fail (review R2) |
+| **Verified by** | (as) proof S3: a cactus on planter soil, cane on loose dirt and carrots on BTW farmland, 6/6 survive; run 3: grass (31) on moss in a dark box, 3/3 survive 2400 ticks at randomTickSpeed 300. PlantSoilMixin's descriptor was checked with javap (no refmap entry, `remap = false`). Not runtime-tested: mushrooms on podzol or nylium in full light |
+| **Net effect on FC loop** | BTW's plant rules apply in full on 1.5.2 soils; modern biomes keep their vegetation |
+
+### #014 — Fire flammability for modern and BTW blocks
+
+| Field | Value |
+|-------|-------|
+| **Modern feature** | Flammable blocks added after 1.5.2 (acacia, dark oak, mangrove, cherry and bamboo wood, hay bales, carpets, scaffolding, beehives, ...), the magma block as a fire source, and 1.20.1's fire survival and placement checks (`FireBlock.canSurvive` / `updateShape`, `BaseFireBlock.onPlace`), which read Forge's `getFlammability` / `getFireSpreadSpeed`, backed by FireBlock's own table |
+| **Added** | MC 1.7 – 1.20 (magma block 1.10) |
+| **Conflict** | Since the tick-ownership change, `FCBlockFire` owns the FIRE tick and reads only FC's tables (`BlockFire.abilityToCatchFire` / `chanceToEncourageFire`, by legacy id), and FC lava ignites only beside a material that can burn. Modern-only blocks read as plain, fireproof stand-ins, so modern wood would stop burning; magma read as a plain stand-in, so fire on magma burned out (FC's eternal fire knows netherrack, End bedrock and `DoesInfiniteBurnToFacing`). The 1.20.1 checks that still run beside FC's fire read FireBlock's table, where every FC-only flammable block (wicker 1082, sidings, mouldings, baskets, hemp) is 0, so fire that FC spread beside them in mid-air was removed at once |
+| **Pattern** | **D** (FC-extend): modern blocks enter BTW's fire tables with their 1.20.1 odds, and FC-mapped blocks answer 1.20.1's checks from BTW's tables |
+| **Implementation** | [`FireBlockMixin`](Forge/src/main/java/btw/forge/mixin/FireBlockMixin.java): `getBurnOdds` / `getIgniteOdds` (`m_221164_` / `m_221166_`) HEAD answer FC's tables for every FC-mapped block; waterlogged and unmapped states keep 1.20.1's. [`ModernBlockStandIn`](Forge/src/main/java/btw/forge/ModernBlockStandIn.java): a colliding modern-only state with 1.20.1 fire odds (`getFireSpreadSpeed` / `getFlammability`, so modded overrides count) reads as a `btwModernFlammable<n>` stand-in with `SetFireProperties(ignite, burn)` and a burnable rock material; `DoesInfiniteBurnToFacing` answers the live state's `isFireSource` for the up face, as 1.20.1 asks only the block below a fire |
+| **Effect** | Modern wood, hay and carpets burn in BTW's fire at their 1.20.1 odds and catch fire from BTW lava; fire on magma (and on datapack additions to the infiniburn tags) burns forever; BTW's flammable blocks keep fire alive beside them. Mapped vanilla blocks without 4.B fire properties (flowers 37 / 38) are no fuel, as in 4.B. Huge mushrooms from 1.20.1 world generation (legacy caps 99 / 100, fireproof in FC) stay fireproof, like 4.B's unconverted caps |
+| **BTW adds** | BTW's fire spread (and BTW lava ignition) now reaches every post-1.5.2 flammable block |
+| **Dual-sourced?** | Yes — FireBlock's table is untouched for unmapped blocks, and 1.20.1 fire (soul fire) keeps it |
+| **Data or code?** | Code (one mixin and stand-in behaviour) |
+| **Alt rejected** | Overriding `getFlammability` / `getFireSpreadSpeed` / `isFlammable` on ProxyBlock only: covers FC-only blocks but not the vanilla ids FC maps, which would keep 1.20.1 values FC's own fire never uses. Leaving modern blocks as fireproof stand-ins: disables fire on every post-1.5.2 wood (Protocol #8) |
+| **Alt rejected (2)** | A rock-material stand-in carrying only fire properties: FC lava reads `Material.getCanBurn` alone, so modern wood beside lava would stop catching fire. Reading magma as netherrack: it would change every other FC read of magma (hardness, drops, pistons) |
+| **Known limitation** | About 13 colliding fire-odds buckets compete for about 9 free legacy ids (159-174, minus mapped ids); later buckets reuse the nearest stand-in of their shape, so their odds are approximate; the ids are per session and never written. Blocks 1.20.1 lava ignites only through `ignitedByLava` (barrel, loom, cartography and smithing tables) read as non-burnable to FC lava (review R9). `IForgeBlock.isFlammable` also accepts any `ignitedByLava` state, so mapped blocks FC calls non-flammable (wooden doors) keep 1.20.1 fire alive in its survival check until FC's own tick removes it |
+| **Verified by** | Refmap emits `m_221164_` / `m_221166_`. (as) proofs: F-B fire beside wicker, 0/4 wicker left; F-C planks 0/4; R1-LAVA wicker 0/4; run 3: fire on magma still burning at 600 and 2400 ticks. Not runtime-tested: modern wood beside lava (proof to add: acacia planks beside lava catch fire) |
+| **Net effect on FC loop** | Fire behaves as in BTW for every block, old or new |
+
+### #015 — Farmland reverts to loose dirt
+
+| Field | Value |
+|-------|-------|
+| **Modern feature** | 1.20.1's farmland reversion paths: `FarmBlock.turnToDirt`, called by trampling (`FarmBlock.fallOn`) and by the 1-tick survival check `FarmBlock.updateShape` schedules when a solid block sits above. It places vanilla dirt |
+| **Added** | Farmland predates 1.5.2; these executors are 1.20.1's |
+| **Conflict** | 4.B reverts farmland to FC loose dirt (1011) on trampling (Server FCBlockFarmlandBase.java:80-89), under a solid block (Common FCBlockFarmlandLegacyBase.java:29-51) and when it dries out (Server FCBlockFarmlandBase.java:270-276). FC's neighbour rule won only when a neighbour update arrived before the queued 1.20.1 tick; shape-only updates and the 1.20.1 trample left vanilla dirt, which a BTW world never produces |
+| **Pattern** | **D** (closest; bridge correctness): 1.20.1 keeps deciding when farmland reverts, FC decides what it reverts to |
+| **Implementation** | [`FarmBlockMixin`](Forge/src/main/java/btw/forge/mixin/FarmBlockMixin.java): static HEAD inject on `turnToDirt` (`m_269406_`), for `Blocks.FARMLAND` on the server only, places `ProxyRegistry.getModernBlock(1011)`'s default state through 1.20.1's own sequence (`Block.pushEntitiesUp`, `setBlockAndUpdate`, `GameEvent.BLOCK_CHANGE`) |
+| **Effect** | Every farmland reversion yields BTW loose dirt; entities, neighbours and sculk sensors see the change as before. Dirt paths and the client keep vanilla dirt |
+| **BTW adds** | Trampled and covered farmland feeds BTW's loose-dirt cycle (loose dirt regrows grass the BTW way, `STUB_CATALOGUE.md` (as) proof R1-G1) |
+| **Dual-sourced?** | Yes — the 1.20.1 executors and their timing are untouched; dirt paths keep vanilla dirt |
+| **Data or code?** | Code (mixin) |
+| **Alt rejected** | Routing FarmBlock's scheduled tick to FC: `FCBlockFarmlandBase.updateTick` is the random hydration tick (hydrate, dry one step, revert when dry), so a survival tick under a solid block would run a hydration step and revert only farmland that was already dry, and the trample path would still place vanilla dirt |
+| **Alt rejected (2)** | Separate mixins on `fallOn` and `tick`: two targets for one result, where `turnToDirt` is the single place both end |
+| **Known limitation** | The trample odds are above 4.B's: 1.20.1 `FarmBlock.fallOn` (threshold 0.5) and FC `onFallenUpon` (0.75) both run. Both now produce loose dirt; the double trample is a separate open finding |
+| **Verified by** | Refmap emits `m_269406_`. (as) proof S5: a solid block above farmland gives `betterthanwolves:block_1011`; R1-F1 (FC's own dry reversion): 81 loose dirt, 0 vanilla dirt, 0 farmland |
+| **Net effect on FC loop** | Farmland never produces vanilla dirt, as in 4.B |
+
+### #016 — Random-tick ordering with other mods (Serene Seasons)
+
+| Field | Value |
+|-------|-------|
+| **Modern feature** | Other mods' control of crop growth on Forge 1.20.1: `BlockEvent.CropGrowEvent` (Pre / Post, fired by the 1.20.1 crop `randomTick` bodies through `ForgeHooks.onCropsGrowPre` / `Post`) and mixins that veto `BlockStateBase.randomTick` at HEAD. Serene Seasons 9.1+ uses the mixin (`MixinBlockStateBase` -> `SeasonalCropGrowthHandler`); 9.0.x uses only the event |
+| **Added** | Forge (the event); Serene Seasons for 1.20.1 |
+| **Conflict** | Since the tick-ownership change, BTW cancels the 1.20.1 random-tick body of FC-owned plants and runs FC's growth instead. (1) Those 1.20.1 bodies are where Forge fires CropGrowEvent, so FC growth fired no event, and event-only mods lost control of FC-mapped crops. (2) Callbacks at one HEAD run in mixin application order, which at equal priority is mod load order; when BTW's callback ran first it cancelled the tick and the seasonal veto never ran for FC wheat, carrots, potatoes, stems, cocoa, wart, cane and cactus |
+| **Pattern** | **D** (FC-extend): BTW's growth runs inside Forge's crop-growth hooks, so modern mods that gate growth keep gating it |
+| **Implementation** | [`BlockStateRandomTickMixin`](Forge/src/main/java/btw/forge/mixin/BlockStateRandomTickMixin.java): the random-tick dispatch is its own mixin at priority 1100, applied after every default-priority (1000) mixin, so its HEAD callback runs after theirs and a canceller such as Serene Seasons vetoes first. [`TickPolicy`](Forge/src/main/java/btw/forge/TickPolicy.java)`.runRandom` fires `onCropsGrowPre(level, pos, state, true)` before the FC body (DENY skips it) and `onCropsGrowPost` when the state changed and is not air, for the classes whose 1.20.1 body fires them (CropBlock, StemBlock, CactusBlock, SugarCaneBlock, NetherWartBlock, CocoaBlock) |
+| **Effect** | Without such mods nothing changes. With them, seasons and other growth gates apply to BTW's crop growth as they did to 1.20.1's, and growth observers see Post. FC's tick is growth and the plant's upkeep in one, so a DENY skips that whole tick |
+| **BTW adds** | BTW's slower growth composes with seasons: a mod's veto applies on top of BTW's rates instead of being bypassed |
+| **Dual-sourced?** | Yes — the event and other mods' mixins are untouched; BTW only takes part in them |
+| **Data or code?** | Code (mixin priority and two event calls) |
+| **Alt rejected** | Keeping the random-tick dispatch in `BlockStateBaseTickMixin` at default priority (order left to mod load order), or raising that whole mixin's priority, which would also move its initCache redirect: the cached random-tick gate must not depend on other mods' initCache changes |
+| **Alt rejected (2)** | Firing the event alone, which misses the 9.1+ mixin veto; a Serene Seasons-specific compat hook, which needs a soft dependency and helps one mod only |
+| **Verified by** | Mixin 0.8.5 ordering checked in the source (`MixinInfo.compareTo`; the PREINJECT pass resolves HEAD before any INJECT); Serene Seasons 9.0.0.46's event-only gating checked with javap; refmap emits `m_222972_`. Not runtime-tested with Serene Seasons installed |
+| **Net effect on FC loop** | None in plain BTW; packs with seasonal mods keep their seasons on BTW crops |
 
 ### Follow-up from #005 implementation
 

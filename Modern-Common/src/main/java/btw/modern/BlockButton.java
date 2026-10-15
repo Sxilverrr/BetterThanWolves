@@ -2,12 +2,16 @@ package btw.modern;
 
 public abstract class BlockButton extends Block {
 
+    // 1.5.2 BlockButton constructor sets the random-tick flag (vanilla/server BlockButton.java:27); both port
+    // constructors stand for that one 1.5.2 constructor. Flag only: the button tick body stays 1.20.1's.
     protected BlockButton(int id) {
         super(id, Material.circuits);
+        this.setTickRandomly(true);
     }
 
     protected BlockButton(int id, boolean sensitive) {
         super(id, Material.circuits);
+        this.setTickRandomly(true);
     }
 
     // 1.5.2 BlockButton.getCollisionBoundingBoxFromPool (vanilla/client BlockButton.java:37-40): buttons have

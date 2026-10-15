@@ -2,8 +2,11 @@ package btw.modern;
 
 public class BlockTripWireSource extends Block {
 
+    // 1.5.2 BlockTripWireSource constructor sets the random-tick flag (vanilla/server BlockTripWireSource.java:24). Flag
+    // only: the tripwire hook tick body stays 1.20.1's.
     protected BlockTripWireSource(int id) {
         super(id, Material.circuits);
+        this.setTickRandomly(true);
     }
 
     // 1.5.2 BlockTripWireSource.getCollisionBoundingBoxFromPool (vanilla/client BlockTripWireSource.java:32-35):

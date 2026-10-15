@@ -12,6 +12,9 @@ public abstract class BlockHalfSlab extends Block {
         // full cube, a single slab the bottom half. WorldBridge reports MC slabs in 1.5.2 form (TYPE=DOUBLE as id
         // 43/125, TYPE=TOP as species | 8), which GetBlockBoundsFromPoolBasedOnState below reads per position.
         if (isDouble) {
+            // 1.5.2 BlockHalfSlab ctor (vanilla/server BlockHalfSlab.java:28-30): isOpaqueCube reads isDoubleSlab,
+            // which was still false when the Block constructor filled the table.
+            opaqueCubeLookup[id] = true;
             InitBlockBounds(0D, 0D, 0D, 1D, 1D, 1D);
         } else {
             InitBlockBounds(0D, 0D, 0D, 1D, 0.5D, 1D);

@@ -28,7 +28,8 @@ behaviour has to change, the change goes outside FC code:
   event hooks, replacement classes) and *patches* it (bytecode transforms or mixins applied at build
   or load time). Patches never write back to FC sources. The build-time ASM transforms in
   `Forge/build.gradle` (`widenFcHookDescriptors`, `openUpEntityAccess`,
-  `extendFcPathingBuildRange`) are its precursors and are expected to move into it.
+  `extendFcPathingBuildRange`, `extendFcTreeBuildRange`) are its precursors and are expected to move
+  into it.
 
 Legacy port edits that predate this rule:
 
@@ -82,7 +83,273 @@ MC ItemStack  ◄── ItemStackBridge ──► btw.modern.ItemStack
 - `btw.modern.AxisAlignedBB` — wraps `AABB`
 - `btw.modern.Vec3` — wraps `Vec3`
 - `btw.modern.ChunkCoordinates` — data class
-- Mixins: `BlockBehaviorMixin`, `BlockMixin`, `LivingEntityMixin`, `PlayerMixin` — basic block behavior hooks
+- Mixins (`Forge/src/main/resources/betterthanwolves.mixins.json`, updated 2026-10-14):
+  - block hooks: `BlockBehaviorMixin` (FC neighbour, place, remove, use, entity, signal and dig hooks;
+    no tick routing since 2026-10-14), `BlockMixin`;
+  - tick ownership (see [Tick ownership (TickPolicy)](#tick-ownership-tickpolicy)):
+    `BlockStateBaseTickMixin`, `BlockStateRandomTickMixin`, `LavaFluidMixin`;
+  - rule bridges for the ticks FC now owns: `FireBlockMixin`, `PlantSoilMixin`, `FarmBlockMixin`,
+    `AttachedStemBlockMixin`;
+  - entities, players, items and the world: `LivingEntityMixin`, `PlayerMixin`, `ServerPlayerMixin`,
+    `ServerPlayerGameModeMixin`, `FoodDataMixin`, `ItemEntityMixin`, `ItemStackMixin`,
+    `ServerLevelMixin`, `BonusChestFeatureMixin`;
+  - modern-feature integrations (`INTEGRATIONS.md`): `MendingCapMixin`, `FrostWalkerRadiusMixin`,
+    `RespawnAnchorChargeMixin`, `SwiftSneakLevelMixin`, `TotemOfUndyingMixin`, `CrossbowPiercingMixin`,
+    `SweepingEdgeMixin`;
+  - client only: `EntityRendererNameTagMixin`, `client.ClientLevelMixin`.
+
+  `NetherPortalBlockMixin` was deleted on 2026-10-14: the portal's random tick falls under the
+  tick-ownership rule.
+
+---
+
+## Tick ownership (TickPolicy)
+
+Added 2026-10-14 (`STUB_CATALOGUE.md` (as)). Code: `Forge/src/main/java/btw/forge/TickPolicy.java`
+(the rule and the dispatch bodies), `mixin/BlockStateBaseTickMixin.java`,
+`mixin/BlockStateRandomTickMixin.java`, `mixin/LavaFluidMixin.java`, `FcBlockStateAccess.java` (the
+cached owners), `LightPolicy.java`, `FcMetaOverlay.java`, `BridgeSelfAudit.java`.
+
+**The rule.** FC decides the random and scheduled ticks of every FC-mapped vanilla-id `BlockState`. The
+decision is made once per state, from the FC block at the state's legacy id (`TickPolicy.decide`), and
+enforced at the BlockState level, which every server tick passes through, so no 1.20.1 per-class
+override can skip it. 1.20.1 moved most tick behaviour into `randomTick` / `tick` overrides that never
+call super (39 random-tick and 46 tick overrides on mapped blocks), so the former BlockBehaviour-level
+hooks in `BlockBehaviorMixin` never ran for them.
+
+- **Managed states:** the block maps to an FC block at a vanilla legacy id (`ProxyRegistry.getBlockId`
+  non-zero, `blocksList` slot populated), is not a `ProxyBlock`, and `BTWLifecycle.isFcReady()` holds
+  (set as the last statement of `initialize()`). ProxyBlocks keep their own forwarding
+  (`ProxyBlock.tick` / `randomTick` / `isRandomlyTicking`). Unmanaged states keep the 1.20.1 flag and
+  both owners stay VANILLA.
+- **Random ticks:** gate = `fc.getTickRandomly()` and the runtime FC class declares `updateTick` or
+  `RandomUpdateTick` below `btw.modern.Block` (a 4.B tick that reaches only a Modern-Common stub stays
+  off). Owner FC when the gate holds, else NONE. An FC random tick runs `RandomUpdateTick` and cancels
+  1.20.1, as the 4.B WorldServer loop does (SrcServer/patch.txt:25931-25938).
+- **Scheduled ticks:** owner FC (`updateTick`, 1.20.1 cancelled) unless the state's 1.20.1 class
+  overrides `tick` (found by reflection from `m_213897_`, cached per class); then VANILLA, because those
+  ticks are 1.20.1 machinery FC never scheduled. `BlockBehaviour.tick` is a no-op, so ticks on a
+  non-overriding class come only from FC. Exception: the FC_SCHED set below. `LevelChunkTicks`
+  de-duplicates by (pos, block), so an FC and a 1.20.1 schedule for one cell become one tick, which the
+  rule hands to exactly one engine.
+- **Owners** (byte per state): VANILLA 0, the 1.20.1 body runs; FC 1, FC runs and 1.20.1 is cancelled;
+  NONE 2, the state does not random-tick (a direct call passes through to 1.20.1).
+- **Determinism:** `decide` is a pure function of the state and FC's static data; it never reads
+  gamerules, config or world state. It runs at every registry bake and `Blocks.rebuildCache` (server
+  start, /reload, client tag sync), and `LevelChunkSection` recounts ticking states from the cached flag
+  when a chunk loads, so existing worlds need no migration. doFireTick is applied at dispatch time.
+- **Failures:** an FC tick body that throws is logged once per throw site (logger `BTW-Tick`) and never
+  ends the server tick; a state whose decision throws keeps its 1.20.1 values and VANILLA owners.
+
+**Dispatch points** (Forge 47.3.0 mapped sources; the refmap carries the SRG names):
+
+```
+# | Target (SRG)                                            | Mixin (priority)                   | Does
+──┼─────────────────────────────────────────────────────────┼────────────────────────────────────┼──────────────────────────────────────────
+1 | BlockStateBase.initCache m_60611_, the PUTFIELD of      | BlockStateBaseTickMixin (1000),    | writes TickPolicy's gate into the field
+  | isRandomlyTicking f_244227_ (BlockBehaviour.java:513)   | @Redirect                          | once, final; caches fcId, schedId and
+  |                                                         |                                    | the random / scheduled owners
+2 | BlockStateBase.initCache m_60611_, TAIL                 | BlockStateBaseTickMixin, @Inject   | LightPolicy emission over lightEmission
+3 | BlockStateBase.randomTick m_222972_, HEAD               | BlockStateRandomTickMixin (1100)   | random owner FC: TickPolicy.runRandom,
+  |                                                         |                                    | 1.20.1 body cancelled
+4 | BlockStateBase.tick m_222963_, HEAD                     | BlockStateBaseTickMixin            | scheduled owner FC: runScheduled,
+  |                                                         |                                    | 1.20.1 body cancelled
+5 | LavaFluid.randomTick m_213812_, HEAD                    | LavaFluidMixin                     | cancelled when the lava state's random
+  |                                                         |                                    | owner is FC (fcOwnsRandomTick)
+```
+
+- The tick loop reaches the state level at exactly two points: `ServerLevel.tickChunk` ->
+  `state.randomTick` (ServerLevel.java:481) and `ServerLevel.tickBlock` -> `state.tick` (:680). The
+  fluid random tick follows the block's (:484-487), hence row 5. Other `randomTick` callers (bone meal on
+  a stem, other mods' growth accelerators) reach the same dispatch.
+- Row 1 is a `@Redirect` of the single PUTFIELD, not a TAIL overwrite: `LevelChunkSection` counts
+  ticking states with the cached flag from any thread, and an interim 1.20.1 value between two writes
+  could drift a section's count. It stays at default priority so it never depends on other mods'
+  initCache changes.
+- Row 3 is its own mixin at priority 1100: callbacks at one HEAD run in mixin application order, and
+  1100 applies after every default-priority mixin, so a HEAD canceller such as Serene Seasons 9.1+
+  (`MixinBlockStateBase`) vetoes first. `runRandom` also fires Forge's `CropGrowEvent.Pre` before the FC
+  body (DENY skips it) and `Post` when the state changed and is not air, for the classes whose 1.20.1
+  `randomTick` fires them (CropBlock, StemBlock, CactusBlock, SugarCaneBlock, NetherWartBlock,
+  CocoaBlock; SweetBerryBush, BambooStalk, ChorusFlower and GrowingPlantHead are listed but unmapped).
+  `INTEGRATIONS.md` #016.
+- Do not add tick or randomTick injects at the `BlockBehaviour` level (see `BlockBehaviorMixin`'s
+  javadoc): such a hook keys on the wrong block (StairBlock passes the stair state to `base.tick`, which
+  ran FCBlockStoneBrick.updateTick at a stair position), never sees the overriding classes, and would be
+  a second routing path that ignores the policy.
+
+**Exception table** (`TickPolicy.decide`, checked in this order before the general rule; "by rule" = FC
+unless the 1.20.1 class overrides `tick`):
+
+```
+# | Block (legacy id)       | Random owner / gate                   | Scheduled owner      | Why
+──┼─────────────────────────┼───────────────────────────────────────┼──────────────────────┼──────────────────────────────────────────
+1 | WATER (8)               | NONE, gate false                      | by rule              | 4.B's id-8 random tick is the 1.5.2 flow
+  |                         |                                       |                      | step; the 1.20.1 fluid engine owns flow
+2 | LAVA (10)               | FC as id 11, gate forced true         | by rule, as id 10    | all settled 4.B lava is id 11
+  |                         | (VANILLA if blocksList[11] is empty)  |                      | (FCBlockLavaStationary)
+3 | RedStoneOreBlock (73)   | VANILLA, 1.20.1 flag                  | by rule              | blocksList[73] is the unlit ore; 1.20.1
+  |                         |                                       |                      | LIT + unlight = 4.B id 74
+4 | IceBlock (79)           | VANILLA                               | by rule              | FCBlockIce assumes 1.5.2 opacity 3;
+  |                         |                                       |                      | 1.20.1 melts at light 12, as 4.B does
+5 | DETECTOR_RAIL (28)      | NONE, gate false                      | VANILLA (override)   | rail SHAPE + POWERED <-> metadata is
+  |                         |                                       |                      | not mapped
+6 | DEAD_BUSH (32)          | NONE, gate false (decision D3)        | by rule              | its FC tick is survival on sand 12 only
+7 | PENDING ids (staging)   | VANILLA, 1.20.1 flag                  | by rule              | empty
+8 | LeavesBlock (18)        | FC, gate = !PERSISTENT                | VANILLA (DISTANCE)   | replaces 1.20.1's DISTANCE == 7 gate
+9 | everything else         | general rule                          | by rule / FC_SCHED   | stairs: their own FC block (off), not
+  |                         |                                       |                      | StairBlock's base; NETHER_PORTAL (90):
+  |                         |                                       |                      | general rule, FC (no entry)
+```
+
+**FC_SCHED** (`TickPolicy.FcSched`): blocks whose scheduled ticks FC owns although their 1.20.1 class
+overrides `tick`, because FC has the same machine or removed the 1.20.1 one on purpose. Ids listed in
+`TickPolicy.PENDING_SCHED` (empty) fall back to the override rule.
+
+```
+Block                                 | Id   | 1.20.1 tick it replaces            | FC body
+──────────────────────────────────────┼──────┼────────────────────────────────────┼──────────────────────────────────────────
+FIRE                                  | 51   | FireBlock.tick (onPlace schedules  | FCBlockFire.updateTick; reschedules itself
+                                      |      | 30 + nextInt(10))                  | at tickRate 30 + nextInt(10)
+SAND, GRAVEL                          | 12,  | FallingBlock.tick (fall)           | FCBlockFalling.updateTick -> CheckForFall
+                                      | 13   |                                    | (FCEntityFallingBlock, to the world floor)
+DRAGON_EGG                            | 122  | FallingBlock.tick                  | FCBlockDragonEgg.updateTick -> CheckForFall
+                                      |      |                                    | (tickRate 5)
+ANVIL, CHIPPED_ANVIL, DAMAGED_ANVIL   | 145  | FallingBlock.tick                  | FCBlockAnvil extends Block: the empty
+                                      |      |                                    | Block.updateTick, so it never falls
+```
+
+1.20.1 keeps the scheduled ticks of these mapped ids (`BridgeSelfAudit.EXPECTED_VANILLA_SCHED_IDS`):
+leaves 18, dispenser 23 / dropper 158, detector rail 28, the stairs (53, 67, 108, 109, 114, 128, 134,
+135, 136, 156), chests 54 / 130 / 146, farmland 60, cactus 81 and sugar cane 83 (survival executors),
+plates 70 / 72 / 147 / 148, redstone torch 76, buttons 77 / 143, soul sand 88, repeater 93, cauldron
+118, lamp 123, tripwire 131 / 132, comparator 149.
+
+**doFireTick** (maintainer decision D1, `TickPolicy.HONOUR_DO_FIRE_TICK = true`, `INTEGRATIONS.md`
+#012): read at dispatch, never in the gate. `fireTickSuppressed(fc, level)` covers every
+`btw.modern.BlockFire` (fire 51, stoked fire 251, ...) and FC lava material. With the rule false, a
+scheduled FC fire tick only reschedules at `tickRate + nextInt(10)` (`rescheduleSuppressedFire`), and FC
+fire and lava random ticks are skipped. `ProxyBlock.tick` / `randomTick` apply the same check.
+
+**FC metadata on 1.20.1 states.** A ticked FC body reads and writes 1.5.2 metadata. `WorldBridge`
+derives it from the state (`deriveVanillaMetadata`) and applies FC's writes to it
+(`applyFcMetadataToVanillaBlock`); what no property can hold lives in the persisted overlay.
+
+```
+1.20.1 block                          | FC metadata                                    | Held by
+──────────────────────────────────────┼────────────────────────────────────────────────┼──────────────────────────────────────────
+CropBlock (wheat, carrots, potatoes)  | AGE 0-7                                        | state (fully derived)
+NetherWartBlock                       | AGE 0-3                                        | state (fully derived)
+CactusBlock, SugarCaneBlock           | AGE 0-15                                       | state (fully derived)
+FireBlock                             | AGE 0-15 (faces from BaseFireBlock.getState;   | state (fully derived)
+                                      | a soul fire placement stays FIRE)              |
+FarmBlock                             | MOISTURE 0-7                                   | state (fully derived)
+CocoaBlock                            | 2D FACING value + (AGE << 2)                   | state (fully derived)
+VineBlock                             | S 1, W 2, N 4, E 8; 0 = UP only                | state (fully derived)
+StemBlock, AttachedStemBlock          | growth 0-14 (AGE = growth / 2); 15 =           | state + overlay (growth)
+                                      | attached, facing the fruit FC attached         |
+LeavesBlock                           | species, bit 4 PERSISTENT, bit 8 decay check   | state + overlay (bit 8)
+SaplingBlock                          | type + (stage << 2)                            | state + overlay (stage)
+carved pumpkin, jack o'lantern        | facing 0-3, bit 8 player-placed                | state + overlay (bit 8)
+```
+
+- **FcMetaOverlay** (`FcMetaOverlay.java`): a SavedData per dimension, key `btw_fc_meta`, file
+  `data/btw_fc_meta.dat`, loaded and saved with the level. It replaces the in-memory
+  `vanillaMetaOverrides` map that was cleared at server stop (the field kept its name). An entry is
+  packed BlockPos -> (block, derivedAtWrite, meta), stored only when FC's metadata differs from the value
+  derived from the state after the write, never for ProxyBlocks or fully derived blocks.
+- **Validity rule:** `getBlockMetadata` returns an entry's meta only while the block at the position is
+  still the entry's block and `deriveVanillaMetadata` of the current state still equals derivedAtWrite;
+  otherwise it drops the entry and returns the derived value. 1.20.1 changes blocks without going through
+  WorldBridge (explosions, pistons, fluids, bone meal advancing a stem's AGE), and then the derived value
+  wins. Leaf DISTANCE does not invalidate a leaf flag (derive ignores it). A dirty save prunes stale
+  entries in loaded chunks; the overlay logs its entry count at load and WARNs once above 100,000.
+- **Flattened variants:** an FC metadata write on a variant id switches the 1.20.1 block (stone bricks 98
+  turning mossy / cracked), copying shared properties (WATERLOGGED, wall connections, DISTANCE), and only
+  from a block that is itself a table variant (`ProxyRegistry.getLegacyVariantMeta >= 0`).
+- **Metadata-only write guard:** when `setBlockMetadata` has to switch the 1.20.1 block (a variant, stem
+  <-> attached stem), `WorldBridge.isMetadataOnlyWrite(pos)` holds for that cell during the setBlock,
+  and `BlockBehaviorMixin`'s onPlace / onRemove skip FC `onBlockAdded` / `breakBlock`: 1.5.2
+  `Chunk.setBlockMetadata` never calls them. Neighbour updates from the same write still reach FC.
+- **Light reads:** `getFullBlockLightValue` is `level.getRawBrightness(pos, 0)`, with no sky darkening,
+  as 1.5.2 (`vanilla/server` World.java:799-813).
+
+**LightPolicy** (`LightPolicy.java`). A state whose random owner is FC, that is not a ProxyBlock and has
+no LIT or POWERED property, emits 4.B's `Block.lightValue[id]`; every other state keeps 1.20.1's.
+`BlockStateBaseTickMixin` writes it over the final `lightEmission` field at initCache TAIL and keeps the
+first bake's 1.20.1 value for fallback and the audit. LIT / POWERED states stand for two legacy ids
+(furnace 61/62, redstone ore 73/74, torch 75/76, lamp 123/124, repeater 93/94, comparator 149/150), so
+one table entry cannot describe them. Effect today: `brown_mushroom` 1 -> 0 (FCBlockMushroomBrown
+spreads only from full light 0). Old saves: `relightIfStale`, called from `runRandom`, queues
+`LevelLightEngine.checkBlock` when the stored block light exceeds both the emission and what any
+neighbour could pass on. Modern-Common `BlockEndPortal` and powered `BlockRedstoneLight` carry their
+1.5.2 constructor light (15), so they do not go dark. `Block.lightOpacity` is not filled: `ProxyBlock` reads it for light
+blocking.
+
+**extendFcTreeBuildRange** (`Forge/build.gradle`). FC's tree generators test the 1.5.2 build range
+before any world read, so saplings at y <= 0 never grew. The task, wired like
+`extendFcPathingBuildRange` (after `extractFcClasses`, before `openUpEntityAccess`), rewrites them
+against `World.getFcMinBuildHeight()` / `getFcMaxBuildHeight()` (0 / 256 in Modern-Common, the level's
+range from WorldBridge):
+
+```
+FC method                     | Trees              | Base test                | Scan floor           | 256 tops
+──────────────────────────────┼────────────────────┼──────────────────────────┼──────────────────────┼──────────────────────────────────────────
+FCUtilsTrees.GenerateTaiga2   | spruce             | j < 1  ->  j - 1 < min   | y < 0  ->  y < min   | none (FC's own 128 kept)
+FCUtilsTrees.GenerateForest   | birch              | j < 1  ->  j - 1 < min   | y < 0  ->  y < min   | none (FC's own 128 kept)
+FCUtilsTrees.GenerateTrees    | oak, small jungle  | j < 1  ->  j - 1 < min   | y < 0  ->  y < min   | 3, each -> max
+FCUtilsGenHugeTree.generate   | 2x2 jungle         | j < 1  ->  j - 1 < min   | y < 0  ->  y < min   | 3, each -> max
+```
+
+FC's own 128 top for spruce and birch is a 4.B rule measured from sea level and stays. The task is
+idempotent and fails the build on any other bytecode shape. Big oaks use Modern-Common's
+`WorldGenBigTree` port, which has no explicit bounds.
+
+**Self-audit** (`BridgeSelfAudit.runServerStart`, called from `BTWForgeMod.onServerStarting`, once per
+JVM). It runs at ServerStartingEvent because Forge fills the BlockStateBase caches at the registry
+freeze, after FMLCommonSetupEvent: read at common setup, every cached flag is a default (the first run,
+2026-10-12, logged 57 false warnings). `Blocks.rebuildCache` refreshes them before the server starts.
+
+```
+[SELF-AUDIT/tick] <block key> id=<fcId> random=<FC|VANILLA|NONE> gated=<n>/<states> sched=<FC|VANILLA>
+[SELF-AUDIT/tick] <n> blocks, <n> FC-random states, <n> FC-scheduled blocks, <n> warnings (0 expected)
+[SELF-AUDIT/light] <block key> id=<id> emission <1.20.1>-><4.B> (<n>/<states> states)
+[SELF-AUDIT/light] <n> mapped blocks emit 4.B light that differs from 1.20.1, <n> warnings (0 expected)
+```
+
+- The tick audit WARNs on: a class that overrides `tick` but is neither FC_SCHED nor an expected
+  1.20.1-owned id; a class that overrides `randomTick` and keeps the 1.20.1 random tick without an
+  exception entry; a 4.B random-tick flag the port gets wrong (ids 1-174 against
+  `EXPECTED_4B_RANDOM`, both directions; ids 75 / 76, the ConcreteTorchBlock placeholders, are logged at
+  INFO as a known gap); a cached `isRandomlyTicking` that differs from the gate (mixin not applied); FC
+  not initialised.
+- The light audit WARNs on a cached emission that differs from LightPolicy's answer, and on a mapped
+  emitter made dark other than id 39 (`EXPECTED_DARKENED_IDS`).
+- 2026-10-14 values: `238 blocks, 778 FC-random states, 200 FC-scheduled blocks, 0 warnings`;
+  `brown_mushroom id=39 emission 1->0 (1/1 states)`, `1 mapped blocks ..., 0 warnings`.
+
+**Rule bridges.** The ticks FC now owns meet 1.20.1 executors that stay 1.20.1's (survival checks, fire
+placement, farmland reversion, attached stems). These hooks give those executors FC's rule; they
+implement rules, not dispatch.
+
+```
+# | Hook (INTEGRATIONS.md)            | Target (SRG)                          | Rule
+──┼───────────────────────────────────┼───────────────────────────────────────┼──────────────────────────────────────────
+1 | FireBlockMixin (#014)             | FireBlock.getBurnOdds m_221164_ /     | FC's abilityToCatchFire /
+  |                                   | getIgniteOdds m_221166_, HEAD         | chanceToEncourageFire for every
+  |                                   |                                       | FC-mapped block
+2 | ModernBlockStandIn (#014, #013)   | FC's reads of modern-only blocks      | flammable stand-ins with 1.20.1 odds;
+  |                                   |                                       | isFireSource for the up face (magma);
+  |                                   |                                       | D3 soil hooks from the DIRT / SAND tags
+3 | PlantSoilMixin (#013)             | Block.canSustainPlant, HEAD           | FC's soil clause on FC soils
+  |                                   | (Forge-added, remap = false)          |
+4 | WorldBridge (#013)                | GetModernSoilPlantSurvival, the       | soil with no 1.5.2 identity: the live
+  |                                   | Modern-Common World hook that         | 1.20.1 canSurvive decides
+  |                                   | BlockFlower.checkFlowerChange asks    |
+5 | FarmBlockMixin (#015)             | FarmBlock.turnToDirt m_269406_, HEAD  | FC loose dirt (1011)
+6 | AttachedStemBlockMixin            | AttachedStemBlock.updateShape         | FC stems: attachment left to FC
+  |                                   | m_7417_, HEAD                         | (FCBlockStem.ValidateFruitState)
+```
 
 ---
 
@@ -370,7 +637,7 @@ fcFoodLevelAdjusted            | (migration flag)                   | boolean
 9  | World.getEntitiesWithinAABB(class,aabb)        | level.getEntities(null, aabb, predicate)     | EXISTS
 10 | World.setBlock(x,y,z,id,meta,flags)           | level.setBlock(pos, state, flags)            | EXISTS
 11 | World.getBlockId(x,y,z)                        | state→ProxyRegistry.getBlockId(block)        | EXISTS
-12 | World.getBlockMetadata(x,y,z)                  | state.getValue(META) or 0                   | EXISTS
+12 | World.getBlockMetadata(x,y,z)                  | META; else derive + FcMetaOverlay            | EXISTS (2026-10-14, see Tick ownership)
 13 | World.getBlockMaterial(x,y,z)                  | blocksList[id].blockMaterial                 | EXISTS
 14 | World.scheduleBlockUpdate(x,y,z,id,delay)      | level.scheduleTick(pos, block, delay)        | EXISTS
 15 | World.notifyBlockChange(x,y,z,id)              | level.updateNeighborsAt(pos, source)         | EXISTS (2026-10-11, F3; was sendBlockUpdated)
@@ -396,7 +663,8 @@ fcFoodLevelAdjusted            | (migration flag)                   | boolean
 22 | World.ComputeOverworldSunBrightness...()        | level.getTimeOfDay() + moon phase            | TODO
 ```
 
-Rows 1, 8 and 15-15m were re-mapped on 2026-10-11 (`STUB_CATALOGUE.md` (an), (ao), (aq)). The rule
+Rows 1, 8 and 15-15m were re-mapped on 2026-10-11 (`STUB_CATALOGUE.md` (an), (ao), (aq)), row 12 on
+2026-10-14 ((as); the overlay and its validity rule are under Tick ownership). The rule
 for this table: a row maps the 1.5.2 *body* of the FC primitive (vanilla/server and vanilla/client,
 FC-edited), never its name.
 

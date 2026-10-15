@@ -6,6 +6,9 @@ public class BlockEndPortal extends BlockContainer {
 
     protected BlockEndPortal(int id, Material material) {
         super(id, material);
+        // 1.5.2 BlockEndPortal ctor (vanilla/server BlockEndPortal.java:26-30): the portal emits full light
+        // (Block.lightValue[119] = 15, inherited by FCBlockEndPortal; read by FCBlockLens).
+        setLightValue(1.0F);
     }
 
     // 1.5.2 BlockEndPortal.addCollisionBoxesToList (vanilla/client BlockEndPortal.java:63): the end portal adds

@@ -14,7 +14,7 @@ import java.net.URLClassLoader;
  *
  * BTW was designed for MC 1.5.2 where initialization happened in a specific order
  * during class loading. In Forge 1.20.1, we trigger the same sequence during
- * FMLCommonSetupEvent.enqueueWork().
+ * RegisterEvent for the BLOCKS registry (BTWForgeMod.onRegister).
  *
  * The FC code is on the runtime classpath unremapped, so it references
  * btw.api.* types directly. These resolve to the Api stubs at runtime,
@@ -34,8 +34,21 @@ public class BTWLifecycle {
     private static ClassLoader fcClassLoader;
 
     /**
-     * Master initialization -- called from FMLCommonSetupEvent.enqueueWork().
-     * Must run on the main thread (enqueueWork ensures this).
+     * Set as the last statement of {@link #initialize()}, after every blocksList replacement, so FC's block
+     * table is final. Read by BlockStateBase.initCache (BlockStateBaseTickMixin -> {@link TickPolicy}), which
+     * also runs at registry bakes before FC exists and must not touch ProxyRegistry or blocksList then.
+     */
+    private static volatile boolean fcReady;
+
+    /** True once {@link #initialize()} has built FC's block table (blocksList, FC replacements, add-ons). */
+    public static boolean isFcReady() {
+        return fcReady;
+    }
+
+    /**
+     * Master initialization -- called from BTWForgeMod.onRegister during RegisterEvent for the BLOCKS
+     * registry (BTWForgeMod.java:63-66), while registries are still open, before the ProxyBlocks register.
+     * Runs once; registry bakes (and BlockStateBase.initCache) come after it.
      */
     public static void initialize() {
         if (initialized) return;
@@ -95,6 +108,14 @@ public class BTWLifecycle {
         LOGGER.info("Step 4c: Replacing ConcreteBlocks with FC vanilla replacements...");
         replaceVanillaBlocksWithFc();
 
+        // Step 4b built the melon stem against the ConcreteBlock(103) placeholder; 1.5.2 Block.java builds
+        // melon (103) before melonStem (105), so FCBlockStem's fruit is the FC melon. Re-point it now that 4c
+        // has replaced 103 (the pumpkin stem is re-pointed by FC itself, FCBetterThanWolves SetFruitBlock).
+        if (btw.modern.Block.melonStem instanceof btw.modern.BlockStem melonStem
+                && btw.modern.Block.blocksList[103] != null) {
+            melonStem.fruitType = btw.modern.Block.blocksList[103];
+        }
+
         LOGGER.info("Step 4d: Replacing vanilla items with FC item replacements...");
         replaceVanillaItemsWithFc();
 
@@ -126,6 +147,9 @@ public class BTWLifecycle {
         LOGGER.info("Step 5b: Loading FC language files...");
         loadLanguageFiles();
 
+        LOGGER.info("Step 5c: Filling the opaque-cube table (Block.opaqueCubeLookup)...");
+        fillOpaqueCubeLookup();
+
         LOGGER.info("Step 6: Block/item registration happens via RegisterEvent (see BTWForgeMod).");
         // Registration moved to BTWForgeMod.onRegister() which calls BTWRegistration.registerAllBTWContent(event)
         try {
@@ -133,6 +157,54 @@ public class BTWLifecycle {
         } catch (Exception e) {
             LOGGER.error("Failed to register BTW content with Forge", e);
         }
+
+        // Last statement: blocksList is final from here on (TickPolicy's gate reads it at every initCache).
+        fcReady = true;
+    }
+
+    /**
+     * 1.5.2's opaque-cube table, {@code opaqueCubeLookup[id] = isOpaqueCube()} (vanilla/server Block.java:484), for
+     * every block FC built, once the table of blocks is final. FC reads it straight from the array: its tree
+     * generators and the huge mushroom generator only place leaves and caps where it is false (Common
+     * FCUtilsTrees.java:123, :269, :395; Server FCUtilsGenHugeTree.java:286; Modern-Common WorldGenBigMushroom), FC
+     * pane connections read it (Server FCBlockAestheticNonOpaque.java:552), and World / IBlockAccess.isBlockOpaqueCube
+     * answer from it (FC's side culling, through FCBakedModel's LiveAccess on the client). Left unfilled, FC trees and
+     * huge mushrooms overwrote stone, dirt and planks beside them. ModernBlockStandIn fills its own ids as it creates
+     * them.
+     *
+     * <p>A vanilla id is the 1.20.1 block mapped to it in the world, so it counts as an opaque cube only when that
+     * block is one too (its default state renders solid, BlockStateBase.isSolidRender). Port base classes do not all
+     * carry their 1.5.2 isOpaqueCube override (glass, panes, iron bars, doors, beds, ice, cake, trapdoors, cauldron,
+     * brewing stand, beacon, walls, flower pots, skulls ... answer true), and a true there would let FC cull its own
+     * faces against glass, panes and doors and connect panes to them. FC-only ids (ProxyBlocks) keep FC's own
+     * answer, which is what their constructors wrote.</p>
+     */
+    private static void fillOpaqueCubeLookup() {
+        btw.modern.Block[] list = btw.modern.Block.blocksList;
+        int opaque = 0;
+        int notSolidIn120 = 0;
+        for (int id = 1; id < list.length; id++) {
+            btw.modern.Block fc = list[id];
+            if (fc == null) continue;
+            boolean isOpaque;
+            try {
+                isOpaque = fc.isOpaqueCube();
+                if (isOpaque) {
+                    net.minecraft.world.level.block.Block mc = ProxyRegistry.getModernBlock(id);
+                    if (mc != null && !(mc instanceof ProxyBlock) && !mc.defaultBlockState().isSolidRender(
+                            net.minecraft.world.level.EmptyBlockGetter.INSTANCE, net.minecraft.core.BlockPos.ZERO)) {
+                        isOpaque = false;
+                        notSolidIn120++;
+                    }
+                }
+            } catch (Throwable t) {
+                LOGGER.debug("  opaque-cube check failed for id {}: {}", id, t.toString());
+                continue;   // keep what the Block constructor wrote
+            }
+            btw.modern.Block.opaqueCubeLookup[id] = isOpaque;
+            if (isOpaque) opaque++;
+        }
+        LOGGER.info("  {} opaque-cube ids ({} vanilla ids are not solid 1.20.1 blocks)", opaque, notSolidIn120);
     }
 
     /**

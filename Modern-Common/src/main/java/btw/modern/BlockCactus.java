@@ -4,6 +4,48 @@ public class BlockCactus extends Block {
 
     protected BlockCactus(int id) {
         super(id, Material.cactus);
+        // 1.5.2 BlockCactus constructor (vanilla/server BlockCactus.java:23)
+        setTickRandomly(true);
+    }
+
+    /**
+     * 1.5.2 BlockCactus.updateTick (vanilla/server BlockCactus.java:30-57): with air above and fewer than 3 cactus
+     * blocks in the column, the age (metadata 0-15) goes up by one per random tick; at 15 a new cactus grows above
+     * and is checked at once. FCBlockCactus calls it outside the End.
+     */
+    @Override
+    public void updateTick(World world, int i, int j, int k, java.util.Random rand) {
+        if (world.isAirBlock(i, j + 1, k)) {
+            int iHeight = 1;
+
+            while (world.getBlockId(i, j - iHeight, k) == blockID) {
+                ++iHeight;
+            }
+
+            if (iHeight < 3) {
+                int iMetadata = world.getBlockMetadata(i, j, k);
+
+                if (iMetadata == 15) {
+                    world.setBlock(i, j + 1, k, blockID);
+                    world.setBlockMetadata(i, j, k, 0, 4);
+                    onNeighborBlockChange(world, i, j + 1, k, blockID);
+                } else {
+                    world.setBlockMetadata(i, j, k, iMetadata + 1, 4);
+                }
+            }
+        }
+    }
+
+    /**
+     * 1.5.2 BlockCactus.onNeighborBlockChange (vanilla/server BlockCactus.java:106-112): a cactus that can no
+     * longer stay (FCBlockCactus.canBlockStay: no solid block beside it, cactus or cactus soil below) breaks and
+     * drops. Reached through BlockBehaviorMixin.btw$neighborChanged, ahead of 1.20.1's own scheduled survival tick.
+     */
+    @Override
+    public void onNeighborBlockChange(World world, int i, int j, int k, int iNeighborBlockID) {
+        if (!canBlockStay(world, i, j, k)) {
+            world.destroyBlock(i, j, k, true);
+        }
     }
 
     // 1.5.2 BlockCactus.getCollisionBoundingBoxFromPool (vanilla/client BlockCactus.java:67-71): inset 1/16 on

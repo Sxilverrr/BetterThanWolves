@@ -2,8 +2,11 @@ package btw.modern;
 
 public class BlockPortal extends BlockBreakable {
 
+    // 1.5.2 BlockPortal constructor sets the random-tick flag (vanilla/server BlockPortal.java:23). FCBlockPortal.updateTick
+    // (creature possession, nether-accessed flag) is the 4.B random tick of id 90; without the flag the tick gate drops it.
     protected BlockPortal(int id) {
         super(id, Material.portal, false);
+        this.setTickRandomly(true);
     }
 
     // 1.5.2 BlockPortal.getCollisionBoundingBoxFromPool (vanilla/client BlockPortal.java:59-62): nether portal

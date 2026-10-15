@@ -1318,6 +1318,166 @@ task extendFcPathingBuildRange {
 }
 openUpEntityAccess.dependsOn extendFcPathingBuildRange
 
+// ------------------------------------------------------------------
+// FC tree generators: 1.5.2 build range -> the level's build range.
+// FCBlockSapling.growTree reaches FCUtilsTrees.GenerateTaiga2 / GenerateForest / GenerateTrees
+// and FCUtilsGenHugeTree.generate, which test the base and the clearance scan against the
+// 1.5.2 world (`j >= 1` = the block below the sapling is in the world, scan `y >= 0`, top 256;
+// Common FCUtilsTrees.java:187-229, 317, 340; Server FCUtilsGenHugeTree.java:46, 69). Below
+// y=1 (superflat, deepslate caves) every growth attempt failed and restored the sapling at
+// stage 3. Same contract as extendFcPathingBuildRange (World.getFcMinBuildHeight /
+// getFcMaxBuildHeight: 0 / 256 in Modern-Common, the level's range from WorldBridge):
+//   (a) base:  `iload j; iconst_1; if_icmplt L` -> `iload j; iconst_1; isub; aload world;
+//              invokevirtual getFcMinBuildHeight; if_icmplt L`   (j - 1 < min  <=>  j < min + 1)
+//   (b) scan:  `iflt L` -> `aload world; invokevirtual getFcMinBuildHeight; if_icmplt L`
+//   (c) tops:  `sipush 256` -> `aload world; invokevirtual getFcMaxBuildHeight`
+// GenerateForest / GenerateTaiga2 test against FC's own 128, not the 1.5.2 world top: that
+// is a 4.B rule measured from sea level (63 in both versions) and stays as it is.
+// No branch targets are added and the stack at every branch target is unchanged, so the
+// existing frames stay valid with ClassWriter(0); max stack grows by at most 1. Idempotent
+// (an already-patched method is detected); any other bytecode shape fails the build.
+// ------------------------------------------------------------------
+task extendFcTreeBuildRange {
+    dependsOn extractFcClasses
+    mustRunAfter widenFcHookDescriptors
+    doLast {
+        def fcUtil = file("${buildDir}/classes/java/fc/net/minecraft/src/btw/util")
+        String gen5 = '(Lbtw/modern/World;Ljava/util/Random;III)Z'
+        // class -> [method, desc, world slot, j slot, expected 256 tops]
+        def targets = [
+            'FCUtilsTrees.class'      : [['GenerateTaiga2', gen5, 0, 3, 0],
+                                         ['GenerateForest', gen5, 0, 3, 0],
+                                         ['GenerateTrees', '(Lbtw/modern/World;Ljava/util/Random;IIIIIIZ)Z', 0, 3, 3]],
+            'FCUtilsGenHugeTree.class': [['generate', gen5, 1, 4, 3]],
+        ]
+        targets.each { String fileName, List methods ->
+            def classFile = new File(fcUtil, fileName)
+            if (!classFile.exists()) {
+                logger.warn("extendFcTreeBuildRange: ${classFile} not found — skipping")
+                return
+            }
+            def counts = [:] // method -> [base, scan, tops, already-present min calls]
+            ClassReader reader = new ClassReader(classFile.bytes)
+            ClassWriter writer = new ClassWriter(0)
+            reader.accept(new ClassVisitor(Opcodes.ASM9, writer) {
+                @Override
+                MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] exceptions) {
+                    MethodVisitor mv = super.visitMethod(access, name, desc, sig, exceptions)
+                    def target = methods.find { it[0] == name && it[1] == desc }
+                    if (target == null) {
+                        return mv
+                    }
+                    int worldSlot = target[2]
+                    int jSlot = target[3]
+                    int[] c = [0, 0, 0, 0]
+                    counts[name] = c
+                    int[] state = [0] // 1 = after `iload j`, 2 = after `iload j; iconst_1`
+                    return new MethodVisitor(Opcodes.ASM9, mv) {
+                        void loadMin() {
+                            super.visitVarInsn(Opcodes.ALOAD, worldSlot)
+                            super.visitMethodInsn(Opcodes.INVOKEVIRTUAL, 'btw/modern/World', 'getFcMinBuildHeight', '()I', false)
+                        }
+                        @Override
+                        void visitVarInsn(int opcode, int varIndex) {
+                            super.visitVarInsn(opcode, varIndex)
+                            state[0] = (opcode == Opcodes.ILOAD && varIndex == jSlot) ? 1 : 0
+                        }
+                        @Override
+                        void visitInsn(int opcode) {
+                            super.visitInsn(opcode)
+                            state[0] = (opcode == Opcodes.ICONST_1 && state[0] == 1) ? 2 : 0
+                        }
+                        @Override
+                        void visitJumpInsn(int opcode, Label label) {
+                            if (opcode == Opcodes.IF_ICMPLT && state[0] == 2) {
+                                super.visitInsn(Opcodes.ISUB)
+                                loadMin()
+                                super.visitJumpInsn(Opcodes.IF_ICMPLT, label)
+                                c[0]++
+                            } else if (opcode == Opcodes.IFLT) {
+                                loadMin()
+                                super.visitJumpInsn(Opcodes.IF_ICMPLT, label)
+                                c[1]++
+                            } else {
+                                super.visitJumpInsn(opcode, label)
+                            }
+                            state[0] = 0
+                        }
+                        @Override
+                        void visitIntInsn(int opcode, int operand) {
+                            if (opcode == Opcodes.SIPUSH && operand == 256) {
+                                super.visitVarInsn(Opcodes.ALOAD, worldSlot)
+                                super.visitMethodInsn(Opcodes.INVOKEVIRTUAL, 'btw/modern/World', 'getFcMaxBuildHeight', '()I', false)
+                                c[2]++
+                            } else {
+                                super.visitIntInsn(opcode, operand)
+                            }
+                            state[0] = 0
+                        }
+                        @Override
+                        void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
+                            if (owner == 'btw/modern/World' && mName == 'getFcMinBuildHeight') {
+                                c[3]++
+                            }
+                            super.visitMethodInsn(opcode, owner, mName, mDesc, isInterface)
+                            state[0] = 0
+                        }
+                        @Override
+                        void visitFieldInsn(int opcode, String owner, String fName, String fDesc) {
+                            super.visitFieldInsn(opcode, owner, fName, fDesc)
+                            state[0] = 0
+                        }
+                        @Override
+                        void visitTypeInsn(int opcode, String type) {
+                            super.visitTypeInsn(opcode, type)
+                            state[0] = 0
+                        }
+                        @Override
+                        void visitIincInsn(int varIndex, int increment) {
+                            super.visitIincInsn(varIndex, increment)
+                            state[0] = 0
+                        }
+                        @Override
+                        void visitLdcInsn(Object value) {
+                            super.visitLdcInsn(value)
+                            state[0] = 0
+                        }
+                        @Override
+                        void visitLabel(Label label) {
+                            super.visitLabel(label)
+                            state[0] = 0
+                        }
+                        @Override
+                        void visitMaxs(int maxStack, int maxLocals) {
+                            super.visitMaxs(maxStack + 1, maxLocals)
+                        }
+                    }
+                }
+            }, 0)
+            boolean changed = false
+            methods.each { m ->
+                int[] c = counts[m[0]]
+                if (c == null) {
+                    throw new GradleException("extendFcTreeBuildRange: ${fileName} has no ${m[0]}${m[1]}")
+                }
+                if (c[0] == 1 && c[1] == 1 && c[2] == m[4]) {
+                    changed = true
+                    logger.lifecycle("extendFcTreeBuildRange: ${fileName} ${m[0]} base, scan floor and ${m[4]} top(s) now use the level's build range")
+                } else if (c[0] == 0 && c[1] == 0 && c[2] == 0 && c[3] >= 2) {
+                    logger.lifecycle("extendFcTreeBuildRange: ${fileName} ${m[0]} already patched")
+                } else {
+                    throw new GradleException("extendFcTreeBuildRange: unexpected ${fileName} ${m[0]} bytecode " +
+                        "(base ${c[0]}/1, scan ${c[1]}/1, tops ${c[2]}/${m[4]}). Re-check the FC class against javap.")
+                }
+            }
+            if (changed) {
+                classFile.bytes = writer.toByteArray()
+            }
+        }
+    }
+}
+openUpEntityAccess.dependsOn extendFcTreeBuildRange
+
 tasks.matching { it.name.startsWith('prepareRun') || it.name.startsWith('run') || it.name == 'classes' || it.name == 'jar' }.configureEach {
     dependsOn openUpEntityAccess
 }

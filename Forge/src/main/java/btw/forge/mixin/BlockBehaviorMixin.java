@@ -13,7 +13,6 @@ import btw.forge.WorldBridge;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.util.RandomSource;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
@@ -34,7 +33,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
 
 /**
  * Intercepts vanilla {@link BlockBehaviour} callbacks and redirects them
@@ -44,6 +42,14 @@ import java.util.Random;
  * ProxyBlocks already override these methods directly, so these injections
  * only fire for vanilla blocks that have FC replacements in
  * {@code btw.modern.Block.blocksList[]}.
+ *
+ * Ticks are not routed here. Random and scheduled ticks of FC-mapped states are
+ * dispatched at the BlockState level by {@link BlockStateRandomTickMixin} and
+ * {@link BlockStateBaseTickMixin} under the rule in {@link btw.forge.TickPolicy}. Do not add tick or randomTick injects to this
+ * class: a BlockBehaviour-level hook keys on the wrong block (StairBlock passes the
+ * stair state to {@code base.tick / randomTick}, so FCBlockStoneBrick.updateTick
+ * would run at a stair position), never sees the 1.20.1 classes that override
+ * tick or randomTick, and would be a second routing path that ignores the policy.
  */
 @Mixin(BlockBehaviour.class)
 public abstract class BlockBehaviorMixin {
@@ -131,38 +137,6 @@ public abstract class BlockBehaviorMixin {
     }
 
     // ================================================================
-    // tick -> FC updateTick
-    // ================================================================
-
-    @Inject(method = "tick", at = @At("HEAD"), cancellable = true)
-    private void btw$tick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random,
-                           CallbackInfo ci) {
-        btw.modern.Block fcBlock = btw$getFcBlock();
-        if (fcBlock == null) return;
-
-        btw.modern.World world = WorldBridge.getOrCreate(level);
-        fcBlock.updateTick(world, pos.getX(), pos.getY(), pos.getZ(),
-                new Random(random.nextLong()));
-        ci.cancel();
-    }
-
-    // ================================================================
-    // randomTick -> FC RandomUpdateTick
-    // ================================================================
-
-    @Inject(method = "randomTick", at = @At("HEAD"), cancellable = true)
-    private void btw$randomTick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random,
-                                 CallbackInfo ci) {
-        btw.modern.Block fcBlock = btw$getFcBlock();
-        if (fcBlock == null) return;
-
-        btw.modern.World world = WorldBridge.getOrCreate(level);
-        fcBlock.RandomUpdateTick(world, pos.getX(), pos.getY(), pos.getZ(),
-                new Random(random.nextLong()));
-        ci.cancel();
-    }
-
-    // ================================================================
     // neighborChanged -> FC onNeighborBlockChange
     // ================================================================
 
@@ -192,7 +166,7 @@ public abstract class BlockBehaviorMixin {
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
-        if (!state.is(oldState.getBlock()) && level instanceof ServerLevel sl) {
+        if (!state.is(oldState.getBlock()) && level instanceof ServerLevel sl && !WorldBridge.isMetadataOnlyWrite(pos)) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
             fcBlock.onBlockAdded(world, pos.getX(), pos.getY(), pos.getZ());
         }
@@ -205,12 +179,16 @@ public abstract class BlockBehaviorMixin {
     @Inject(method = "onRemove", at = @At("HEAD"), cancellable = true)
     private void btw$onRemove(BlockState state, Level level, BlockPos pos,
                                BlockState newState, boolean moving, CallbackInfo ci) {
-        btw.modern.Block fcBlock = btw$getFcBlock();
+        // The FC block FC's world reads see here: the identity mapping, or the log for a bark / stripped log form
+        // (ProxyRegistry.getRemovalLegacyId), so cutting a stripped trunk runs FC's log removal (leaf decay check).
+        if ((Object) this instanceof ProxyBlock || !((Object) this instanceof Block self)) return;
+        int legacyId = ProxyRegistry.getRemovalLegacyId(self);
+        if (legacyId <= 0 || legacyId >= btw.modern.Block.blocksList.length) return;
+        btw.modern.Block fcBlock = btw.modern.Block.blocksList[legacyId];
         if (fcBlock == null) return;
 
-        if (!state.is(newState.getBlock()) && level instanceof ServerLevel sl) {
+        if (!state.is(newState.getBlock()) && level instanceof ServerLevel sl && !WorldBridge.isMetadataOnlyWrite(pos)) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
-            int legacyId = ProxyRegistry.getBlockId(state.getBlock());
             int meta = 0; // vanilla blocks don't carry FC metadata
             fcBlock.breakBlock(world, pos.getX(), pos.getY(), pos.getZ(), legacyId, meta);
             // Do NOT cancel — let vanilla handle block entity removal etc.

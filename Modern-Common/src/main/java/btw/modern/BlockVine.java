@@ -4,6 +4,8 @@ public class BlockVine extends Block {
 
     protected BlockVine(int id) {
         super(id, Material.vine);
+        // 1.5.2 BlockVine constructor (vanilla/server BlockVine.java:23): FCBlockVine.updateTick spreads the vine
+        setTickRandomly(true);
     }
 
     // 1.5.2 BlockVine.getCollisionBoundingBoxFromPool (vanilla/client BlockVine.java:136-139): vines have no

@@ -857,6 +857,25 @@ public abstract class World implements IBlockAccess {
         return 256;
     }
 
+    /**
+     * Same floor as {@link #getFcMinBuildHeight}, which is the one build-range contract: subclasses override that
+     * method, not this one (Block.CheckForFall reads getFcMinBuildHeight). Kept as a plain alias.
+     */
+    public int GetMinBuildHeight() {
+        return getFcMinBuildHeight();
+    }
+
+    /**
+     * Port hook for the survival check of FC plants (BlockFlower.checkFlowerChange), the D3 rule for soils 1.5.2
+     * never had. The plant at (x, y, z) stands on a block that only the live world knows (moss, podzol, mud, rooted
+     * dirt, red sand, a waterlogged block, ...): 1.20.1 placed it there, and the live world's own survival rule for
+     * that plant decides whether it stays (1) or goes (0). -1 when the block below is a 1.5.2 block (or this world
+     * has no such blocks), so FC's 1.5.2 canBlockStay decides. Base worlds: -1.
+     */
+    public int GetModernSoilPlantSurvival(int x, int y, int z) {
+        return -1;
+    }
+
     // 1.5.2 World.setItemData/loadItemData/getUniqueDataId (vanilla/server World.java:3873-3894) —
     // FCItemEmptyMap.java:41,45 map crafting; delegates to mapStorage exactly like
     // vanilla (WorldBridge installs a live MapStorage backed by the MC level).

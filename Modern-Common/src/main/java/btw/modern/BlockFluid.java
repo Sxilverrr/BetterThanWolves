@@ -8,8 +8,11 @@ package btw.modern;
  */
 public abstract class BlockFluid extends Block {
 
+    // 1.5.2 BlockFluid constructor (vanilla/server BlockFluid.java:29): every fluid random-ticks unless a subclass
+    // turns it off (BlockStationary does, for water). Only the flag is ported; the 1.20.1 fluid engine owns flow.
     protected BlockFluid(int id, Material material) {
         super(id, material);
+        this.setTickRandomly(true);
     }
 
     /**

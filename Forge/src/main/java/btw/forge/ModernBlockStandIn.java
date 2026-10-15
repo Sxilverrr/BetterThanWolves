@@ -5,6 +5,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
@@ -29,6 +30,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * stand-in id, so no FC callback runs on a modern block. Collision/solidity/pathing/hardness are bridged to
  * the live MC state; FC machine hooks stay inert, and WorldBridge.setBlock(standInId) is a no-op
  * (getModernBlock(standIn) == null), so FC can never write one.
+ *
+ * <p>FC's fire and plant rules read two more properties through the id. Fire: FCBlockFire, which owns the FIRE tick,
+ * reads only its own tables (BlockFire.abilityToCatchFire / chanceToEncourageFire, indexed by getBlockId), and FC lava
+ * reads Material.getCanBurn (FCBlockLavaStationary.java:64-67). A colliding state that 1.20.1 fire burns (acacia, dark
+ * oak, mangrove, cherry and bamboo wood, hay, carpets, scaffolding, beehives, ...) therefore reads as a flammable
+ * stand-in carrying its 1.20.1 odds, so it keeps burning and feeding fire as it does today, and a 1.20.1 fire source
+ * (magma block) keeps FC fire on it burning (DoesInfiniteBurnToFacing). Soil: modern soils answer
+ * FC's soil hooks from their 1.20.1 tags (maintainer decision D3), so plants 1.20.1 world generation put on podzol,
+ * moss, mud, rooted or coarse dirt and red sand survive FC's survival rules.</p>
  */
 final class ModernBlockStandIn extends btw.modern.Block {
 
@@ -51,17 +61,44 @@ final class ModernBlockStandIn extends btw.modern.Block {
     private static final Map<SoundType, btw.modern.StepSound> STEP_SOUNDS = new ConcurrentHashMap<>();
     private static volatile boolean stepSoundFailureLogged;
 
+    /**
+     * 1.5.2 Material.rock (vanilla/client Material.java) that can burn: the material of a flammable stand-in, so FC
+     * lava's CanBlockMaterialBurn (FCBlockLavaStationary.java:64-67) ignites beside it as 1.20.1 LavaFluid does beside
+     * any block with flammability (LavaFluid.java:114-116, IForgeBlock.isFlammable). Everything else matches rock.
+     */
+    private static final btw.modern.Material FLAMMABLE_ROCK =
+            new btw.modern.Material(btw.modern.MapColor.stoneColor).setRequiresTool().setBurning();
+    /**
+     * Flammable stand-ins by (shape class, 1.20.1 ignite odds, burn odds). Copy-on-write under the class lock; the
+     * volatile write publishes each new stand-in to readers on other threads (mesh threads read ids too).
+     */
+    private static volatile FlammableBucket[] flammableBuckets = new FlammableBucket[0];
+    private static int flammableCreated;               // guarded by the class lock; names btwModernFlammable<n>
+    private static volatile boolean flammableExhaustedLogged;
+    private static volatile boolean fireOddsFailureLogged;
+
+    /** One bucket: {@code id} is a dedicated stand-in, or (dedicated == false) the nearest one reused for it. */
+    private record FlammableBucket(boolean solid, int ignite, int burn, int id, boolean dedicated) { }
+
     private final boolean m_bSolidCube;
 
     private ModernBlockStandIn(int id, boolean solidCube) {
-        super(id, btw.modern.Material.rock);   // registers blocksList[id] (+ an ItemBlock, never exposed)
+        this(id, solidCube, btw.modern.Material.rock, solidCube ? "btwModernSolid" : "btwModernCollider");
+    }
+
+    private ModernBlockStandIn(int id, boolean solidCube, btw.modern.Material material, String name) {
+        super(id, material);   // registers blocksList[id] (+ an ItemBlock, never exposed)
         this.m_bSolidCube = solidCube;
+        // 1.5.2 opaque-cube table (vanilla/server Block.java:484): the Block constructor evaluated isOpaqueCube()
+        // before m_bSolidCube was set, and stand-ins are created after BTWLifecycle filled the table. The solid
+        // stand-in (deepslate, tuff, ...) must stay opaque to FC's tree and huge mushroom generators.
+        opaqueCubeLookup[id] = solidCube;
         // Stone defaults (vanilla/client Block.java:72). stepSound must be non-null: frozen
         // Entity.playStepSound dereferences GetStepSound(...) (Entity.java:1028).
         setHardness(1.5F);
         setResistance(10.0F);
         setStepSound(soundStoneFootstep);
-        setUnlocalizedName(solidCube ? "btwModernSolid" : "btwModernCollider");
+        setUnlocalizedName(name);
     }
 
     /** Legacy id FC should see for {@code state}; 0 if it has no collision (plants, light...: unchanged). */
@@ -74,6 +111,9 @@ final class ModernBlockStandIn extends btw.modern.Block {
             boolean full = net.minecraft.world.level.block.Block.isShapeFullBlock(shape);
             int id = full && state.is(BlockTags.WITHER_IMMUNE) ? BEDROCK_ID
                     : full && state.isSolidRender(level, pos) ? solidId : colliderId;
+            if (id != BEDROCK_ID) {
+                id = withFireOdds(state, level, pos, id == solidId, id);
+            }
             net.minecraft.world.level.block.Block mc = state.getBlock();
             if (!LOGGED.contains(mc) && LOGGED.add(mc)) {
                 LOGGER.info("[STAND-IN] {} reads as legacy id {} to FC", BuiltInRegistries.BLOCK.getKey(mc), id);
@@ -115,12 +155,113 @@ final class ModernBlockStandIn extends btw.modern.Block {
     /** Free = empty block AND item slot, and no 1.20.1 block maps to it (else getFcBlock would route MC callbacks here). */
     private static int nextFreeId(int from) {
         for (int id = from; id <= LAST_FREE_ID; id++) {
-            if (btw.modern.Block.blocksList[id] == null && btw.modern.Item.itemsList[id] == null
-                    && !ProxyRegistry.isLegacyIdMapped(id)) {
+            if (isFreeId(id)) {
                 return id;
             }
         }
         return -1;
+    }
+
+    private static boolean isFreeId(int id) {
+        return btw.modern.Block.blocksList[id] == null && btw.modern.Item.itemsList[id] == null
+                && !ProxyRegistry.isLegacyIdMapped(id);
+    }
+
+    // ---- flammable stand-ins
+
+    /**
+     * {@code plainId}, or the flammable stand-in of the same shape class for a state 1.20.1 fire burns. The odds are
+     * the ones 1.20.1 FireBlock consults (Forge getFireSpreadSpeed / getFlammability, FireBlock.java:219, 257; their
+     * IForgeBlock defaults read FireBlock's table, IForgeBlock.java:614-617, 655-658), so modded blocks with their own
+     * values count too. FireBlockMixin does not touch them: the block is unmapped (getBlockId == 0).
+     */
+    private static int withFireOdds(BlockState state, BlockGetter level, BlockPos pos, boolean solid, int plainId) {
+        int ignite;
+        int burn;
+        try {
+            ignite = Math.max(0, state.getFireSpreadSpeed(level, pos, Direction.UP));
+            burn = Math.max(0, state.getFlammability(level, pos, Direction.UP));
+        } catch (Throwable t) {
+            if (!fireOddsFailureLogged) {
+                fireOddsFailureLogged = true;
+                LOGGER.warn("[STAND-IN] fire odds lookup failed for {}; it reads as non-flammable to FC (logged once)",
+                        state, t);
+            }
+            return plainId;
+        }
+        if (ignite == 0 && burn == 0) return plainId;
+        for (FlammableBucket b : flammableBuckets) {
+            if (b.solid() == solid && b.ignite() == ignite && b.burn() == burn) return b.id();
+        }
+        return flammableIdFor(solid, ignite, burn, plainId);
+    }
+
+    /**
+     * Creates the stand-in for a new (shape, ignite, burn) bucket from the free range (the ids left between
+     * FIRST_FREE_ID and LAST_FREE_ID: about nine), with SetFireProperties(ignite, burn) as FC's own blocks set
+     * theirs (vanilla/server Block.java:1975-1981). The last free id is kept for the other shape class until that
+     * class has a flammable stand-in: a solid cube and a shaped collider are not interchangeable (collision,
+     * isNormalCube). Once the range is used up a bucket reuses the stand-in of its shape class with the nearest odds
+     * (logged once); with none, it stays on the plain stand-in and is fireproof to FC.
+     */
+    private static synchronized int flammableIdFor(boolean solid, int ignite, int burn, int plainId) {
+        FlammableBucket[] current = flammableBuckets;
+        boolean sameShapeHasOne = false;
+        boolean otherShapeHasOne = false;
+        for (FlammableBucket b : current) {
+            // another thread created this bucket while we waited for the lock
+            if (b.solid() == solid && b.ignite() == ignite && b.burn() == burn) return b.id();
+            if (b.dedicated()) {
+                if (b.solid() == solid) sameShapeHasOne = true;
+                else otherShapeHasOne = true;
+            }
+        }
+
+        int free = 0;
+        for (int id = FIRST_FREE_ID; id <= LAST_FREE_ID; id++) {
+            if (isFreeId(id)) free++;
+        }
+        boolean mayCreate = free > 1 || (free == 1 && (otherShapeHasOne || !sameShapeHasOne));
+
+        int id = 0;
+        boolean dedicated = false;
+        if (mayCreate) {
+            int newId = nextFreeId(FIRST_FREE_ID);
+            if (newId > 0) {
+                try {
+                    new ModernBlockStandIn(newId, solid, FLAMMABLE_ROCK, "btwModernFlammable" + flammableCreated++)
+                            .SetFireProperties(ignite, burn);
+                    id = newId;
+                    dedicated = true;
+                    LOGGER.info("[STAND-IN] flammable {} stand-in {}: ignite {} / burn {} (1.20.1 fire odds)",
+                            solid ? "solid cube" : "shaped collider", newId, ignite, burn);
+                } catch (Throwable t) {
+                    LOGGER.error("[STAND-IN] flammable stand-in creation failed at id {}", newId, t);
+                }
+            }
+        }
+        if (!dedicated) {
+            int best = Integer.MAX_VALUE;
+            for (FlammableBucket b : current) {
+                if (!b.dedicated() || b.solid() != solid) continue;
+                int distance = Math.abs(b.ignite() - ignite) + Math.abs(b.burn() - burn);
+                if (distance < best) {
+                    best = distance;
+                    id = b.id();
+                }
+            }
+            if (!flammableExhaustedLogged) {
+                flammableExhaustedLogged = true;
+                LOGGER.warn("[STAND-IN] free legacy ids {}..{} used up for flammable stand-ins; new fire-odds buckets"
+                        + " reuse the nearest stand-in of their shape (logged once)", FIRST_FREE_ID, LAST_FREE_ID);
+            }
+            if (id == 0) id = plainId;
+        }
+
+        FlammableBucket[] next = java.util.Arrays.copyOf(current, current.length + 1);
+        next[current.length] = new FlammableBucket(solid, ignite, burn, id, dedicated);
+        flammableBuckets = next;
+        return id;
     }
 
     /** Live level behind an FC block access: WorldBridge, or (PathFinder's ChunkCache) the pathing entity's world. */
@@ -213,6 +354,24 @@ final class ModernBlockStandIn extends btw.modern.Block {
         if (level == null || iFacing < 0 || iFacing > 5) return false;
         return net.minecraft.world.level.block.Block.canSupportCenter(
                 level, new BlockPos(i, j, k), Direction.from3DDataValue(iFacing));
+    }
+
+    // ---- eternal fire: FCBlockFire, which owns the FIRE tick, keeps a fire alive over netherrack, End bedrock or a
+    // neighbour whose DoesInfiniteBurnToFacing names the fire's side (Server FCBlockFire.java:49-62, 157-176). The 1.20.1
+    // fire sources it does not know (magma blocks, datapack additions to the infiniburn tags) answer from the live
+    // state: 1.20.1 asks only the block below the fire, facing up (FireBlock.tick:136, isFireSource(level, below, UP)),
+    // so a stand-in answers for that side only.
+    @Override
+    public boolean DoesInfiniteBurnToFacing(btw.modern.IBlockAccess access, int i, int j, int k, int iFacing) {
+        if (iFacing != 1) return false;   // 1 = up (FC facing == Direction 3D data value)
+        ServerLevel level = levelOf(access, null);
+        if (level == null) return false;
+        try {
+            BlockPos pos = new BlockPos(i, j, k);
+            return level.getBlockState(pos).isFireSource(level, pos, Direction.UP);
+        } catch (Throwable t) {
+            return false;   // read inside FC's fire tick: never throw out of it
+        }
     }
 
     // ---- FC pistons (run on MC pistons via BlockBehaviorMixin.btw$neighborChanged) copy id+meta to move a
@@ -326,4 +485,44 @@ final class ModernBlockStandIn extends btw.modern.Block {
     // keep Modern-Common's inert defaults.
     @Override public boolean DoesBlockBreakSaw(btw.modern.World world, int i, int j, int k) { return false; }
     @Override public boolean OnBlockSawed(btw.modern.World world, int i, int j, int k) { return false; }
+
+    // ---- soils (maintainer decision D3). FC's plant rules ask the block below through these hooks: BlockFlower /
+    // FCBlockPlants.CanGrowOnBlock (Server FCBlockPlants.java:167-171), FCBlockSapling (:218-222), FCBlockCactus
+    // .canBlockStay (:67-78), FCBlockReed.canPlaceBlockAt (:72-80). Modern soils answer from their live 1.20.1 tags,
+    // the soils 1.20.1 itself grows these plants on; without this, ferns, flowers, saplings, cactus and cane that
+    // 1.20.1 world generation placed on podzol, moss, mud, rooted or coarse dirt or red sand pop as soon as FC's
+    // survival rules run. Domesticated crops, nether wart and hydration stay FC-only (farmland, soul sand, planters).
+    @Override
+    public boolean CanWildVegetationGrowOnBlock(btw.modern.World world, int i, int j, int k) {
+        return liveStateIs(world, i, j, k, BlockTags.DIRT, null);
+    }
+
+    @Override
+    public boolean CanSaplingsGrowOnBlock(btw.modern.World world, int i, int j, int k) {
+        return liveStateIs(world, i, j, k, BlockTags.DIRT, null);
+    }
+
+    @Override
+    public boolean CanReedsGrowOnBlock(btw.modern.World world, int i, int j, int k) {
+        return liveStateIs(world, i, j, k, BlockTags.DIRT, BlockTags.SAND);
+    }
+
+    @Override
+    public boolean CanCactusGrowOnBlock(btw.modern.World world, int i, int j, int k) {
+        return liveStateIs(world, i, j, k, BlockTags.SAND, null);
+    }
+
+    @Override public boolean CanDomesticatedCropsGrowOnBlock(btw.modern.World world, int i, int j, int k) { return false; }
+    @Override public boolean CanNetherWartGrowOnBlock(btw.modern.World world, int i, int j, int k) { return false; }
+    @Override public boolean IsBlockHydratedForPlantGrowthOn(btw.modern.World world, int i, int j, int k) { return false; }
+
+    /** True if the live state at (i, j, k) carries {@code tag} or {@code orTag}; false without a live level. */
+    private static boolean liveStateIs(btw.modern.World world, int i, int j, int k,
+                                       TagKey<net.minecraft.world.level.block.Block> tag,
+                                       TagKey<net.minecraft.world.level.block.Block> orTag) {
+        ServerLevel level = levelOf(world, null);
+        if (level == null) return false;
+        BlockState state = level.getBlockState(new BlockPos(i, j, k));
+        return state.is(tag) || (orTag != null && state.is(orTag));
+    }
 }

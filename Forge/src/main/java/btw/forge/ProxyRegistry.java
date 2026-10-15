@@ -200,6 +200,15 @@ public class ProxyRegistry {
     }
 
     /**
+     * True if the legacy id's subtype bits pick distinct 1.20.1 blocks (the VARIANT_BLOCKS table). An FC metadata
+     * write on such an id may have to switch the 1.20.1 block, as 1.5.2's metadata IS the subtype
+     * (WorldBridge.setBlockMetadata: stone bricks 98 turning mossy / cracked).
+     */
+    static boolean isVariantId(int legacyId) {
+        return VARIANT_BLOCKS.containsKey(legacyId);
+    }
+
+    /**
      * 1.5.2 subtype metadata of a 1.20.1 block that is one variant of a legacy id (spruce planks -> 1,
      * orange wool -> 1, cut sandstone -> 2, cobblestone slab -> 3), or -1 if it is not a table variant.
      */
@@ -245,6 +254,55 @@ public class ProxyRegistry {
 
     /** 1.5.2 Block.waterMoving: what Blocks.WATER reads as (vanilla/client Block.java:98). */
     private static final int LEGACY_WATER_ID = 8;
+    /** 1.5.2 Block.wood, the log (vanilla/server Block.java, id 17). */
+    private static final int LEGACY_LOG_ID = 17;
+
+    /**
+     * The bark ("wood") and stripped forms of the four 1.5.2 log species, by species (oak 0, spruce 1, birch 2,
+     * jungle 3: the log variant order). 1.20.1 treats them as the species' logs (BlockTags.LOGS holds up leaves,
+     * LeavesBlock.java:99; BlockTags.JUNGLE_LOGS holds cocoa, CocoaBlock.java:60-63), so FC's world reads see them as
+     * log 17 of that species ({@link #getWorldBlockId}): FCBlockLeaves counts them as support (Server
+     * FCBlockLeaves.java:171-181) and FCBlockCocoa / BlockCocoa as a jungle log, where as stand-ins a stripped trunk let
+     * its canopy decay and dropped the pods on it. Read path only: no identity mapping, so no FC callback, drop or
+     * harvest runs on them, and FC metadata writes keep the block (WorldBridge.variantStateFor). FC machines that
+     * copy a block by id and metadata (pistons, the block dispenser) recreate the plain log.
+     */
+    private static final Map<Block, Integer> LOG_FORM_SPECIES = new IdentityHashMap<>();
+
+    static {
+        logForms(0, Blocks.OAK_WOOD, Blocks.STRIPPED_OAK_LOG, Blocks.STRIPPED_OAK_WOOD);
+        logForms(1, Blocks.SPRUCE_WOOD, Blocks.STRIPPED_SPRUCE_LOG, Blocks.STRIPPED_SPRUCE_WOOD);
+        logForms(2, Blocks.BIRCH_WOOD, Blocks.STRIPPED_BIRCH_LOG, Blocks.STRIPPED_BIRCH_WOOD);
+        logForms(3, Blocks.JUNGLE_WOOD, Blocks.STRIPPED_JUNGLE_LOG, Blocks.STRIPPED_JUNGLE_WOOD);
+    }
+
+    private static void logForms(int species, Block... blocks) {
+        for (Block b : blocks) LOG_FORM_SPECIES.put(b, species);
+    }
+
+    /**
+     * 1.5.2 log species (0-3) of a block FC reads as log 17: the four mapped logs and their bark / stripped forms.
+     * -1 for any other block, or when blocksList has no log.
+     */
+    static int getTreeLogSpecies(Block block) {
+        if (!hasFcBlock(LEGACY_LOG_ID)) return -1;
+        Integer form = LOG_FORM_SPECIES.get(block);
+        if (form != null) return form;
+        return getBlockId(block) == LEGACY_LOG_ID ? Math.max(getLegacyVariantMeta(block), 0) : -1;
+    }
+
+    /**
+     * Legacy id whose FC block hears the removal of {@code block} (BlockBehaviorMixin.btw$onRemove -> breakBlock): its
+     * identity id ({@link #getBlockId}), or log 17 for the bark and stripped log forms FC reads as logs, so cutting a
+     * stripped trunk runs FC's log removal as cutting a log does (BlockLog.breakBlock: the leaf decay check of every
+     * leaf within 4, vanilla/server BlockLog.java:57-85; FCBlockLog adds nothing to it). 0 when FC has no block for it.
+     */
+    public static int getRemovalLegacyId(Block block) {
+        int id = getBlockId(block);
+        if (id == 0 && LOG_FORM_SPECIES.containsKey(block) && hasFcBlock(LEGACY_LOG_ID)) return LEGACY_LOG_ID;
+        return id;
+    }
+
     /** 1.5.2 Block.stoneSingleSlab / woodSingleSlab; their double-slab ids are one lower (vanilla/client Block.java:212-213, 301-302). */
     private static final int LEGACY_STONE_SLAB_ID = 44;
     private static final int LEGACY_WOOD_SLAB_ID = 126;
@@ -255,6 +313,8 @@ public class ProxyRegistry {
      * <ul>
      *   <li>an MC double slab reads as the 1.5.2 double-slab id 43 / 125 (BlockStep / BlockWoodSlab
      *       isDoubleSlab; the bottom/top half is reported through metadata bit 8);</li>
+     *   <li>the bark and stripped forms of the oak, spruce, birch and jungle logs read as log 17 of their species
+     *       ({@link #LOG_FORM_SPECIES});</li>
      *   <li>a colliding 1.20.1 state with no usable 1.5.2 id reads as a {@link ModernBlockStandIn}
      *       instead of air (design_blockmap U4: puppets fell through deepslate/tuff);</li>
      *   <li>a non-colliding unmapped state whose fluid is water (seagrass, kelp, bubble column, coral,
@@ -269,9 +329,13 @@ public class ProxyRegistry {
                 && state.getValue(SlabBlock.TYPE) == SlabType.DOUBLE) {
             id -= 1;
         } else if (id == 0 && !state.isAir()) {
-            id = ModernBlockStandIn.idFor(state, level, pos);
-            if (id == 0 && state.getFluidState().is(FluidTags.WATER)) {
-                id = LEGACY_WATER_ID;
+            if (LOG_FORM_SPECIES.containsKey(state.getBlock())) {
+                id = LEGACY_LOG_ID;
+            } else {
+                id = ModernBlockStandIn.idFor(state, level, pos);
+                if (id == 0 && state.getFluidState().is(FluidTags.WATER)) {
+                    id = LEGACY_WATER_ID;
+                }
             }
         }
         return hasFcBlock(id) ? id : 0;

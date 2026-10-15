@@ -14,16 +14,19 @@ around it.
 
 ## [Unreleased]
 
-Not released yet. These fixes were made on 2026-10-10 and 2026-10-11, in six implementation waves on
-top of 1.3.0-alpha.3 (`48e9825`). The five waves of 2026-10-10 address the CurseForge feedback
-triage and an earlier design pass; they were committed as `f6ec9be`, and `d55db5d` set the version
-to 1.4.0-alpha.5. The 2026-10-11 wave fixes bugs the maintainer found in mechanical power, sounds
-and the BTW creative tab, after an audit that proved each root cause against BTW's 1.5.2 code before
-anything was changed. `docs/curseforge-feedback-triage.md` has a status table for every triage
-finding; the ids in parentheses refer to it, to the design pass and to the 2026-10-11 audit
-(`STUB_CATALOGUE.md` entries (an) to (aq)). Every wave builds and passes the link and bridge audits,
-and a dedicated server boots a fresh world without errors. None of the client-side fixes has been
-checked in game yet (see Known issues).
+Not released yet. These fixes were made on 2026-10-10, 2026-10-11 and 2026-10-14, in seven
+implementation waves on top of 1.3.0-alpha.3 (`48e9825`). The five waves of 2026-10-10 address the
+CurseForge feedback triage and an earlier design pass; they were committed as `f6ec9be`, and `d55db5d`
+set the version to 1.4.0-alpha.5. The 2026-10-11 wave fixes bugs the maintainer found in mechanical
+power, sounds and the BTW creative tab, after an audit that proved each root cause against BTW's 1.5.2
+code before anything was changed. The 2026-10-14 wave makes BTW's own rules decide how blocks that keep
+a Minecraft id grow, spread, decay, burn and fall; its root cause was proven with a scripted in-world
+test on a dedicated server before anything was changed, and the result was checked the same way
+afterwards. `docs/curseforge-feedback-triage.md` has a status table for every triage finding; the ids
+in parentheses refer to it, to the design pass and to the 2026-10-11 audit (`STUB_CATALOGUE.md`
+entries (an) to (as)). The 2026-10-10 and 2026-10-11 waves build and pass the link and bridge audits,
+the 2026-10-14 wave builds and passes the link and bridge audits, and a dedicated server boots a fresh world
+without errors. None of the client-side fixes has been checked in game yet (see Known issues).
 
 ### Fixed
 
@@ -200,6 +203,54 @@ does, and was fixed there rather than block by block.
 - **Placement errors.** An error inside BTW's placement code could crash the game or the server. It
   is now logged once and nothing is placed.
 
+BTW's rules for plants, fire and falling blocks (2026-10-14):
+
+Blocks that keep a Minecraft id, such as saplings, crops, grass, leaves, fire and sand, ran Minecraft
+1.20.1's rules instead of BTW's, because the port's hook never reached them. In a test world all 25
+birch saplings became trees within 30 seconds, and saplings in the End grew too. BTW's own rules now
+decide for every one of these blocks:
+
+- **Trees** grow from saplings at BTW's slow rate, need light and never grow in the End. They grow into
+  BTW's trees, big oaks and 2x2 jungle trees included, and they also grow below y=1 (superflat worlds,
+  deep caves): BTW's tree code only knew 1.5.2's world, which started at y=0.
+- **Crops and other plants** grow at BTW's rates and only under BTW's conditions. Wheat, carrots and
+  potatoes need light and watered soil and stop growing while weeds grow. Pumpkin and melon stems, sugar
+  cane, cactus, cocoa and vines follow BTW's rates. Nothing grows in the End, and nether wart grows only
+  in the Nether. Pumpkin stems grow BTW's own pumpkins, and pumpkin and melon stems stay attached to
+  their fruit.
+- **Crop drops follow BTW.** Breaking or harvesting unripe wheat, carrots or potatoes drops nothing.
+  Ripe wheat drops wheat and 1-2 seeds, ripe carrots and potatoes drop 2-3, and a ripe potato plant
+  drops a poisonous potato 1 time in 50. Ripe nether wart drops 2-4. Before, every crop dropped its item
+  plus wheat seeds at any stage.
+- **Grass** grows back on loose dirt again. It spreads only in daylight and never in the End, and grass
+  that gets too little sky light turns back into dirt. Tall grass spreads onto unused farmland.
+  Mycelium spreads onto loose dirt and dies in the dark.
+- **Brown mushrooms** spread in complete darkness (or on mycelium) and give off no light, as in BTW.
+  Their faint 1.20.1 glow had kept them from ever spreading. Mushrooms on mycelium sometimes grow into
+  huge mushrooms (see Known issues for their textures).
+- **Leaves** decay the BTW way: only after a log or leaves near them are removed, and only when no log
+  is within 4 blocks. They drop only saplings (1 in 20, jungle 1 in 40), never apples or sticks.
+  Stripped logs and wood (bark blocks) of oak, spruce, birch and jungle hold up leaves and cocoa pods as
+  logs do.
+- **Fire** burns by BTW's rules: logs smoulder instead of burning away, BTW's wicker and wooden blocks
+  burn, and the fire on a lit hibachi keeps burning. Fire on magma blocks keeps burning, as in 1.20.1.
+  Blocks added after 1.5.2 that burn in 1.20.1 (acacia, cherry and bamboo wood, hay bales, ...) still
+  burn.
+- **Lava** follows BTW: it lights BTW campfires and unlit torches next to it, melts BTW snow and starts
+  fires at BTW's rate (1.20.1's fire spread ran twice for every lava block it picked).
+- **Falling blocks.** Sand, gravel and the dragon egg no longer float on torches and other blocks they
+  can fall through, and they land as BTW falling blocks. Anvils no longer fall, as in BTW. BTW's loose
+  blocks (loose dirt, loose cobblestone, ...) now also fall below y=0.
+- **Stone bricks** with water above them slowly turn mossy, and with lava above them cracked, when
+  there is open space below them, as in BTW.
+- **Plants on BTW soils.** Cactus on planters, sugar cane on loose dirt and crops on BTW farmland are no
+  longer destroyed when a block next to them changes. Plants that 1.20.1 grows on its newer soils (grass
+  on moss, mushrooms on podzol and nylium, cactus on red sand, ...) stay. Farmland that is trampled or
+  covered turns into BTW loose dirt, as in BTW, instead of vanilla dirt.
+- **`/gamerule doFireTick false` now also stops BTW's fire and lava fires.** Fire stays lit but does
+  not spread or burn out, and lava sets nothing alight. With the rule on (the default), fire and lava
+  behave exactly as in BTW. A burning ladder and a campfire can still spread fire.
+
 Other fixes:
 
 - **Mining speed.** Every BTW block broke at the same speed with any tool: rough stone took about
@@ -375,6 +426,10 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   clutch, pulley, block dispenser and turntable ignore weak power, such as a redstone block or a
   powered block next to them (see Fixed). Contraptions built on the old behaviour may act
   differently.
+- **Farming and forestry follow BTW 4.B** (see Fixed). Crops, saplings and other plants that keep a
+  Minecraft id grow several times more slowly than in 1.20.1 (a sapling takes hours, not minutes),
+  need light (crops also watered soil) and never grow in the End. Farms built around 1.20.1's rates
+  produce much less. Leaves drop only saplings, and unripe crops drop nothing.
 - **BTW creative tab and JEI follow 4.B.** BTW items that 4.B kept out of its creative inventory,
   though they can be made in survival (Witch Wart, Mail, Steel Nugget, cut and tanned leather, Golden
   Dung and a few more), are no longer listed in the BTW tab, the Search tab or JEI's item list.
@@ -422,12 +477,15 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
 ### Known issues
 - **Not checked on a client yet.** A dedicated server has been run on a fresh world three times
   (twice on 2026-10-10, once after the 2026-10-11 wave): it boots with no errors, BTW initialises
-  and vanilla mobs are replaced. The maintainer has played development builds, which is how the
-  2026-10-11 bugs were found, and the last session ran a build from the middle of that wave (its log
-  shows the BTW tab built with 355 entries), but none of the in-game checks has been run on the
-  final code. Every rendering fix (red tint, mob renderers and animations, held items, chests and
-  baskets, block and item models, animated textures), every client-side sound, the creative tab and
-  JEI are checked by code review only. Multiplayer is untested too.
+  and vanilla mobs are replaced. For the 2026-10-14 wave it ran three more times with scripted
+  in-world tests of BTW's growth, fire and falling-block rules. The maintainer has played development
+  builds, which is how the 2026-10-11 bugs were found, and the last session ran a build from the
+  middle of that wave (its log shows the BTW tab built with 355 entries), but none of the in-game
+  checks has been run on the final code. Every rendering fix (red tint, mob renderers and animations,
+  held items, chests and baskets, block and item models, animated textures), every client-side sound,
+  the creative tab and JEI are checked by code review only, and so is how BTW blocks draw their faces
+  next to other blocks now that BTW's table of opaque blocks is filled (2026-10-14). Multiplayer is
+  untested too.
 - **Re-entering a world.** No cause was found. It has not been tested whether a world now always
   shuts down cleanly and releases its `session.lock`. If a world will not open again, please report
   it with `logs/latest.log` and any crash report.
@@ -440,13 +498,30 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   villager or witch sound files. 1.3.0-alpha.3 played 1.20.1's witch hurt and death sounds.
 - **The vanilla creative tabs still list Minecraft items that 4.B hid or replaced**, such as the
   chest, cobweb and ladder (BTW's own chest, web and ladder are in the BTW tab), the crafting table,
-  music discs and the comparator. Hiding them is waiting for the maintainer's decision (CT6).
+  music discs and the comparator. Hiding them is waiting for the maintainer's decision (CT6). Blocks
+  whose recipes 4.B removed (the vanilla hopper, comparator, daylight sensor, dropper, trapped chest,
+  weighted pressure plates and activator rail) still work as in 1.20.1; whether to keep, hide or tie
+  them to BTW progress is part of the same decision.
 - **BTW's own placement code is skipped in some cases.** When you place a block item while sneaking,
   from the off hand, or against a block added after 1.5.2 (deepslate, tuff, ...) or a vanilla block
   with its own right-click action, Minecraft's placement runs with BTW's facing and variant, but
   without BTW's item-specific placement code: slabs do not join into a double slab, saplings ignore
   BTW's soil rules, a burning torch does not light the block you click, and BTW's "cannot be placed
   here" checks are not made (MISSED-1). Placing against any other block uses BTW's code.
+- **Bone meal still grows plants instantly**, the 1.20.1 way, although saplings, crops and other
+  plants now grow at BTW's rates. In 4.B bone meal never grows a plant; it fertilises the soil. This
+  is waiting for the maintainer's decision.
+- Plants added after 1.5.2 keep 1.20.1's growth: acacia, dark oak, cherry and mangrove saplings,
+  beetroot, sweet berries and bamboo grow several times faster than BTW's plants, and the leaves of
+  those newer trees decay the 1.20.1 way.
+- Dead bushes on grass blocks or dirt (1.20.1 places some in swamps and giant taigas) are removed when
+  a block next to them changes, because BTW lets dead bushes grow only on sand. Dead bushes on sand,
+  red sand and terracotta stay.
+- Waterlogged blocks (stairs, slabs, fences, ...) do not count as water for BTW: sugar cane whose only
+  water is in waterlogged blocks breaks when a block next to it changes, and BTW farmland watered only
+  by them dries out.
+- Huge mushrooms that grow from mushrooms on mycelium show placeholder textures. BTW's huge mushroom
+  blocks already lacked their textures; before this release, mushrooms never grew into them.
 - JEI's recipe and usage lookups (R and U) treat all variants of an item as one: looking up red knit
   wool shows the recipes of every knit wool colour (CI-3). The item list itself shows each variant.
 - The BTW chest's item shows as a planks-textured cube, and a few other BTW block items whose 1.5.2

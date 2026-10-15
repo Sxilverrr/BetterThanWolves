@@ -424,6 +424,14 @@ EntityTracker via EntityTrackerBridge, EntityList.getClassFromID + spawn-egg
 RenderFallingBlock), grass/rail/torch/anvil render methods, EntityPlayerMP
 exhaustion/health-hunger updates + Api field-dedup (hardcore-spawn state).
 
+2026-10-14 correction ((as)): "fire spread" above never applied to vanilla fire. SetFireProperties
+does fill the BlockFire tables FCBlockFire reads, but FCBlockFire.updateTick never ran for
+Blocks.FIRE: 1.20.1 FireBlock.tick overrides BlockBehaviour.tick without calling super, so
+BlockBehaviorMixin's tick hook was never reached and 1.20.1 fire ran on its own tables. Only FC's
+own fires (stoked fire, a ProxyBlock) used FC's rules. "grass/mycelium spread" was dead the same way
+(SpreadingSnowyDirtBlock.randomTick, and the port's BlockGrass lacked the 1.5.2 random-tick flag).
+FC fire ticks and grass and mycelium ticks are now routed by TickPolicy; see 2026-10-14 (as).
+
 **Now DONE (2026-07-08 follow-up — review pass + remaining ports):**
 - **Village subsystem** — Village/VillageDoorInfo/VillageCollection/VillageAgressor
   ported verbatim from 1.5.2; WorldBridge.ModSpecificTick drives villageCollectionObj.tick
@@ -2199,6 +2207,12 @@ Fix:
   vanilla, since BTW suppressed portal pigmen (FCBlockPortal.java:42-54).
   WorldProvider.isSurfaceWorld excludes the End (WorldProviderEnd.java:55-58) and canRespawnHere is
   false there.
+  *(2026-10-14: the NetherPortalBlockMixin part is superseded by 2026-10-14 (as): folded into
+  TickPolicy. The mixin is deleted. The portal's random tick falls under the general rule
+  (Modern-Common BlockPortal sets the 1.5.2 random-tick flag) and is dispatched at the BlockState
+  level, where the class mixin would never fire; with both, FCBlockPortal.updateTick would roll
+  twice per selection. The pigman rationale moved to the TickPolicy javadoc. Proof P of (as), run
+  1: no zombified piglins, portal intact. The WorldProvider changes above stand.)*
 - Block.CanGroundCoverRestOnBlock ports 1.5.2 (`world.doesBlockHaveSolidTopSurface`).
 - setEntityState and explosions find replacer- and MC-spawned puppets by entity id ((ab));
   playSoundAtEntity defers puppets' self-hurt sounds ((aa)).
@@ -3262,3 +3276,284 @@ WATER_CREATURE. Biome spawn costs (the potential-charge budget) are keyed by Ent
 no charge after their spawn tick; in soul sand valley and warped forest, spacing comes only from the
 MONSTER and local caps (not a lag source; 1.5.2 had no charge system). A BiomeModifier copying each
 replaced type's spawn cost to its fc type would close it (review W7-R1).
+
+## 2026-10-14 (as) Tick ownership: FC decides random and scheduled ticks of vanilla-id blocks
+
+**Symptom (tickgap audit: five families, 146 findings, 124 confirmed and 22 corrected by adversarial
+verification, 0 refuted; runtime proof P1).** BTW's rules for growth, spread, decay, fire and falling
+blocks did not apply to blocks that keep a Minecraft id. 1.20.1's rules and rates ran instead:
+- **P1 (2026-10-11, before the fix).** 25 birch saplings on superflat grass at y=-60 and 9 on a lit
+  grass platform in the End, randomTickSpeed 300 (about 44 random ticks each in 30 s): 25/25 and 9/9
+  were birch trees at 30 s. That is 1.20.1's rule (SaplingBlock.java:34-39: two 1/7 successes at
+  light 9, any dimension). 4.B's rule (Server FCBlockSapling.java:40-64: four 1/64 successes at light
+  9, never in the End) predicts about 0.14 trees and 0 in the End.
+- **Saplings:** trees grew in about 16 minutes instead of hours, also in the End, as 1.20.1 trees.
+- **Crops:** carrots, potatoes and wheat grew about 3x (wheat about 7x) faster, at night, on dry
+  farmland and despite weeds.
+- **Grass and mycelium:** loose dirt never regrew grass; grass spread under torches, at night and in
+  the End; mycelium never died in darkness.
+- **Leaves:** leaves decayed by 1.20.1 distance and dropped apples and sticks.
+- **Other plants:** sugar cane grew 2x and cocoa 4x faster; nether wart grew in the Overworld; cactus,
+  cane, vines and mushrooms grew in the End.
+- **Lava:** each selected lava cell ran 1.20.1 fire spread twice and never lit BTW campfires or melted
+  BTW snow.
+- **Fire:** fire used 1.20.1's tables, so logs vanished instead of smouldering, BTW wicker and wood
+  blocks were fireproof, and the fire on a lit hibachi kept going out.
+- **Falling blocks:** sand, gravel and the dragon egg floated on torches; anvils fell; BTW's loose
+  blocks never fell below y=0.
+- **Stone bricks and tall grass:** stone bricks never turned mossy or cracked; tall grass never spread
+  onto old farmland.
+- **Plant survival:** cactus on planters, cane on loose dirt and crops on BTW farmland were destroyed
+  by 1.20.1 survival checks.
+
+**Root cause.**
+- BlockBehaviorMixin routed ticks at HEAD of BlockBehaviour.randomTick / tick. A javap scan of every
+  mapped class chain (scratch hook_bypass.json) shows that every mapped block 1.20.1 random-ticks
+  overrides randomTick without calling super (39 rows), and 46 mapped blocks override tick without
+  super, so the hook never ran for them. NetherPortalBlockMixin ((ag)) was the only per-class patch.
+- 1.20.1 random-ticks only states whose cached isRandomlyTicking is true (ServerLevel.java:472-481).
+  That flag disagrees with 4.B's needsRandomTick for 17 mapped ids: stone bricks, tall grass, flowers,
+  mature crops, leaves below DISTANCE 7.
+- The port's Modern-Common 1.5.2 bases had dropped the 1.5.2 setTickRandomly calls (only Block,
+  BlockCrops, BlockDetectorRail and BlockFire set it) and many tick bodies: BlockFlower.checkFlowerChange
+  (an empty stub), BlockCactus, BlockReed, BlockNetherStalk, BlockMushroom, leaf flagging, BlockFire's
+  tickRate, Block.OnDestroyedByFire and CheckForFall parity.
+- FC metadata for crops, stems, wart, cocoa, cactus, cane, fire, vines, farmland and saplings had no
+  1.20.1 mapping, and the FC-only bits (sapling stage, leaf check flag, stem growth 0-14) lived in an
+  in-memory map cleared at server stop.
+- Found by the runtime proofs and the review wave once FC ran these ticks; 1.20.1's ticks had masked
+  each of them:
+  - FC's tree generators test the 1.5.2 build range: base y >= 1, clearance scan y >= 0, top 256
+    (Common FCUtilsTrees.java:187-229, 317, 340; Server FCUtilsGenHugeTree.java:46, 69). Every sapling
+    at y <= 0 failed and was restored at stage 3: run 2 left 25/25 superflat saplings untouched at 2400
+    ticks, where about 7.4 trees were due (P about 2e-4).
+  - The port's WorldGenBigTree was a stub and WorldGenerator.setBlockAndMetadata an empty method, so a
+    big oak placed nothing and a full-grown 2x2 jungle group cleared its four saplings and placed only
+    the dirt under the trunk.
+  - 1.20.1 BROWN_MUSHROOM emits light 1 (Blocks.java:208-210). 4.B's emits none (vanilla/server
+    Block.java:129 is FCMOD-commented; the active :205 sets no light), and FCBlockMushroomBrown spreads
+    off mycelium only from a cell at full light 0 (Common FCBlockMushroomBrown.java:56-61, :67). Runs 1
+    and 2: 5/5 sealed dark boxes stayed at one mushroom (about 3e-7 under 4.B).
+  - Block.opaqueCubeLookup was never filled (1.5.2 fills it in the Block constructor, vanilla/server
+    Block.java:484), so FC trees and huge mushrooms overwrote solid blocks beside them.
+  - The port's BlockCrops, BlockCarrot and BlockPotato drops were not 1.5.2: a carrot or potato popped
+    by the now-live checkFlowerChange, or harvested, dropped the crop plus 1-2 wheat seeds at any stage.
+  - Stripped logs and wood read as stand-ins, so FC leaf decay did not count them as support and FC
+    cocoa dropped off them; stripping a trunk ran BlockLog.breakBlock and flagged the canopy.
+  - Fire on magma burned out: FCBlockFire keeps a fire alive only over netherrack, End bedrock or a
+    DoesInfiniteBurnToFacing neighbour (Server FCBlockFire.java:49-62, 157-176), and magma read as the
+    plain stand-in.
+  - FC's light rules removed 1.20.1 content on modern soils: grass on moss in dark lush caves
+    (BlockFlower.canBlockStay: light 8 or sky) and mushrooms on podzol and nylium in full light
+    (FCBlockMushroom: light below 13).
+  - BTWLifecycle step 4b built FCBlockStem(105) against the ConcreteBlock(103) placeholder that step 4c
+    replaces, so FC melon stems never attached.
+  - 1.20.1 AttachedStemBlock.updateShape (AttachedStemBlock.java:38-40) detached every BTW pumpkin stem,
+    whose fruit is FC's fresh pumpkin (ProxyBlock 1006), not Blocks.PUMPKIN.
+
+**Fix (general rule).** FC decides the ticks of every FC-mapped vanilla-id BlockState, at the
+BlockState level, the single pass every server tick goes through (Forge/src/main/java/btw/forge/
+TickPolicy.java). BRIDGE_SPEC.md, "Tick ownership (TickPolicy)", has the rule, the dispatch points and
+the exception table.
+- **TickPolicy.decide(BlockState)**, a pure function of the state and FC's static data. A state is
+  managed when its block maps to an FC block at a vanilla legacy id, is not a ProxyBlock, and FC is
+  ready (BTWLifecycle.isFcReady(), set as the last statement of initialize()).
+  - Random ticks: gate = fc.getTickRandomly() && the runtime FC class declares updateTick or
+    RandomUpdateTick below btw.modern.Block; owner FC when the gate holds, else NONE.
+  - Scheduled ticks: FC, unless the 1.20.1 class overrides tick; then 1.20.1 keeps them (leaf
+    DISTANCE, the cactus / cane / farmland survival executors, chests, redstone timing, ...). FC_SCHED:
+    FIRE, SAND, GRAVEL, DRAGON_EGG and the three ANVILs are FC's although their classes override tick.
+  - Exceptions: water NONE; lava runs FC id 11 (gate forced true; scheduled ticks keep id 10);
+    redstone ore and ice keep 1.20.1 (the identical 4.B rule); detector rail NONE; dead bush NONE (D3);
+    leaves gated on !PERSISTENT. The staging sets PENDING and PENDING_SCHED ship empty.
+- **Dispatch mixins on BlockBehaviour$BlockStateBase:**
+  - BlockStateBaseTickMixin: a @Redirect of initCache's single PUTFIELD of isRandomlyTicking
+    (m_60611_, f_244227_) writes the final gate once, so LevelChunkSection never counts an interim
+    1.20.1 value, and caches the tick owners per state (FcBlockStateAccess). tick HEAD (m_222963_) runs
+    FC updateTick for FC-owned scheduled ticks and cancels 1.20.1.
+  - BlockStateRandomTickMixin, priority 1100: randomTick HEAD (m_222972_) runs FC RandomUpdateTick and
+    cancels 1.20.1, after other mods' default-priority randomTick vetoes (Serene Seasons 9.1+). For
+    the plants whose 1.20.1 body fires Forge's CropGrowEvent (crops, stems, cactus, cane, wart, cocoa)
+    it fires Pre before the FC body (DENY skips it) and Post when the state changed.
+  - LavaFluidMixin: LavaFluid.randomTick (m_213812_) is cancelled when the lava state's random owner
+    is FC, so the fluid path no longer runs 1.20.1 fire spread a second time.
+  - BlockBehaviorMixin's tick and randomTick injects are removed. NetherPortalBlockMixin is deleted:
+    the portal falls under the general rule.
+- **D1:** TickPolicy.HONOUR_DO_FIRE_TICK = true. With doFireTick false, a scheduled FC fire tick only
+  reschedules itself (tickRate + nextInt(10)) and FC fire and lava random ticks are skipped, for fire 51
+  and for FC's own fires through ProxyBlock.tick / randomTick (INTEGRATIONS.md #012).
+- **LightPolicy:** a state FC random-ticks emits 4.B's Block.lightValue[id], written over
+  BlockStateBase.lightEmission at initCache TAIL; LIT / POWERED twin-id states and ProxyBlocks keep
+  their own. Today it changes one block, brown_mushroom 1 -> 0. relightIfStale queues a block-light
+  check from the FC random tick where an old save stored the 1.20.1 light. Modern-Common BlockEndPortal
+  and BlockRedstoneLight (powered) regain their 1.5.2 constructor light, so nothing else goes dark.
+- **Modern-Common 1.5.2 base ports** (port code; FC code untouched):
+  - constructor setTickRandomly parity: BlockGrass, BlockMycelium, BlockFlower, BlockMushroom,
+    BlockCactus, BlockReed, BlockNetherStalk, BlockLeaves, BlockStem, BlockVine, BlockCocoa, BlockFluid,
+    BlockStationary (lava only), BlockIce, BlockSnowBlock, BlockPortal, BlockPumpkin, BlockCake,
+    BlockButton, BlockBasePressurePlate, BlockTripWire, BlockTripWireSource;
+  - BlockFlower: updateTick, onNeighborBlockChange and checkFlowerChange with the 1.5.2 light rule, plus
+    the FCBlockPlants members (weeds relay, soil notice on removal, with a same-id guard for 1.20.1's
+    attached-stem revert);
+  - faithful BlockCrops (AttemptToGrow: no weeds, light 9, hydrated soil, not in the End) and the 1.5.2
+    crop drops in BlockCrops, BlockCarrot and BlockPotato;
+  - BlockMushroom spread and fertilizeMushroom, with a new WorldGenBigMushroom; BlockCactus; BlockReed;
+    BlockNetherStalk (growth, 2-4 wart when ripe); BlockCocoa and BlockLilyPad canBlockStay;
+    BlockSapling.isSameSapling and damageDropped;
+  - BlockLeaves and BlockLog.breakBlock decay flagging (bit 8);
+  - BlockFire tickRate 30, canPlaceBlockAt, onNeighborBlockChange, onBlockAdded; Block.OnDestroyedByFire;
+  - Block.CheckForFall with FCEntityFallingBlock, the 32-block range and the world's min build height
+    (World.GetMinBuildHeight is an alias of getFcMinBuildHeight); BlockDragonEgg tickRate 5;
+  - WorldGenBigTree (full 1.5.2 port with the FCMOD stump) and WorldGenerator.setBlock /
+    setBlockAndMetadata;
+  - Block.opaqueCubeLookup filled in the constructor (BlockHalfSlab: double slabs);
+  - World.GetModernSoilPlantSurvival, asked first by checkFlowerChange (base answer -1).
+- **WorldBridge and the FC-metadata overlay:**
+  - derive/apply branches ahead of the generic FACING ones: crop, wart, cactus, cane and fire AGE;
+    farmland MOISTURE apply; cocoa FACING | AGE << 2; vine faces; stems (AGE = growth / 2, attached =
+    15, facing the fruit FC attached); leaves PERSISTENT <-> bit 4; carved pumpkin and jack o'lantern
+    facing;
+  - FcMetaOverlay, a SavedData per dimension (data/btw_fc_meta.dat) in place of the in-memory map. An
+    entry (block, derivedAtWrite, meta) is stored only when FC's metadata differs from the derived
+    value, and is valid only while that block is still there and still derives to derivedAtWrite;
+  - flattened-variant switch on metadata writes (stone bricks 98 turning mossy / cracked), only from a
+    block that is itself a table variant;
+  - the metadata-only write guard: when setBlockMetadata switches the 1.20.1 block (a variant, stem <->
+    attached stem), a thread-local scoped to that cell makes BlockBehaviorMixin skip FC onPlace /
+    onRemove, since 1.5.2 Chunk.setBlockMetadata never calls onBlockAdded / breakBlock;
+  - getFullBlockLightValue = level.getRawBrightness(pos, 0), without sky darkening, as in 1.5.2;
+  - a 1-tick LeavesBlock tick after FC places leaves, so 1.20.1 computes their DISTANCE;
+  - GetModernSoilPlantSurvival (D3): when the soil has no 1.5.2 identity, the live 1.20.1 canSurvive
+    decides.
+- **ProxyRegistry:** the bark and stripped forms of the oak, spruce, birch and jungle logs read as log
+  17 of their species (read path only); getRemovalLegacyId lets cutting a stripped trunk run FC's log
+  removal.
+- **BTWLifecycle:** the melon stem's fruit is re-pointed to blocksList[103] after step 4c; Step 5c fills
+  opaqueCubeLookup for every FC block (a vanilla id is opaque only when its 1.20.1 block renders solid);
+  ModernBlockStandIn writes its own entries.
+- **Rule bridges:**
+  - FireBlockMixin: FireBlock.getBurnOdds / getIgniteOdds (m_221164_ / m_221166_) answer FC's
+    abilityToCatchFire / chanceToEncourageFire for every FC-mapped block;
+  - flammable stand-ins: a colliding modern-only state with 1.20.1 fire odds reads as a
+    btwModernFlammable<n> stand-in carrying those odds and a burnable rock material, so FC fire burns it
+    and FC lava ignites beside it; ModernBlockStandIn.DoesInfiniteBurnToFacing answers the live state's
+    isFireSource for the up face (magma);
+  - D3 soil hooks on ModernBlockStandIn: wild vegetation and saplings on the DIRT tag, reeds on DIRT or
+    SAND, cactus on SAND; crops, wart and hydration stay FC-only;
+  - PlantSoilMixin: Forge's Block.canSustainPlant (remap = false) answers FC's soil clause on FC soils;
+  - FarmBlockMixin: FarmBlock.turnToDirt (m_269406_) places FC loose dirt (1011);
+  - AttachedStemBlockMixin: AttachedStemBlock.updateShape (m_7417_) leaves the fruit attachment of FC
+    stems to FC (FCBlockStem.ValidateFruitState).
+- **Build:** new ASM task extendFcTreeBuildRange (Forge/build.gradle), wired like
+  extendFcPathingBuildRange, rewrites FCUtilsTrees.GenerateTaiga2 / GenerateForest / GenerateTrees and
+  FCUtilsGenHugeTree.generate against World.getFcMinBuildHeight / getFcMaxBuildHeight: the base test,
+  the clearance-scan floor and the 256 tops (4 methods). FC's own 128 top for birch and spruce stays, a
+  4.B rule measured from sea level. Idempotent; any other bytecode shape fails the build.
+- **Self-audits:** BridgeSelfAudit.runServerStart, called from BTWForgeMod.onServerStarting, logs
+  [SELF-AUDIT/tick] and [SELF-AUDIT/light] once per JVM. It runs at ServerStartingEvent because Forge
+  fills the BlockStateBase caches at the registry freeze, after FMLCommonSetupEvent (run 1 audited at
+  common setup, read the default values and logged 57 warnings), and Blocks.rebuildCache refreshes them
+  before the server starts.
+- Unchanged: FC code; ProxyBlock tick forwarding (apart from D1); every other BlockBehaviorMixin hook.
+
+**Verification.**
+- `:Forge:jar` builds with JDK 17, and extendFcTreeBuildRange logs its 4 patched methods. The refmap
+  maps m_60611_, f_244227_ and m_222963_ (BlockStateBaseTickMixin), m_222972_
+  (BlockStateRandomTickMixin), m_213812_ (LavaFluidMixin), m_221164_ / m_221166_ (FireBlockMixin),
+  m_269406_ (FarmBlockMixin) and m_7417_ (AttachedStemBlockMixin); PlantSoilMixin has no entry (remap =
+  false). LinkAudit reports the same 6 pre-existing missing members as before.
+- Self-audit: `[SELF-AUDIT/tick] 238 blocks, 778 FC-random states, 200 FC-scheduled blocks, 0 warnings
+  (0 expected)` (runs 2 and 3); `[SELF-AUDIT/light] minecraft:brown_mushroom id=39 emission 1->0 (1/1
+  states)` and `[SELF-AUDIT/light] 1 mapped blocks emit 4.B light that differs from 1.20.1, 0 warnings
+  (0 expected)` (run 3). No BTW-Tick line (no FC tick body threw) and no BTW error in any run.
+- Runtime proofs: proof_run.py drives a dev dedicated server over RCON on a fresh superflat world, with
+  chunks -2..2 force-ticked in every dimension; 20 TPS throughout. Run 1: the implementation wave. Run
+  2: diagnostics after three orchestrator fixes (self-audit timing, melon-stem fruit, metadata-only
+  write guard). Run 3: the full plan plus diagnostics after the review wave. Every proof of the run-3
+  full plan matched its 4.B expectation. Results (run 1 unless marked):
+
+| Proof | Result | 4.B expectation |
+|---|---|---|
+| P1 saplings, before the fix | 25/25 overworld and 9/9 End saplings were trees at 30 s | about 0.14 trees; 0 in the End |
+| P1 saplings, after | Run 2 (y=-60): 25/25 still saplings at 600, 1200 and 2400 ticks (the floor bug). Run 3, about 176 random ticks each: birch at y=-60 12/25 trees, birch at y=64 5/25, oak at y=64 9/25 (26/75); End 9/9 saplings | about 22 of 75; 0 in the End |
+| S1 falling blocks | Run 2: 3 fc_falling_block entities in flight at +3; sand, gravel and the egg land at y=9 in the torch cell (torch gone, no item). ProxyBlock 1011 at y=-50 falls to -60 | FC CheckForFall and FC landing; fall to the world floor |
+| S2 anvil | stays at y=10 | never falls |
+| S3 survival | planter cactus, loose-dirt cane, FC-farmland carrot: 6/6 survive | 6/6 |
+| S4 floating hemp | pops | pops |
+| S5 1.20.1-owned ticks | leaf DISTANCE, bubble column, lamp, farmland -> loose dirt: all as expected | kept |
+| R1-F1 dry farmland | 81 loose dirt, 0 dirt, 0 farmland | 81 / 0 / 0 |
+| R1-C1 carrots, +1200 | 20 plants, none at age 7 (run 3: 1 at age 7) | at most 3 at age 7, 20 |
+| R1-LEAVES | flagged leaves -29..-26 kept, -25 / -24 decayed; unflagged isolated leaf kept | exactly that |
+| R1-CANE | 6 second segments | at most 8 (4.75 expected) |
+| R1-WART | Overworld 81 at age 0; Nether 48 ripe | 81 at age 0; about 45 |
+| R1-COCOA | 3 ripe + 7 unripe | at most 7 ripe, 10 |
+| R1-END-CACTUS / R1-END-VINE | 0 / 1 | 0 / 1 |
+| R1-G1 / R1-G2 grass | 81/81 loose dirt regrew grass / 0 in the End | at least 70 / 0 |
+| R1-S1 / R1-S2 saplings | 0 trees, 16/16 saplings / End 0 trees, 4/4 | at most 1 / 0 |
+| R1-MYCELIUM | 81 loose dirt turned to mycelium | more than 1 |
+| R1-STEMS (run 2, R=300, 2400 ticks) | 3/3 pumpkin stems attached to block_1006, 3/3 melon stems to minecraft:melon | FC fruit, no vanilla pumpkins |
+| R1-GATED | bricks mossy 3/3, cracked 3/3; tall grass 7; blood wood leaves decayed; stairs intact | at least 2 each; at least 2; decay; intact |
+| R1-ENV | unlit redstone ore, snow, ice (melts at light 12, not 11 or 10) | as 1.20.1 |
+| R1-LAVA | wicker 0/4 left; snow in contact melted, control kept | 0 (at most 1); melted / kept |
+| R2-NIGHT carrots | 20 at age 0 | 20 / 20 |
+| R3 mushrooms | dim box 1; dark boxes 1/1/1/1/1 in runs 1-2, then 6 (run 3 plan) and 5/2/5/5 (run 3 diagnostics) | 1; at least 2 in about 95% |
+| F-A / F-B / F-C fire | 4/4 logs smouldering (1043), centre fire burning / wicker 0/4 / planks 0/4 | smoulder; 0; 0 |
+| F-D hibachi (run 3) | lit (meta 4) with age-15 fire above, from a redstone torch below | lit by strong power only |
+| P portal | no pigmen of either type; portal intact | 0 / 0 |
+| X /reload | 9/9 grass, 3/3 mossy | at least 8; 3 |
+| PERF, 6,400 logs under 25,600 leaves | mean overworld tick 0.282 ms at randomTickSpeed 3, 0.321 ms at 100 (run 1: 0.353 / 0.449) | small |
+| Review-wave checks (run 3) | fire on magma alive at 600 and 2400 ticks; grass (31) on moss in the dark 3/3; leaves held only by a stripped oak log 3/3 after flagging; cocoa on stripped jungle logs 3/3 | kept |
+
+- F-D failed in runs 1 and 2 by design of the proof, not the port: an adjacent redstone block gives weak
+  power, and 4.B's FCBlockBBQ.IsGettingPowered counts strong power only (World.isBlockGettingPowered,
+  vanilla/server World.java:4157-4160). Run 3 powers it with a redstone torch.
+- Not seen at runtime: a big oak (none among the 9 run-3 oak trees, about 0.9 expected at 1 in 10; a
+  differential harness ran the port and the 1.5.2 WorldGenBigTree on 300 seeds with 0 differing cells
+  and the stump on 200/200 trees), a 2x2 jungle tree, doFireTick false, CropGrowEvent with Serene
+  Seasons installed, client rendering after the opaque-table fill (FC face culling), and an
+  existing-world upgrade (X2).
+
+**Caveats.**
+- Bone meal still grows FC-owned plants the 1.20.1 way (decision D2, deferred). StemBlock.performBonemeal
+  calls BlockState.randomTick at AGE 7, which now gives one FC growth roll.
+- Modern-only plants keep 1.20.1 rules (decision D4, deferred): acacia, dark oak, cherry and mangrove
+  saplings and leaves, azalea, beetroot, sweet berries, bamboo, kelp, cave vines.
+- D3 remainder (review R7): dead bushes on grass blocks or dirt (1.20.1 places them in swamps, mangrove
+  swamps and giant taigas) are removed on a neighbour change, because FCBlockDeadBush accepts only sand
+  12, both in FC's neighbour rule and in PlantSoilMixin's answer to 1.20.1's updateShape. Dead bushes on
+  red sand and terracotta stay: those soils have no 1.5.2 identity, so GetModernSoilPlantSurvival hands
+  the decision to 1.20.1. Lily pads on ice can no longer be placed and existing ones pop, as in 4.B.
+- Waterlogged blocks are not water to FC (review R2): sugar cane whose only water is in waterlogged
+  blocks pops on a neighbour change, and FC farmland watered only by them dries out. The fix
+  (WorldBridge.getBlockMaterial answering water for a waterlogged cell) changes every FC solidity read
+  and needs its own audit.
+- FC-grown huge mushrooms convert to FC caps 1078 / 1079 (the MUSHROOM_STEM branch was removed: 4.B
+  identity, flammable, FC drops), which render as fcblockstub for every meta (blockstates/block_1078.json;
+  a model gap that predates this change).
+- Every lava cell counts as settled lava (id 11), so actively flowing lava also starts fires.
+- More states random-tick than in 1.20.1 (every non-persistent leaf, tall grass, flowers, torches, stone
+  bricks), as in 4.B; PERF above measures the cost.
+- Detector rail, redstone ore and ice keep 1.20.1 ticks. Redstone torches 75 / 76 are a known flag gap
+  (ConcreteTorchBlock placeholders; the self-audit logs them at INFO). The legacy snow block 80 has its
+  4.B flag, but the 1.5.2 BlockSnowBlock.updateTick melt is not ported, so the real-body clause keeps it
+  off FC; pumpkin 86 and cake 92 (re-validation ticks only) likewise.
+- D1 gaps: the burning ladder (FCBlockLadderOnFire 1052) and the campfire tile entity still spread fire
+  with doFireTick false; fire they start obeys the rule.
+- Flammable stand-ins: about 13 colliding fire-odds buckets compete for about 9 free ids, so later
+  buckets reuse the nearest stand-in of their shape and their FC odds are approximate; the ids are
+  per session and never written. Modern blocks that 1.20.1 lava ignites only through ignitedByLava
+  (barrel, loom, cartography and smithing tables) read as non-burnable, so FC lava beside them starts no
+  fire (review R9).
+- lightOpacity is not filled: ProxyBlock reads it for light blocking, so filling it would change
+  1.20.1 lighting for every FC block. The opaque-cube fill cannot fix FC-only ProxyBlocks whose port base
+  answers isOpaqueCube true (1036 wood door, 1084 wicker pane, 1085 grate, 1086 slats): Modern-Common
+  BlockDoor and BlockPane need their 1.5.2 false overrides.
+- FC machines that copy a block by id and metadata (FC pistons, the block dispenser) recreate a plain
+  log from a stripped log or wood.
+- The farmland double trample stays open: 1.20.1 FarmBlock.fallOn and FC onFallenUpon both run (both
+  now give loose dirt).
+- The non-tick hook families remain open: pistons, liquid hardening, beds and hardcore spawn, beacon and
+  ender-chest casts, the anvil workbench, buddy-block notifications, wooden doors on redstone,
+  explosions (decision D6, stone's position-aware blast resistance).
+- Supersedes the NetherPortalBlockMixin part of 2026-10-10 (ag) and corrects the 2026-07-08 "fire
+  spread" and "grass/mycelium spread" claims (both annotated there).

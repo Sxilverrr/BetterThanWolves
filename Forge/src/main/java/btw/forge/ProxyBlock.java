@@ -273,6 +273,11 @@ public class ProxyBlock extends Block implements EntityBlock {
 
     @Override
     public void tick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
+        // D1 (TickPolicy.HONOUR_DO_FIRE_TICK): FC's own fires (FCBlockFireStoked, ...) obey doFireTick like fire 51
+        if (TickPolicy.fireTickSuppressed(fc(), level)) {
+            TickPolicy.rescheduleSuppressedFire(fc(), level, pos);
+            return;
+        }
         btw.modern.World world = WorldBridge.getOrCreate(level);
         try {
             fc().updateTick(world, pos.getX(), pos.getY(), pos.getZ(), new Random(random.nextLong()));
@@ -285,6 +290,7 @@ public class ProxyBlock extends Block implements EntityBlock {
 
     @Override
     public void randomTick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
+        if (TickPolicy.fireTickSuppressed(fc(), level)) return;   // D1, as tick() above
         btw.modern.World world = WorldBridge.getOrCreate(level);
         try {
             fc().RandomUpdateTick(world, pos.getX(), pos.getY(), pos.getZ(), new Random(random.nextLong()));

@@ -227,6 +227,12 @@ public abstract class Block {
         // Self-register in the global blocksList
         if (blockID >= 0 && blockID < blocksList.length) {
             blocksList[blockID] = this;
+            // 1.5.2 Block ctor (vanilla/server Block.java:484): the opaque-cube table. FC's tree generators
+            // (FCUtilsTrees, FCUtilsGenHugeTree) and WorldGenBigMushroom read it so trees and huge mushrooms do
+            // not overwrite solid blocks; FC pane connections (FCBlockAestheticNonOpaque) and the port's
+            // World / IBlockAccess.isBlockOpaqueCube read it too. Evaluated here, as in 1.5.2: a subclass whose
+            // answer depends on its own fields writes its entry itself (BlockHalfSlab, as 1.5.2 does).
+            opaqueCubeLookup[blockID] = isOpaqueCube();
         }
         // Create an ItemBlock at Item.itemsList[blockID] so FC code can call
         // stack.getItem() on block item stacks and get a valid Item back.
@@ -683,21 +689,104 @@ public abstract class Block {
 
     // --- BTW-added: Falling block methods ---
 
+    // vanilla/server Block.java:2651
+    private static final int m_iLoadedRangeToCheckFalling = 32;
+
+    /**
+     * 1.5.2 Block.CheckForFall (vanilla/server Block.java:2658-2692): falls when the block below cannot support it,
+     * as an FCEntityFallingBlock that gets onStartFalling before it spawns; with neighbouring chunks missing (or
+     * BlockSand.fallInstantly) it drops straight to the ground instead. Port translation: FC's world floor (j >= 0,
+     * j > 0) is the level's min build height (World.getFcMinBuildHeight), so loose blocks also fall below y = 0 of a
+     * 1.20.1 world.
+     */
     public boolean CheckForFall(World world, int i, int j, int k) {
-        if (CanFallIntoBlockAtPos(world, i, j - 1, k) && j >= 0) {
-            if (!world.checkChunksExist(i - 16, j - 16, k - 16, i + 16, j + 16, k + 16)) {
+        if (CanFallIntoBlockAtPos(world, i, j - 1, k) && j >= world.getFcMinBuildHeight()) {
+            if (!BlockSand.fallInstantly && world.checkChunksExist(
+                    i - m_iLoadedRangeToCheckFalling, j - m_iLoadedRangeToCheckFalling, k - m_iLoadedRangeToCheckFalling,
+                    i + m_iLoadedRangeToCheckFalling, j + m_iLoadedRangeToCheckFalling, k + m_iLoadedRangeToCheckFalling)) {
+                if (!world.isRemote) {
+                    EntityFallingSand fallingEntity = CreateFallingBlockEntity(world,
+                            (double)i + 0.5D, (double)j + 0.5D, (double)k + 0.5D,
+                            this.blockID, world.getBlockMetadata(i, j, k));
+
+                    onStartFalling(fallingEntity);
+
+                    world.spawnEntityInWorld(fallingEntity);
+                }
+
+                return true;
+            } else {
+                int iFloor = world.getFcMinBuildHeight();
+
                 world.setBlockToAir(i, j, k);
+
+                while (CanFallIntoBlockAtPos(world, i, j - 1, k) && j > iFloor) {
+                    j--;
+                }
+
+                if (j > iFloor) {
+                    world.setBlock(i, j, k, this.blockID);
+                }
+
                 return true;
             }
-
-            EntityFallingSand fallingEntity = new EntityFallingSand(world,
-                    (double)i + 0.5D, (double)j + 0.5D, (double)k + 0.5D,
-                    this.blockID, world.getBlockMetadata(i, j, k));
-
-            world.spawnEntityInWorld(fallingEntity);
-            return true;
         }
+
         return false;
+    }
+
+    /** Set once the FCEntityFallingBlock fallback below has been logged. */
+    private static final java.util.concurrent.atomic.AtomicBoolean FALLING_BLOCK_FALLBACK_LOGGED =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * new FCEntityFallingBlock(world, x, y, z, blockID, metadata), the entity 1.5.2 CheckForFall spawns (vanilla/server
+     * Block.java:2668-2669). It is FC code, so it is built by reflection (as FCUtilsItem above), through a constructor
+     * looked up once. It carries FC's landing rules (crushing, breaking into piles) and its own EntityType
+     * (fc_falling_block). If it cannot be built, one WARN and the plain EntityFallingSand the port spawned before.
+     */
+    private static EntityFallingSand CreateFallingBlockEntity(World world, double x, double y, double z,
+                                                              int iBlockID, int iMetadata) {
+        java.lang.reflect.Constructor<?> ctor = FallingBlockEntityConstructor.CTOR;
+        Throwable failure = FallingBlockEntityConstructor.LOOKUP_FAILURE;
+
+        if (ctor != null) {
+            try {
+                return (EntityFallingSand) ctor.newInstance(world, x, y, z, iBlockID, iMetadata);
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                failure = e;
+            }
+        }
+
+        if (FALLING_BLOCK_FALLBACK_LOGGED.compareAndSet(false, true)) {
+            org.apache.logging.log4j.LogManager.getLogger("BTW-Block").warn(
+                    "[FALLING-BLOCK] Could not create FCEntityFallingBlock ({}); falling blocks spawn the plain"
+                            + " EntityFallingSand without FC landing rules (further failures suppressed)",
+                    failure != null ? failure.toString() : "constructor not found");
+        }
+
+        return new EntityFallingSand(world, x, y, z, iBlockID, iMetadata);
+    }
+
+    /** Lazy holder: resolves the FCEntityFallingBlock constructor on the first fall, after FC's classes are loaded. */
+    private static final class FallingBlockEntityConstructor {
+        static final java.lang.reflect.Constructor<?> CTOR;
+        static final Throwable LOOKUP_FAILURE;
+
+        static {
+            java.lang.reflect.Constructor<?> ctor = null;
+            Throwable failure = null;
+
+            try {
+                ctor = Class.forName("net.minecraft.src.btw.entity.FCEntityFallingBlock").getConstructor(
+                        World.class, double.class, double.class, double.class, int.class, int.class);
+            } catch (ReflectiveOperationException | LinkageError e) {
+                failure = e;
+            }
+
+            CTOR = ctor;
+            LOOKUP_FAILURE = failure;
+        }
     }
     public void onStartFalling(EntityFallingSand entity) {}
     public void onFinishFalling(World world, int i, int j, int k, int iMetadata) {}
@@ -1532,9 +1621,28 @@ public abstract class Block {
 
     public boolean DoesInfiniteBurnToFacing(IBlockAccess blockAccess, int i, int j, int k, int iFacing) { return false; }
     public boolean DoesExtinguishFireAbove(World world, int i, int j, int k) { return false; }
-    public void OnDestroyedByFire(World world, int i, int j, int k, int iFireAge, boolean bForcedFireSpread) {}
+    /**
+     * 1.5.2 Block.OnDestroyedByFire (vanilla/server Block.java:1955-1972): the burnt block becomes fire, with chance
+     * 5 / (age + 10) when it is not rained on (always when the spread is forced), aged up to 15; otherwise air. Called
+     * by FCBlockFire.TryToDestroyBlockWithFire for fire and stoked fire. Overrides (leaves, doors, powder kegs, mining
+     * charges, companion cubes, blood wood leaves, damaged logs) add their extras and call this. The empty stand-in
+     * left every burnt block in place.
+     */
+    public void OnDestroyedByFire(World world, int i, int j, int k, int iFireAge, boolean bForcedFireSpread) {
+        if (bForcedFireSpread || (world.rand.nextInt(iFireAge + 10) < 5 && !world.IsRainingAtPos(i, j, k))) {
+            int iNewFireMetadata = iFireAge + world.rand.nextInt(5) / 4;
+
+            if (iNewFireMetadata > 15) {
+                iNewFireMetadata = 15;
+            }
+
+            world.setBlockAndMetadataWithNotify(i, j, k, Block.fire.blockID, iNewFireMetadata);
+        } else {
+            world.setBlockWithNotify(i, j, k, 0);
+        }
+    }
     // 1.5.2 Block.SetFireProperties — writes the BlockFire static arrays that FCBlockFire.updateTick
-    // (routed via BlockBehaviorMixin.btw$tick) reads for fire spread/consumption
+    // (FC-owned fire ticks, routed by BlockStateBaseTickMixin / TickPolicy) reads for fire spread/consumption
     public Block SetFireProperties(int iChanceToEncourageFire, int iAbilityToCatchFire) {
         BlockFire.chanceToEncourageFire[blockID] = iChanceToEncourageFire;
         BlockFire.abilityToCatchFire[blockID] = iAbilityToCatchFire;

@@ -44,6 +44,14 @@ public class BlockFire extends Block {
         return false;
     }
 
+    // 1.5.2 BlockFire.tickRate (vanilla/server BlockFire.java:130-133). FCBlockFire.updateTick reschedules itself at
+    // tickRate + nextInt(10); the port default 10 made FC fire tick about 2.4x too fast. 1.20.1 FireBlock schedules
+    // the same 30 + nextInt(10). FCBlockFireStoked overrides it (42).
+    @Override
+    public int tickRate(World world) {
+        return 30;
+    }
+
     // 1.5.2 BlockFire.isCollidable (vanilla/client BlockFire.java:331-334)
     @Override
     public boolean isCollidable() {
@@ -71,6 +79,43 @@ public class BlockFire extends Block {
             || this.canBlockCatchFire(world, x, y + 1, z)
             || this.canBlockCatchFire(world, x, y, z - 1)
             || this.canBlockCatchFire(world, x, y, z + 1);
+    }
+
+    // 1.5.2 BlockFire.canPlaceBlockAt (vanilla/server BlockFire.java:361-364): a solid top below, or a burnable neighbour
+    // in FC's fire tables. FCBlockFire.updateTick and FCBlockFireStoked.ValidateState put the fire out when this fails,
+    // and FCEntityLightningBolt places fire only where it holds. The inherited true kept every fire alive.
+    @Override
+    public boolean canPlaceBlockAt(World world, int x, int y, int z) {
+        return world.doesBlockHaveSolidTopSurface(x, y - 1, z) || this.canNeighborBurn(world, x, y, z);
+    }
+
+    // 1.5.2 BlockFire.onNeighborBlockChange (vanilla/server BlockFire.java:370-376). Reached for fire (FireBlock does not
+    // override neighborChanged) and for stoked fire (ProxyBlock.neighborChanged); 1.20.1 FireBlock.updateShape still
+    // runs its own survival check next to it.
+    @Override
+    public void onNeighborBlockChange(World world, int x, int y, int z, int neighborBlockID) {
+        if (!world.doesBlockHaveSolidTopSurface(x, y - 1, z) && !this.canNeighborBurn(world, x, y, z)) {
+            world.setBlockToAir(x, y, z);
+        }
+    }
+
+    // 1.5.2 BlockFire.onBlockAdded (vanilla/server BlockFire.java:381-394): on obsidian outside the End, try to open a
+    // portal (Block.portal is FCBlockPortal, whose tryToCreatePortal is FC's frame test); otherwise put out unsupported
+    // fire or schedule the first tick. FCBlockFireStoked overrides it. Port note: for vanilla fire (51) this is not
+    // reached today. FireBlock.onPlace -> BaseFireBlock.onPlace never calls BlockBehaviour.onPlace, where the FC hook
+    // sits, and BaseFireBlock.onPlace already lights 1.20.1 portals (BaseFireBlock.java:123-139) and schedules the
+    // first tick (FireBlock.onPlace, 30 + nextInt(10)). A future onPlace route for fire must drop one of the two portal
+    // attempts.
+    @Override
+    public void onBlockAdded(World world, int x, int y, int z) {
+        if (world.provider.dimensionId > 0 || world.getBlockId(x, y - 1, z) != Block.obsidian.blockID
+                || !Block.portal.tryToCreatePortal(world, x, y, z)) {
+            if (!world.doesBlockHaveSolidTopSurface(x, y - 1, z) && !this.canNeighborBurn(world, x, y, z)) {
+                world.setBlockToAir(x, y, z);
+            } else {
+                world.scheduleBlockUpdate(x, y, z, this.blockID, this.tickRate(world) + world.rand.nextInt(10));
+            }
+        }
     }
 
     // 1.5.2 BlockFire.randomDisplayTick (vanilla/client BlockFire.java:400-479): the crackle and the smoke. FCBlockFire and
