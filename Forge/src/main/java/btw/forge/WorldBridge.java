@@ -277,6 +277,9 @@ public class WorldBridge extends btw.modern.WorldServer {
      * farmland (MOISTURE), cocoa and vines, which 1.20.1 also changes itself (bone meal, its own survival ticks).
      */
     private static boolean isMetaFullyDerived(net.minecraft.world.level.block.Block block) {
+        // The FC plant twins' blocks never are (beetroots and the torchflower crop are CropBlocks): their FC stage /
+        // growth level does not fit the 1.20.1 state, so the overlay must keep it (TwinRegistry.deriveMeta).
+        if (TwinRegistry.isTwinBlock(block)) return false;
         return block instanceof net.minecraft.world.level.block.FenceGateBlock
                 || block instanceof net.minecraft.world.level.block.SlabBlock
                 || block instanceof net.minecraft.world.level.block.TrapDoorBlock
@@ -314,6 +317,12 @@ public class WorldBridge extends btw.modern.WorldServer {
                                                       BlockState state, BlockPos pos) {
         if (state == null) return 0;
         net.minecraft.world.level.block.Block block = state.getBlock();
+
+        // FC plant twins (TwinRegistry): species or the growth level of AGE. First: a waterlogged planted propagule
+        // would answer 0 in the water-holder branch below, and beetroots / torchflower crops are CropBlocks whose AGE
+        // is not FC's level. The FC stage / the levels in between live in the overlay (getBlockMetadata).
+        int twinMeta = TwinRegistry.deriveMeta(state);
+        if (twinMeta >= 0) return twinMeta;
 
         // Fluids: MC LEVEL (0 = source, 1-7 = flowing, 8+ = falling) has the same
         // semantics as 1.5.2 fluid metadata -- required by World.handleMaterialAcceleration's
@@ -970,6 +979,12 @@ public class WorldBridge extends btw.modern.WorldServer {
         int id = getBlockId(x, y, z);
         if (id > 0 && id < btw.modern.Block.blocksList.length) {
             btw.modern.Block fcBlock = btw.modern.Block.blocksList[id];
+            // A waterlogged twin cell (a planted mangrove propagule under water) is water to FC, as every other
+            // water-holding modern plant cell is (triage D5); its id is the twin's so the twin's tick finds it.
+            if (btw.modern.ModernTwins.isTwin(id)
+                    && level.getFluidState(new BlockPos(x, y, z)).is(net.minecraft.tags.FluidTags.WATER)) {
+                return Material.water;
+            }
             if (fcBlock != null) {
                 return fcBlock.blockMaterial;
             }
@@ -1127,6 +1142,9 @@ public class WorldBridge extends btw.modern.WorldServer {
             clearMetaOverride(pos); // clear any override
             return level.setBlock(pos, newState, flags);
         }
+        if (TwinRegistry.isTwinState(current)) {
+            return setTwinMetadata(pos, current, metadata, flags);
+        }
         // Vanilla block without META — translate FC metadata to MC block state
         int iOldMetadata = getBlockMetadata(x, y, z);   // as FC saw it, before the override below
         // A flattened subtype id switches block (1.5.2 metadata IS the subtype); else the state takes the bits
@@ -1170,6 +1188,68 @@ public class WorldBridge extends btw.modern.WorldServer {
     }
 
     
+    /**
+     * An FC metadata write at a twin cell (TwinRegistry: FC's sapling stage, a crop's growth level). The 1.20.1 state
+     * takes what it can show ({@link TwinRegistry#stateForMeta}) and the overlay keeps the rest, as for every block:
+     * <ul>
+     *   <li>saplings, azaleas, fungi: the state stays, the stage lives in the overlay;</li>
+     *   <li>beetroots, torchflower crop, pitcher crop: AGE moves with FC's level;</li>
+     *   <li>the torchflower crop's level 7 is the TORCHFLOWER block: a block switch FC sees as a metadata write, so
+     *       BlockBehaviorMixin's remove / place hooks stay out of it (METADATA_ONLY_WRITE) and no overlay entry is left
+     *       for the flower;</li>
+     *   <li>the pitcher crop's AGE 3 and 4 have an upper half, placed as PitcherCropBlock.grow places it (lower half,
+     *       then the upper half above it). Without room above (canGrowInto: air or pitcher) the write is refused and
+     *       FC's level stays, as 1.20.1's own growth would not happen either.</li>
+     * </ul>
+     * Unchanged state: the rest of 1.5.2 World.setBlockMetadata, as in {@link #setBlockMetadata}.
+     */
+    private boolean setTwinMetadata(BlockPos pos, BlockState current, int metadata, int flags) {
+        int x = pos.getX();
+        int y = pos.getY();
+        int z = pos.getZ();
+        int iOldMetadata = getBlockMetadata(x, y, z);
+        BlockState target = TwinRegistry.stateForMeta(current, metadata);
+        if (target.getBlock() != current.getBlock()) {
+            clearMetaOverride(pos);
+            BlockPos outer = METADATA_ONLY_WRITE.get();
+            METADATA_ONLY_WRITE.set(pos);
+            try {
+                return level.setBlock(pos, target, flags);
+            } finally {
+                if (outer != null) {
+                    METADATA_ONLY_WRITE.set(outer);
+                } else {
+                    METADATA_ONLY_WRITE.remove();
+                }
+            }
+        }
+        if (target != current && TwinRegistry.needsUpperHalf(target)) {
+            if (!TwinRegistry.canGrowUpperHalf(level, pos)) {
+                return false;
+            }
+            putMetaOverride(pos, target, metadata);
+            boolean placed = level.setBlock(pos, target, 2);
+            BlockPos above = pos.above();
+            level.setBlock(above, net.minecraft.world.level.block.DoublePlantBlock.copyWaterloggedFrom(
+                    level, above, TwinRegistry.upperHalfFor(target)), 3);
+            return placed;
+        }
+        putMetaOverride(pos, target, metadata);
+        if (target != current) {
+            return level.setBlock(pos, target, flags);
+        }
+        if (iOldMetadata == metadata) {
+            return false;
+        }
+        if ((flags & 2) != 0) {
+            markBlockForUpdate(x, y, z);
+        }
+        if ((flags & 1) != 0) {
+            notifyBlockChange(x, y, z, getBlockId(x, y, z));
+        }
+        return true;
+    }
+
     /**
      * The state an FC metadata write on a flattened-subtype id switches to (ProxyRegistry.isVariantId: wool,
      * planks, logs, leaves, saplings, sandstone, slabs, infested blocks, stone bricks, walls, tall grass), or null
@@ -2936,6 +3016,27 @@ public class WorldBridge extends btw.modern.WorldServer {
         }
     }
 
+    /**
+     * Modern-Common World.DropModernBlockLoot: the 1.20.1 loot of the live block behind an FC plant twin
+     * (btw.modern.ModernTwins), where FC's code drops the twin (BlockFlower.checkFlowerChange, the saw, FC pistons).
+     * The caller removes the block, as FC removes its own plants after dropping them.
+     */
+    @Override
+    public void DropModernBlockLoot(int x, int y, int z) {
+        ServerLevel live = level;
+        if (live == null) return;
+        try {
+            BlockPos pos = new BlockPos(x, y, z);
+            BlockState state = live.getBlockState(pos);
+            if (!state.isAir()) {
+                net.minecraft.world.level.block.Block.dropResources(state, live, pos, live.getBlockEntity(pos));
+            }
+        } catch (Throwable t) {
+            // Runs inside FC plant ticks: never throw out of them.
+            warnOncePerThrowSite("TWIN-LOOT", "the loot of the plant at " + x + "," + y + "," + z, t);
+        }
+    }
+
     // ================================================================
     // Block events
     // ================================================================
@@ -3217,6 +3318,12 @@ public class WorldBridge extends btw.modern.WorldServer {
                 for (int y = minY; y < maxY; y++) {
                     int blockId = getBlockId(x, y, z);
                     if (blockId > 0) {
+                        if (btw.modern.ModernTwins.isTwin(blockId)) {
+                            // FC plant twin: the live plant's own collision (azaleas, pitcher crops collide; FC's
+                            // plant classes have no box), as the shaped stand-in these cells read as before.
+                            addLiveCollisionBoxes(x, y, z, aabb, list);
+                            continue;
+                        }
                         btw.modern.Block block = btw.modern.Block.blocksList[blockId];
                         if (block != null) {
                             block.addCollisionBoxesToList(this, x, y, z, aabb, list, entity);
@@ -3226,6 +3333,17 @@ public class WorldBridge extends btw.modern.WorldServer {
             }
         }
         return list;
+    }
+
+    /** The live block's 1.20.1 collision boxes at (x, y, z) that intersect {@code mask} (ModernBlockStandIn's rule). */
+    @SuppressWarnings("unchecked")
+    private void addLiveCollisionBoxes(int x, int y, int z, btw.modern.AxisAlignedBB mask, java.util.List list) {
+        BlockPos pos = new BlockPos(x, y, z);
+        for (net.minecraft.world.phys.AABB b : level.getBlockState(pos).getCollisionShape(level, pos).toAabbs()) {
+            btw.modern.AxisAlignedBB bb = btw.modern.AxisAlignedBB.getBoundingBox(
+                    x + b.minX, y + b.minY, z + b.minZ, x + b.maxX, y + b.maxY, z + b.maxZ);
+            if (mask.intersectsWith(bb)) list.add(bb);
+        }
     }
 
     // ================================================================

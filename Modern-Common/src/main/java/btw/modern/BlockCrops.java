@@ -159,6 +159,12 @@ public class BlockCrops extends BlockFlower {
     @Override
     public void dropBlockAsItemWithChance(World world, int x, int y, int z, int metadata,
             float chance, int fortune) {
+        if (ModernTwins.isTwin(blockID)) {
+            // FCBlockCarrot / FCBlockWheatLegacy twins stand for beetroots, torchflower and pitcher crops: the live
+            // crop's 1.20.1 loot (Block.dropBlockAsItemWithChance), never carrots or wheat seeds.
+            super.dropBlockAsItemWithChance(world, x, y, z, metadata, chance, fortune);
+            return;
+        }
         super.dropBlockAsItemWithChance(world, x, y, z, metadata, chance, 0);
 
         if (!world.isRemote) {

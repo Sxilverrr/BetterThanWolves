@@ -300,6 +300,12 @@ public class ProxyRegistry {
     public static int getRemovalLegacyId(Block block) {
         int id = getBlockId(block);
         if (id == 0 && LOG_FORM_SPECIES.containsKey(block) && hasFcBlock(LEGACY_LOG_ID)) return LEGACY_LOG_ID;
+        if (id == 0) {
+            // A crop twin (beetroots, torchflower and pitcher crops, TwinRegistry): its FC crop hears the removal like
+            // FC's own crops, so FC farmland under it untills (FCBlockFarmland.NotifyOfPlantAboveRemoved, S16).
+            int twin = TwinRegistry.removalIdFor(block);
+            if (twin > 0 && hasFcBlock(twin)) return twin;
+        }
         return id;
     }
 
@@ -315,6 +321,9 @@ public class ProxyRegistry {
      *       isDoubleSlab; the bottom/top half is reported through metadata bit 8);</li>
      *   <li>the bark and stripped forms of the oak, spruce, birch and jungle logs read as log 17 of their species
      *       ({@link #LOG_FORM_SPECIES});</li>
+     *   <li>a post-1.5.2 plant that grows by an FC twin ({@link TwinRegistry}: acacia, cherry and dark oak saplings,
+     *       the planted mangrove propagule, azaleas, beetroots, the torchflower crop, the pitcher crop's lower half,
+     *       crimson and warped fungi) reads as its twin's id, so the twin's FC tick finds itself at its cell;</li>
      *   <li>a colliding 1.20.1 state with no usable 1.5.2 id reads as a {@link ModernBlockStandIn}
      *       instead of air (design_blockmap U4: puppets fell through deepslate/tuff);</li>
      *   <li>a non-colliding unmapped state whose fluid is water (seagrass, kelp, bubble column, coral,
@@ -329,7 +338,10 @@ public class ProxyRegistry {
                 && state.getValue(SlabBlock.TYPE) == SlabType.DOUBLE) {
             id -= 1;
         } else if (id == 0 && !state.isAir()) {
-            if (LOG_FORM_SPECIES.containsKey(state.getBlock())) {
+            int twin = TwinRegistry.worldIdFor(state);
+            if (twin > 0) {
+                id = twin;
+            } else if (LOG_FORM_SPECIES.containsKey(state.getBlock())) {
                 id = LEGACY_LOG_ID;
             } else {
                 id = ModernBlockStandIn.idFor(state, level, pos);

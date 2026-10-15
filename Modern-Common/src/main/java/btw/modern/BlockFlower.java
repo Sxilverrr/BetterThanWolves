@@ -67,8 +67,7 @@ public class BlockFlower extends Block {
     // is BlockFlower -> Block (FCBlockCarrot -> BlockCarrot -> BlockCrops -> BlockFlower, FCBlockSapling ->
     // BlockSapling -> BlockFlower, FCBlockHempCrop -> BlockCrops), so the FCBlockPlants members those plants
     // inherit in 4.B live here. FC's own FCBlockPlants subclasses (FCBlockCrops, FCBlockWeeds) keep the real
-    // FCBlockPlants and do not pass through this class. Not ported: onBlockActivated weed removal and the
-    // AttemptToApplyFertilizerTo relay (use / bone-meal family).
+    // FCBlockPlants and do not pass through this class.
 
     @Override
     public boolean canPlaceBlockAt(World world, int i, int j, int k) {
@@ -135,6 +134,48 @@ public class BlockFlower extends Block {
         if (blockBelow != null) {
             blockBelow.RemoveWeeds(world, i, j - 1, k);
         }
+    }
+
+    // 1.5.2 FCBlockPlants.onBlockActivated (Client FCBlockPlants.java:84-102; 4.B SrcServer FCBlockPlants.java:67-85):
+    // using a plant whose soil has weeds pulls them, with the wheat (crops meta 6) break FX, and the use ends there.
+    // 1.5.2 runs it before the held item (vanilla/server ItemInWorldManager.java:380-388), so bone meal on a weedy
+    // plant pulls the weeds and is not used. Reached through BlockBehaviorMixin.btw$use (vanilla-id plants) and
+    // ProxyBlock.use (hemp), Stage 1, before the held item's Stage 2.
+    @Override
+    public boolean onBlockActivated(World world, int i, int j, int k, EntityPlayer player,
+            int iFacing, float fXClick, float fYClick, float fZClick) {
+        if (GetWeedsGrowthLevel(world, i, j, k) > 0) {
+            if (!world.isRemote) {
+                RemoveWeeds(world, i, j, k);
+
+                // block break FX
+                world.playAuxSFX(2001, i, j, k, Block.crops.blockID + (6 << 12));
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    // 1.5.2 FCBlockPlants.AttemptToApplyFertilizerTo (Client FCBlockPlants.java:129-143; 4.B SrcServer
+    // FCBlockPlants.java:112-126): fertilizer applied to a plant goes to the block below, so bone meal on a sapling,
+    // crop, stem, mushroom, nether wart, tall grass, flower, dead bush or lily pad fertilizes FC soil (farmland,
+    // planters) and never the plant itself (FCItemDye.ApplyBoneMeal, Client FCItemDye.java:88-99). A multi-cell
+    // plant (hemp) relays through its own lower cell. Without it these plants kept Block's false and bone meal fell
+    // through to 1.20.1's instant growth.
+    @Override
+    public boolean AttemptToApplyFertilizerTo(World world, int i, int j, int k) {
+        // relay to the block below so that applying fertilizer to the plant will
+        // fertilize the soil
+
+        Block blockBelow = Block.blocksList[world.getBlockId(i, j - 1, k)];
+
+        if (blockBelow != null) {
+            return blockBelow.AttemptToApplyFertilizerTo(world, i, j - 1, k);
+        }
+
+        return false;
     }
 
     /** FCBlockPlants default (Client FCBlockPlants.java:168-173): checks CanWildVegetationGrowOnBlock. */

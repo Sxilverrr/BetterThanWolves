@@ -1,6 +1,7 @@
 package btw.forge.mixin;
 
 import btw.forge.FcBlockStateAccess;
+import btw.forge.FcPaceAccess;
 import btw.forge.LightPolicy;
 import btw.forge.TickPolicy;
 import net.minecraft.core.BlockPos;
@@ -40,7 +41,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *
  * <p><b>Rebalance:</b> none. FC-mapped states random-tick and run their FC bodies exactly when 4.B did;
  * 1.20.1 machinery FC never scheduled keeps its scheduled ticks; the states FC random-ticks emit 4.B's light (the
- * light their FC rules read), every other state keeps 1.20.1's.</p>
+ * light their FC rules read), every other state keeps 1.20.1's. Post-1.5.2 plants take the gate and owners of their
+ * FC twin, or a growth pace ({@link FcPaceAccess}), from {@link TickPolicy} (btw.forge.TwinRegistry).</p>
  *
  * <p><b>Injection strategy:</b> the BlockState-level single dispatch points. In {@code initCache} the write of the
  * cached {@code isRandomlyTicking} is redirected, so the field is written once, with the final gate
@@ -63,7 +65,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 // FCMOD-INTEGRATION(1.20.1): tick_ownership: FC owns the ticks of FC-mapped vanilla-id states, enforced at the BlockState level so no 1.20.1 override bypasses it
 @Mixin(BlockBehaviour.BlockStateBase.class)
-public abstract class BlockStateBaseTickMixin implements FcBlockStateAccess {
+public abstract class BlockStateBaseTickMixin implements FcBlockStateAccess, FcPaceAccess {
 
     @Shadow
     private boolean isRandomlyTicking;
@@ -92,6 +94,14 @@ public abstract class BlockStateBaseTickMixin implements FcBlockStateAccess {
     @Unique
     private byte btw$sched;
 
+    /** TickPolicy.PACED only: fraction of the random ticks on which the 1.20.1 body runs. */
+    @Unique
+    private float btw$pace = 1F;
+
+    /** TickPolicy.PACED only: no growth in the End. */
+    @Unique
+    private boolean btw$paceEndBan;
+
     /** The 1.20.1 emission captured at the first bake, so every later bake decides from the same input. */
     @Unique
     private int btw$vanillaEmission;
@@ -113,6 +123,8 @@ public abstract class BlockStateBaseTickMixin implements FcBlockStateAccess {
         int schedId = 0;
         byte random = TickPolicy.VANILLA;
         byte sched = TickPolicy.VANILLA;
+        float pace = 1F;
+        boolean paceEndBan = false;
         boolean flag = vanillaFlag;
         try {
             TickPolicy.Decision d = TickPolicy.decide(asState());
@@ -121,6 +133,8 @@ public abstract class BlockStateBaseTickMixin implements FcBlockStateAccess {
                 schedId = d.schedId();
                 random = d.random();
                 sched = d.sched();
+                pace = d.pace();
+                paceEndBan = d.paceEndBan();
                 if (d.gate() != null) {
                     flag = d.gate();
                 }
@@ -130,6 +144,8 @@ public abstract class BlockStateBaseTickMixin implements FcBlockStateAccess {
             schedId = 0;
             random = TickPolicy.VANILLA;
             sched = TickPolicy.VANILLA;
+            pace = 1F;
+            paceEndBan = false;
             flag = vanillaFlag;
             TickPolicy.warnDecideFailure(asState(), t);
         }
@@ -137,6 +153,8 @@ public abstract class BlockStateBaseTickMixin implements FcBlockStateAccess {
         btw$schedId = schedId;
         btw$random = random;
         btw$sched = sched;
+        btw$pace = pace;
+        btw$paceEndBan = paceEndBan;
         isRandomlyTicking = flag;
     }
 
@@ -180,5 +198,17 @@ public abstract class BlockStateBaseTickMixin implements FcBlockStateAccess {
     @Override
     public int btw$vanillaLightEmission() {
         return btw$vanillaEmissionKnown ? btw$vanillaEmission : -1;
+    }
+
+    // ---- FcPaceAccess (read by BlockStateRandomTickMixin for TickPolicy.PACED states, and the self-audit)
+
+    @Override
+    public float btw$growthPace() {
+        return btw$pace;
+    }
+
+    @Override
+    public boolean btw$paceEndBan() {
+        return btw$paceEndBan;
     }
 }

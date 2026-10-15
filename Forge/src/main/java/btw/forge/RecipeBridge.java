@@ -31,11 +31,25 @@ import java.util.*;
  * dropped them from the player's recipe book ("Tried to load unrecognized recipe ...
  * removed now", ServerRecipeBook.java:97-105) and recipe-book placement did nothing
  * (triage RE6).</p>
+ *
+ * <p>Before the map is installed, {@link FcRecipeRemovals} removes what BTW 4.B removed: FC's
+ * vanilla-recipe removals (behind {@link #MIRROR_FC_VANILLA_REMOVALS}) and, always, every recipe
+ * whose result is a {@link btw.forge.removed.RemovedContent} id ("blocks that 4.B explicitly
+ * removed must stay removed"). {@link RetiredIngredientWidening} then lets recipes that consume a
+ * retired id accept its BTW successor. Working on the same map keeps both across /reload.</p>
  */
 @Mod.EventBusSubscriber(modid = BTWForgeMod.MOD_ID)
 public class RecipeBridge {
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-RecipeBridge");
+
+    /**
+     * Compat workstream "recipes" Part A: mirror FC's vanilla-recipe removals (FCRecipes.RemoveVanillaRecipes,
+     * its 14 furnace removals and the dropped special recipes) onto the 1.20.1 RecipeManager. Maintainer decision
+     * "Recipe bridge" (a): on. The stays-removed result rule (RemovedContent) is not behind this switch.
+     */
+    // FCMOD-INTEGRATION(1.20.1): stays-removed: one switch reverts Part A without touching the removed-id rule
+    static final boolean MIRROR_FC_VANILLA_REMOVALS = true;
 
     /** 1.5.2 "any damage" ingredient marker: CraftingManager.java:206 / ShapedRecipes.java:134. */
     private static final int FC_WILDCARD_DAMAGE = 32767;
@@ -66,6 +80,22 @@ public class RecipeBridge {
 
             int[] crafting = injectCraftingRecipes(all);
             int smeltingCount = injectSmeltingRecipes(all);
+
+            // FCMOD-INTEGRATION(1.20.1): stays-removed: 4.B's recipe removals, applied to the same map so a
+            // /reload re-injection (onDatapackSync) re-applies them; a failure leaves the recipes as before.
+            try {
+                FcRecipeRemovals.apply(all, server.registryAccess(), MIRROR_FC_VANILLA_REMOVALS);
+            } catch (Throwable t) {
+                LOGGER.error("Failed to apply BTW recipe removals; vanilla recipes stay as loaded", t);
+            }
+            // FCMOD-INTEGRATION(1.20.1): stays-removed: integrate, don't disable -- recipes that consume a retired
+            // id (torch, chest, clay, nether brick, ...) also accept its BTW successor; after the removals, so only
+            // surviving recipes are widened, and on the same map, so /reload re-applies it.
+            try {
+                RetiredIngredientWidening.apply(all, server.registryAccess());
+            } catch (Throwable t) {
+                LOGGER.error("Failed to widen recipes that take retired ids; they stay as loaded", t);
+            }
 
             recipeManager.replaceRecipes(all.values());
 
@@ -103,7 +133,8 @@ public class RecipeBridge {
         }
     }
 
-    private static boolean isFcRecipeId(ResourceLocation id) {
+    /** True for the ids this bridge injects for FC ({@code fc_recipe_*}, {@code fc_smelting_*}). */
+    static boolean isFcRecipeId(ResourceLocation id) {
         return id != null && BTWForgeMod.MOD_ID.equals(id.getNamespace())
                 && (id.getPath().startsWith(CRAFTING_PREFIX) || id.getPath().startsWith(SMELTING_PREFIX));
     }

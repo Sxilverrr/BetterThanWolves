@@ -3124,6 +3124,11 @@ Caveats:
   FC's explicit setCreativeTab(null) calls (FCMOD lines in vanilla/client Block.java and Item.java,
   BTWLifecycle.java:476-478 and :1704, the FCItemStub records), not from a null-tab test: the port's
   vanilla initialisers set no tabs at all.
+  *(2026-10-15: narrowed by 2026-10-15 (at). The maintainer's stays-removed ruling hides every T1 and T2 id
+  of RemovedContent from every tab, the chest, cobweb, ladder, crafting table, comparator and the TNT and
+  hopper minecarts among them. The rest of CT6 stays open: records other than 13, enchanted books, wheat
+  seeds and legacy wheat, glowing redstone ore, and the BlockStem / BlockNetherStalk / BlockRedstoneTorch
+  stand-ins.)*
 - Strict parity hides survival-obtainable untabbed FC items from the tab and from JEI's list (Witch
   Wart, Mail, Steel Nugget, Ender Slag, cut and tanned leathers, Golden Dung, Redstone Latch, ...):
   maintainer decision.
@@ -3516,8 +3521,14 @@ the exception table.
 **Caveats.**
 - Bone meal still grows FC-owned plants the 1.20.1 way (decision D2, deferred). StemBlock.performBonemeal
   calls BlockState.randomTick at AGE 7, which now gives one FC growth roll.
+  *(2026-10-15: superseded by 2026-10-15 (at). Bone meal is FC fertilizer (BoneMealPolicy), and
+  BonemealableGateMixin cancels performBonemeal on every state whose growth FC governs, StemBlock
+  included, so bone meal gives no growth roll at all.)*
 - Modern-only plants keep 1.20.1 rules (decision D4, deferred): acacia, dark oak, cherry and mangrove
   saplings and leaves, azalea, beetroot, sweet berries, bamboo, kelp, cave vines.
+  *(2026-10-15: superseded by 2026-10-15 (at). The saplings, azaleas, beetroot, the sniffer crops and the
+  Nether fungi run FC plant classes ("twins"); bamboo, kelp, the vines, sweet berries, hanging propagules and
+  chorus are paced. The leaves of the new species keep 1.20.1 decay on purpose: it already has 4.B pacing.)*
 - D3 remainder (review R7): dead bushes on grass blocks or dirt (1.20.1 places them in swamps, mangrove
   swamps and giant taigas) are removed on a neighbour change, because FCBlockDeadBush accepts only sand
   12, both in FC's neighbour rule and in PlantSoilMixin's answer to 1.20.1's updateShape. Dead bushes on
@@ -3544,6 +3555,8 @@ the exception table.
   per session and never written. Modern blocks that 1.20.1 lava ignites only through ignitedByLava
   (barrel, loom, cartography and smithing tables) read as non-burnable, so FC lava beside them starts no
   fire (review R9).
+  *(2026-10-15: the FC plant twins of (at) take five ids of the free range (174, 169, 168, 167, 166), so
+  four flammable stand-ins remain (162-165) and more buckets share one.)*
 - lightOpacity is not filled: ProxyBlock reads it for light blocking, so filling it would change
   1.20.1 lighting for every FC block. The opaque-cube fill cannot fix FC-only ProxyBlocks whose port base
   answers isOpaqueCube true (1036 wood door, 1084 wicker pane, 1085 grate, 1086 slats): Modern-Common
@@ -3557,3 +3570,334 @@ the exception table.
   explosions (decision D6, stone's position-aware blast resistance).
 - Supersedes the NetherPortalBlockMixin part of 2026-10-10 (ag) and corrects the 2026-07-08 "fire
   spread" and "grass/mycelium spread" claims (both annotated there).
+
+## 2026-10-15 (at) Bone meal is FC fertilizer, post-1.5.2 plants grow by 4.B rules, removed blocks stay removed
+
+**Symptom (maintainer rulings of 2026-10-15 on decisions D2, D4 and D5, which (as) deferred; runtime
+baseline with `/btwproof use` on a dev server at 9c05019).** Three kinds of 1.20.1 content undercut 4.B's
+balance:
+- **A. Bone meal grew plants instantly.** At 9c05019 bone meal grew carrots from age 0 to 2 on vanilla
+  farmland and from 0 to 4 on FC farmland 1087, a pumpkin stem to age 4, cocoa, beetroot, sweet berries and
+  saplings, turned a brown mushroom on mycelium into a huge mushroom and sprouted grass and flowers on a
+  grass block. Every use was consumed and the soil stayed unfertilized. In 4.B bone meal never grows a
+  plant: FCItemDye.onItemUse applies the clicked block's AttemptToApplyFertilizerTo and uses the item
+  exactly when that is true (SrcServer FCItemDye.java:16-30, 71-82); plants relay it to their soil
+  (FCBlockPlants, SrcServer FCBlockPlants.java:112-126); fertilized FC farmland and planters double crop
+  growth until the next full stage. Vanilla's growth code (vanilla/server ItemDye.java:121-274) is dead in
+  4.B. Read from code, not run at baseline:
+  - off-hand bone meal always took the 1.20.1 path;
+  - netherrack beside nylium grew nylium, and an FC-mapped block under water grew seagrass or coral;
+  - every success played levelEvent 1505 (particles and sound), where 4.B plays nothing;
+  - on a weedy FC plant the port fertilized, where 4.B pulls the weeds and keeps the bone meal;
+  - 1.20.1 white dye fertilized like bone meal (LegacyVariants.java:159 reads it as FC dye 15);
+  - the vanilla dispenser grew crops (4.B ejects bone meal), and the FC block dispenser kept every item
+    without its own block-dispenser use (4.B spits it out);
+  - bees advanced FC-owned carrots, potatoes, legacy wheat and stems a stage per visit.
+- **B. Post-1.5.2 plants grew at 1.20.1 rates (D4).** Acacia, cherry and dark oak saplings and planted
+  mangrove propagules grew about 18x faster than FC saplings, also in the End; beetroot, the sniffer crops,
+  sweet berries, bamboo, kelp, cave / weeping / twisting vines, hanging propagules and chorus grew 1.6x to
+  20x faster than their nearest 4.B relatives. Azaleas and crimson and warped fungi never grow in 1.20.1
+  without bone meal, so under ruling A they would never grow.
+- **C. Blocks 4.B removed came back (D5, with CT6).** FC stubbed them, retired their ids or removed their
+  recipes (FCRecipes.RemoveVanillaRecipes, Server FCRecipes.java:5112-5776: 94 crafting records and 14
+  furnace inputs; the map-extending recipe and the two-tool repair, vanilla/server
+  CraftingManager.java:49-51, 283-382). 1.20.1 re-exposed every one: crafting and cooking recipes; chest,
+  archaeology, fishing and barter loot (mineshaft activator rails, outpost and fishing tripwire hooks,
+  ruined-portal gold plates, village torches and snow blocks, piglin nether bricks); structures
+  (ancient-city comparators, the mansion's trapped chest, jungle-temple tripwire and hooks); the vanilla
+  creative tabs and JEI; string placing tripwire; TNT and hopper minecarts. CHANGELOG known issue "crafting
+  recipes that BTW 4.B removed can still be crafted". Research: scratchpad t2/bonemeal.md (BM ids),
+  t2/modern_plants.md (S ids: its lore calls, section 2.2, settled by the ruling) and t2/removed_blocks.md.
+
+**Root cause.**
+- A: Modern-Common `btw.modern.BlockFlower extends Block`, not FCBlockPlants, and the port had not ported
+  FCBlockPlants' AttemptToApplyFertilizerTo relay or its onBlockActivated weed pull (its own comment said
+  so). FCItemDye therefore returned false for every 1.5.2 flower-family plant (crops including hemp and
+  legacy wheat, stems, saplings, mushrooms, wart, tall grass, flowers): FC said no,
+  ServerPlayerGameMode.useItemOn went on, and BoneMealItem.useOn ran 1.20.1's performBonemeal. Around it:
+  - ServerPlayerGameModeMixin's HEAD pre-emption ran FCItemDye for the main hand only, before block
+    activation, Forge's RightClickBlock event and the spectator check; the off hand went straight to 1.20.1;
+  - nothing guarded direct performBonemeal callers (mods, growCrop, GrassBlock, GrowingPlantBodyBlock) or
+    Bootstrap's BONE_MEAL dispenser behaviour (DispenseItemBehavior.java:433-446, growth);
+  - Modern-Common Item.OnItemUsedByBlockDispenser returned false, where 1.5.2's FCMOD default spits the item
+    out (vanilla/server Item.java:1232-1240);
+  - Bee$BeeGrowCropGoal.tick writes the next age straight into the world, outside the random tick.
+- B: these plants have no legacy id, so TickPolicy.decide returned null and no FC rule reached them. FC's
+  nearest relatives exist as classes (FCBlockSapling, FCBlockCarrot, FCBlockWheatLegacy, FCBlockMushroom),
+  but nothing put an instance at the plants' cells. FC has no class whose updateTick could drive bamboo,
+  kelp, vines, berries or chorus: FCBlockReed hard-codes air above and a 3-block cap, FCBlockVine works on
+  side bits, FCBlockCocoa on log attachment.
+- C: Modern-Common CraftingManager.RemoveRecipe / RemoveShapelessRecipe only returned true and RecipeBridge
+  only added `fc_*` recipes, so no removal reached the 1.20.1 RecipeManager. No other hook knew which ids
+  4.B removed: the decision (D5, with CT6) was open.
+
+**Fix (general rules).** One rule per ruling. BRIDGE_SPEC.md has the hooks ("Tick ownership (TickPolicy)",
+post-1.5.2 plants; "Bone meal (BoneMealPolicy)"; "Stays removed (RemovedContent)"); INTEGRATIONS.md #017,
+#018 and #019 have the integration entries.
+- **A. Bone meal is FC fertilizer and nothing else** (Forge/src/main/java/btw/forge/BoneMealPolicy.java).
+  `route(state)`: FC_TARGET for every FC-mapped block (vanilla ids and ProxyBlocks run their own
+  AttemptToApplyFertilizerTo); SOIL_RELAY for a post-1.5.2 plant whose growth BTW governs
+  (TickPolicy.isFcGrowthGoverned), relayed to the soil below the plant's lowest cell as FCBlockPlants
+  relays; VANILLA otherwise. On an owned route 1.20.1's performBonemeal and growWaterPlant never run, the
+  item is used up only when FC took it, and nothing plays.
+  - Modern-Common BlockFlower: FCBlockPlants.AttemptToApplyFertilizerTo (Client FCBlockPlants.java:129-143)
+    and onBlockActivated, the weed pull with FX 2001 (:84-102). This alone makes FCItemDye 4.B for the whole
+    flower family.
+  - ServerPlayerGameModeMixin: no pre-emption for FC dye 15 (BoneMealPolicy.isFcBoneMeal). 1.20.1's own
+    order runs: Forge's RightClickBlock and the spectator check, then blockstate.use, where
+    BlockBehaviorMixin.btw$use / ProxyBlock.use run Stage 1 (FC onBlockActivated: the weed pull) and Stage 2
+    (FCItemDye). That is 4.B's activateBlockOrUseItem order (vanilla/server
+    ItemInWorldManager.java:376-407).
+  - BoneMealItemMixin, BoneMealItem.useOn HEAD: sneaking, the off hand and targets without Stage 2. The
+    server applies FC fertilizer through WorldBridge, shrinks by one and returns CONSUME, else PASS; the
+    client (client/BoneMealPrediction, through DistExecutor) runs the same FC decision on the read-only
+    ClientFcWorld for the swing (SUCCESS or PASS) and never shrinks.
+  - BonemealableGateMixin, isValidBonemealTarget / performBonemeal HEAD on the 31 1.20.1 classes that
+    declare them: false / cancelled for an owned state, decided per state, so a state BTW does not govern
+    keeps 1.20.1.
+  - BoneMealPolicy.onBonemeal (BonemealEvent, LOW, DEFAULT results only): other applyBonemeal callers get
+    ALLOW when FC took the fertilizer (Forge then uses one item), else the event is cancelled.
+  - Only `minecraft:bone_meal` is fertilizer (isFertilizer); BoneMealPolicy.mayUseAsFcItem in
+    ProxyBlock.tryPlaceHeldItem keeps 1.20.1 white dye out of Stage 2.
+  - Dispensers: `DispenserBlock.registerBehavior(Items.BONE_MEAL, new DefaultDispenseItemBehavior())` at
+    common setup (eject one, aux 1000 and 2000: 4.B's BehaviorDefaultDispenseItem); Modern-Common
+    Item.OnItemUsedByBlockDispenser is the 1.5.2 default (FCBlockBlockDispenser.SpitOutItem inlined, aux
+    1000, true) for every item without an override of its own.
+- **B. Post-1.5.2 plants follow the 4.B rule of their nearest relative** (TwinRegistry, FcPaceAccess,
+  TickPolicy, BlockStateBaseTickMixin, BlockStateRandomTickMixin, Modern-Common ModernTwins).
+  - **Twins** (owner FC): a plain instance of an existing FC plant class at a reserved legacy id, built by
+    TwinRegistry.createTwins in BTWLifecycle step 5d, after the opaque-table fill and before fcReady. FC's
+    world reads (ProxyRegistry.getWorldBlockId) see the live 1.20.1 plant as the twin's id; identity routing
+    (getBlockId, BlockBehaviorMixin, items) stays 0, so 1.20.1 keeps placement, shape-update survival, loot,
+    collision and scheduled ticks. TickPolicy.decide gives every twin state random owner FC with the twin's
+    id (gate true) and scheduled owner VANILLA, so FC's updateTick runs unchanged:
+
+| Family | 1.20.1 blocks (twin states) | Twin (id) | 4.B rule |
+|---|---|---|---|
+| sapling | acacia, cherry, dark oak saplings; planted mangrove propagule (26) | FCBlockSapling (174) | survival (light 8 or sky, sapling soils), not in the End, light 9 above, four stages at 1/64, then the species' own 1.20.1 tree; dark oak takes FC's jungle 2x2 rule (all four at stage 3); the propagule keeps clay and mud (S3) |
+| azalea | azalea, flowering azalea (2) | FCBlockSapling (169) | the sapling rule, then AzaleaTreeGrower (S1); 1.20.1 fire odds 30 / 60 |
+| beetroot | beetroots (4) | FCBlockCarrot (168) | the 4.B root crop: 0.1 per tick, seven levels, light 9, hydrated FC soil, weeds stop it, fertilizer doubles it, not in the End |
+| torchflower, pitcher | torchflower crop (2); pitcher crop, lower half (5) | FCBlockWheatLegacy (167) | the 4.B BlockCrops pace of legacy wheat, 0.05 (S4); the torchflower crop becomes the TORCHFLOWER block at level 7; the pitcher shows AGE 3 (upper half) at level 6 |
+| fungus | crimson, warped fungus (2) | FCBlockMushroom (166) | FC's mushroom-on-mycelium rule on the species' own nylium: 1 in 50 random ticks to its planted huge fungus, not in the End, no spread (S11) |
+
+  - Load-time mixins on the FC classes, keyed on the twin id so FC's own blocks are untouched (`@Pseudo`,
+    `remap = false`, `btw.forge.mixin.fcext`): FCBlockSaplingTwinMixin (growTree HEAD: the species' 1.20.1
+    tree through TwinRegistry.growSaplingTwin, after FC's own 2x2 stage check for dark oak; CanGrowOnBlock
+    RETURN: the live plant's 1.20.1 soil as well) and FCBlockMushroomTwinMixin (updateTick HEAD:
+    TwinRegistry.fungusTick). A tree that does not fit leaves every sapling of its square at FC stage 3,
+    FC's restore rule.
+  - WorldBridge: the twin metadata codec first in derive / apply (TwinRegistry.deriveMeta / stateForMeta:
+    species, or the crop level of AGE); setTwinMetadata (the torchflower's level 7 as a block switch under
+    the metadata-only write guard; the pitcher's upper half placed as PitcherCropBlock.grow places it, or
+    the write refused when there is no room); isMetaFullyDerived false for twin blocks, so FcMetaOverlay
+    keeps the sapling stage and the levels between AGE steps; a waterlogged twin cell is water to FC;
+    collision from the live block; DropModernBlockLoot. Modern-Common Block /
+    BlockCrops.dropBlockAsItemWithChance drop a twin's live 1.20.1 loot (never carrots, seeds or an item of
+    the twin's id). ProxyRegistry.getRemovalLegacyId gives the crop twins' removal to FC, so FC farmland
+    under a harvested crop twin becomes loose dirt (S16).
+  - **Paced plants** (new owner PACED 3): the 1.20.1 body runs on a fraction `pace` of the random ticks
+    (TickPolicy.pacedRollPasses, one nextFloat), never in the End unless exempt; pace = FC relative's chance
+    per tick / 1.20.1's, so the mean is FC's. The pace and End flag are cached per state (FcPaceAccess,
+    BlockStateBaseTickMixin).
+
+| Plant (paced states) | 4.B relative | Pace | End |
+|---|---|---|---|
+| bamboo shoot, bamboo (1 + 12) | FCBlockReed, 1/32 per segment; 1.20.1 1/3 | 3/32 | banned |
+| kelp (26) | FCBlockReed, 1/32; 1.20.1 0.14 | 0.2232 | banned |
+| cave, weeping, twisting vines (52 + 26 + 26) | FCBlockVine hanging pace, 1/16; 1.20.1 0.1 | 0.625 | banned |
+| sweet berry bush (4) | FCBlockCocoa, 1/20 per stage; 1.20.1 1/5 | 0.25 | banned |
+| mangrove propagule, hanging (20) | FCBlockCocoa, 1/20 per age; 1.20.1 every tick | 0.05 | banned |
+| chorus flower (6) | FCBlockCactus counter, 16 ticks per step; 1.20.1 every tick | 1/16 | allowed (S10: the End's own plant) |
+
+  - TickPolicy.isFcGrowthGoverned: FC-owned growing plants (FC plant, vine or cactus material), ProxyBlock
+    plants, twin and paced states (pitcher upper halves and hanging propagules included); a growing-plant
+    body (kelp, weeping, twisting and cave vine plants) follows its head. Bone meal (A) and bees read it.
+  - BeeGrowCropGoalMixin: a @Redirect of the one Level.getBlockState in Bee$BeeGrowCropGoal.tick. A visit to
+    a governed plant vanilla would grow runs that plant's own random tick once (FC's body or the paced
+    roll), answers air so vanilla's growth branch sees nothing, plays 2005 when the plant changed, and
+    counts toward the bee's ten crops where vanilla counts it (BeeAccessor,
+    incrementNumCropsGrownSincePollination) (S17).
+  - Kept on 1.20.1: the leaves of the new species and nylium decay (already 4.B pacing, S13, S14), and
+    blocks that only multiply by bone meal (S15).
+  - BridgeSelfAudit.auditTwins (after the tick audit): twin ids and classes, world-read ids, the codec round
+    trip, the cached owners, gates and paces, and any minecraft block that grows by random tick or bone meal
+    without a classification.
+  - The stand-in range 159-174 is shared: the twins take the free ids from the top (174, 169, 168, 167,
+    166), before any stand-in exists; the stand-ins allocate from the bottom (160 solid, 161 collider,
+    flammable from 162), so four flammable stand-ins remain. ModernBlockStandIn.FIRST_FREE_ID / LAST_FREE_ID
+    / isFreeId are package-visible for it.
+- **C. Stays removed** (Forge/src/main/java/btw/forge/removed/RemovedContent.java): one table drives every
+  hook. Each row has the 1.20.1 item and blocks, the tier, the expected 1.5.2 ids, the 4.B citation, and the
+  structure rule or BTW successor.
+  - **T1 stubbed (12 rows):** hopper, comparator, daylight detector, dropper, trapped chest, both weighted
+    plates, activator rail, TNT and hopper minecarts, tripwire hook, tripwire. No recipes, loot filtered,
+    hidden from creative (and so from JEI), string no longer places tripwire, structure substitutes (trapped
+    chest -> chest and dropper -> dispenser keep their block-entity data; comparator -> repeater, same
+    FACING, delay 1; activator rail -> rail; weighted plates -> stone pressure plate; hopper, daylight
+    detector, tripwire hook and tripwire -> air), and freshly spawned TNT and hopper minecarts become plain
+    minecarts (a hopper cart's contents drop).
+  - **T2 retired (8 rows):** crafting table, chest, ladder, torch (and wall torch), snow block, clay block,
+    cobweb, the nether brick item. No recipes, hidden from creative, loot (and a trade) hands out the BTW
+    successor at the same count (BTW workbench, chest, ladder, the unlit finite torch, solid snow, unfired
+    clay, BTW web, BTW nether brick). Generated copies stay legacy blocks, which FC's legacy drop rules
+    convert when broken. RetiredIngredientWidening lets non-FC recipes that take a T2 id also take FC's
+    legacy conversion target for it; the torch stands for the nether-coal torch (lit 1057 or unlit 1033),
+    never the finite torch.
+  - **T3 recipe-only (8 rows):** the five wooden tools, the stone hoe, the snow layer, the furnace. No
+    recipes, loot filtered, still in creative, as in 4.B.
+  - Recipes: Modern-Common CraftingManager records every RemoveRecipe / RemoveShapelessRecipe call
+    (RemovedVanillaRecipe, parsed as 1.5.2 parsed it). RecipeBridge.injectRecipes then runs, on the map it
+    is about to install (so /reload re-applies it), FcRecipeRemovals: (1) the FC records against
+    `minecraft:` crafting recipes by result and ingredient multiset, shape ignored, tags resolved,
+    count-insensitive only when no exact count matches, results equivalent across a recipe group mapping to
+    one legacy block (the 16 beds); (2) the MAP_EXTENDING and REPAIR_ITEM special recipes; (3) every
+    `minecraft:` smelting, blasting, smoking and campfire recipe whose input FC took out of the 1.5.2
+    furnace table (the difference between that table and FC's live list; clay keeps its brick); (4) always,
+    every recipe of any type and namespace whose result is a table item, except FC's own injected recipes,
+    which are reported instead. Passes 1-3 sit behind RecipeBridge.MIRROR_FC_VANILLA_REMOVALS (true). Then
+    RetiredIngredientWidening (Ingredient.merge, or a Forge CompoundIngredient for other ingredient types;
+    the recipe rebuilt with the same id), skipping recipes whose result FC makes its own way and reporting
+    recipes stranded by a T1 or T3 ingredient.
+  - Loot: FCRemovedContentLootModifier, one global loot modifier with no conditions
+    (`data/betterthanwolves/loot_modifiers/removed_content.json`, emitted by FCLootOverrides), which reads
+    the table at run time.
+  - Structures: StructureTemplateRemovedMixin (the Forge processBlockInfos overload, RETURN, `remap =
+    false`) and StructurePieceRemovedMixin (StructurePiece.placeBlock HEAD, @ModifyVariable on the state).
+  - RemovedCreativeTabs (BuildCreativeModeTabContentsEvent, LOWEST) and RemovedContentEvents
+    (RightClickBlock setUseItem DENY for string; EntityJoinLevelEvent cancel and end-of-tick replacement of
+    fresh T1 minecarts, the VanillaMobReplacer pattern, carts loaded from disk left alone; villager and
+    wanderer trade listings wrapped at LOWEST as a guard).
+  - RemovedContent.audit at common setup: every FC block of an FC stub or inert class and every FCItemStub
+    must be a T1 row; every row's blocks and item must map to the cited 1.5.2 ids; every T2 successor must
+    resolve.
+  - Left alone, by the ruling's scope: removed blocks already in a world or placed by commands (`/give` and
+    `/setblock` stay op tools, as in 4.B); modern-only blocks 4.B never had; CT6's other rows.
+- Unchanged: FC code; LightPolicy; PlantSoilMixin; every other tick rule of (as).
+
+**Verification.**
+- The dev-server build the proofs ran compiles with JDK 17. The refmap maps m_6225_ (BoneMealItemMixin),
+  m_7370_ and m_214148_ (BonemealableGateMixin), m_7179_ (ServerPlayerGameModeMixin, existing target),
+  m_8037_ and Level.getBlockState m_8055_ (BeeGrowCropGoalMixin), m_27871_ (BeeAccessor) and m_73434_
+  (StructurePieceRemovedMixin); StructureTemplateRemovedMixin and the two fcext mixins have no entry (remap
+  = false). LinkAudit during the wave: the 6 pre-existing missing members, jar precedence drift 0.
+- Self-audits, every proof run:
+  - `[SELF-AUDIT/tick] 238 blocks, 778 FC-random states, 200 FC-scheduled blocks, 0 warnings (0 expected)`
+    (unchanged from (as));
+  - `[SELF-AUDIT/twin] 6 twin families (11 blocks), 41 twin states, 173 paced states, 0 warnings`, with the
+    twins at 174 (sapling), 169 (azalea), 168 (root crop), 167 (seed crop) and 166 (fungus);
+  - `[SELF-AUDIT/light] 1 mapped blocks emit 4.B light that differs from 1.20.1, 0 warnings (0 expected)`
+    (unchanged);
+  - `[REMOVED-AUDIT] stays-removed table: 12 T1, 8 T2, 8 T3 rows; FC stub blocks [154, 149, 150, 151, 158,
+    146, 147, 148, 157, 131, 132] and items [404, 407, 408] covered; 0 warning(s)`.
+- Recipe log: `FC vanilla-recipe removals on: 93/94 records matched (3 count-insensitive, 1 unmatched), 108
+  crafting + 2 special + 20 cooking recipes removed (removed furnace inputs [4, 12, 14, 15, 16, 17, 21, 56,
+  73, 87, 129, 153]); stays-removed rule removed 0 more (0 outside minecraft); 130 recipes removed in
+  total`. The unmatched record is FC's 6-stick fence, which has no 1.20.1 counterpart; the count-insensitive
+  ones are the yellow and red dyes and the iron door. Widening: 13 recipes (the eight chest boats and the
+  bamboo chest raft, lantern, shulker box, terracotta, red nether bricks); left on FC's route:
+  chest_minecart, nether_bricks, nether_brick_fence; stranded: blast_furnace, smoker, furnace_minecart
+  (furnace), crossbow (tripwire hook).
+- Runtime proofs: dev dedicated server over RCON on fresh superflat worlds (the (as) harness), with
+  `/btwproof use`, which drives ServerPlayerGameMode.useItemOn with a FakePlayer as a use packet does.
+
+| Proof (bone meal: 88/92 checks as expected) | Result | 4.B expectation |
+|---|---|---|
+| P1 / P1b bare vanilla / FC farmland | becomes 204 / 1088, one used; a second use kept | same |
+| P2 / P3 carrots, potatoes, wheat on vanilla farmland; carrots on 1087 | soil 204 / 1088, crops still age 0, one used; a second use kept | fertilize the soil, never grow |
+| P5a / P5b BTW wheat / carrots on weedy 1087 | weeds pulled (1087 meta 0), soil not fertilized, bone meal kept | weeds first |
+| P6 hemp, P7a stem, BM2 dandelion on FC farmland | soil 1088 / 204 / 1088, stem age 0 | relay to the soil |
+| P8 / P12 / P13 / P11 / P14a-d oak sapling, cocoa, brown mushroom (5 uses), short grass, wart, cactus, flower on grass, mycelium | unchanged, kept | nothing |
+| P9 / T11 oak / acacia sapling in planter soil | planter soil fertilized (1092 bit 2), sapling stage 0 | planter fertilized |
+| grass block, P17 sand under water | no grass, flowers or seagrass; kept | nothing |
+| T1-T4 beetroot, torchflower, pitcher twins on 60 / 1087 | soil 204 / 1088, crops age 0; a second use kept | relay to the soil |
+| T5-T10, G1, G2 berries on grass / 1087, bamboo shoot and stalk, twisting vines (head and body), hanging propagule, cave vines (head and body) | nothing, or soil 1088 under the berries; no new segment, no berries | relay or nothing |
+| T12-T14 acacia sapling, azalea, crimson fungus on soil that takes no fertilizer | unchanged, kept | nothing |
+| VAN pink petals (not governed) | 1.20.1 bone meal: CONSUME, flower_amount 2 | 1.20.1 kept |
+| WD1-WD4, WD6 white dye by hand on farmland, carrots, BTW wheat, 1087, beetroot | nothing, kept | not fertilizer |
+| P15a / P15b dropped bone meal on farmland / 1087 | 204 / 1088, one item used | FC's item rule |
+| P19 vanilla dispenser over carrots on farmland | one ejected per pulse, the farmland took it, carrots age 0 | eject |
+| P20 FC block dispenser | one bone meal spat out in front, 3 left | SpitOutItem |
+
+  The four misses: P16 (setblock netherrack became FC block 1076 on placement, so "still netherrack" failed;
+  bone meal did nothing and was kept, as in 4.B) and P7b (a stem attached to a vanilla pumpkin detaches by
+  FC's rule, FC's fruit being the fresh pumpkin 1006; its soil check passed) are errors in the test's
+  expectation. WD5 (two checks) is the dropped white dye gap below.
+
+| Proof (plants; W1 / W2 / W3 = 29 / 205 / 403 random ticks per block) | Result | 4.B expectation | 1.20.1 |
+|---|---|---|---|
+| A acacia, cherry, planted propagule present at W1 | 9/9 each | 8.99 | about 0.7 |
+| A same at W2 | 8, 6 and 4 of 9 | 5.41 | 0 |
+| A azalea / flowering azalea trees at W3 | 4/5, 3/4 | 4.37, 3.49 | 0 (never) |
+| A2 dark oak 2x2 groups present at W1 / W2 / W3 | 8/8, 8/8, 4/8 | 8.00, 7.14, 1.77 | 0 at W1 |
+| A2 FC oak controls present at W1 / W3 | 8/8, 1/8 | 7.99, 1.01 | same |
+| B beetroot / torchflower / pitcher upper half ripe at W1 | 0, 0, 0 of 16 | 0.48, 0.01, 0.06 | 15.3, 15.8, 16.0 |
+| B same, cumulative at W2 | 16, 13, 16 | 16.0, 14.2, 15.1 | 16 |
+| B FC carrot control at W1 / W2 | 1, 15 of 16 | 0.48, 15.5 | same |
+| B sweet berries at age 3, W1 | 4/16 | 2.92 | 14.9 |
+| B bamboo with 3+ segments, W1 / W2 | 2/16, 13/16 | 1.05, 15.26 | about 16 |
+| B kelp columns with 1+ / 3+ growths, W1 | 13, 0 of 16 | 9.6, 1.05 | 15.7, 12.4 |
+| B cave / twisting vine cells grown, W1 | 27, 22 | 29.3 | 46.9 |
+| B hanging propagules at age 4, W1 | 1/16 | 0.98 | 16 |
+| Re-check (randomTickSpeed 300): bamboo shoots left at 1,200 / 2,400 ticks | 5/49, 1/49 | 3.1, 0.2 | 0 |
+| Re-check: azaleas / FC oak controls grown at 2,400 ticks | 7/36, 13/36 | 10.7, 10.7 | azaleas never |
+| Re-check: bone meal or a stick on weedy 1087 under beetroot, torchflower, carrots, BTW wheat | weeds pulled, bone meal kept (left 4) | the same | bone meal grows the crop |
+| C chorus flowers not grown yet at W0 / W1 (End) | 8, 4 of 16 | 10.1, 2.56 | 0 |
+| C crimson / warped huge fungi grown at W2 | 16/16 each | 15.74 | 0 (never) |
+| C crimson fungus on warped nylium (own-nylium control) | 4/4 stay | 4 | 4 |
+| C End: cherry saplings, bamboo, fungi | 4/4 saplings stay, 0/4 bamboo grew, 4/4 fungi stay | 4, 0, 4 | 0, 4, 4 |
+| B acacia leaves with no log; crimson nylium under stone | all decayed; all gone | 1.20.1 already 4.B pacing | same |
+
+| Proof (removed: 72/73 checks as expected) | Result |
+|---|---|
+| Loot: mineshaft activator rail, outpost and fishing tripwire hook, ruined-portal light plate, barter nether brick, mineshaft torch, snowy-house snow block and furnace, warm ocean ruin wooden hoe, bonus-chest wooden pickaxe | none |
+| Loot successors: barter BTW nether brick, mineshaft unlit finite torch, snowy-house solid snow | 9, 4, 12 |
+| Structures: mansion 1x2_s2 trapped chest / chest; ancient city comparator / repeater; jungle pyramid tripwire hooks and tripwire | chest and repeater placed; no comparator, hook or tripwire left |
+| Trades: a summoned vanilla villager survives; wanderer sells any of 12 removed ids | no; none |
+| String used on stone | nothing placed, string kept |
+| Summoned TNT / hopper minecart | plain minecarts; the hopper cart's 5 dirt dropped |
+| Recipes for the 27 table items (`/btwproof recipes`, any type and namespace) | none |
+| `setblock` of nine T1 blocks | placed (left alone) |
+
+  The miss: a `/give`'d tripwire hook used on stone placed nothing (use FAIL). The stays-removed rule leaves
+  a removed item's own placement alone (RemovedContent.placesRemovedBlock), so this is a placement-routing
+  issue that predates the change; parked.
+- Not run: any client (the bone-meal swing prediction, the hidden creative-tab entries and JEI's list),
+  off-hand and creative bone meal (the helper has no flags for them), BonemealEvent callers from other mods,
+  Serene Seasons, existing-world upgrades (sapling stages, generated legacy blocks), and modded templates.
+
+**Caveats.**
+- Dropped white dye (WD5): an item entity of 1.20.1 white dye on FC farmland fertilizes it and is used up.
+  The item bridge hands FC the stack (351, 15), and FCBlockFarmlandBase.onEntityCollidedWithBlock checks
+  only id and damage (FCBlockPlanterBase the same, by code reading). The fix is a bone-meal-only check in
+  the item bridge before FC sees the stack. White dye used by hand does nothing.
+- Stranded recipes: blast_furnace, smoker and furnace_minecart need the furnace (T3) and crossbow a tripwire
+  hook (T1). They stay craftable from salvaged or existing items (a furnace mined with Silk Touch, as in
+  4.B; by code reading); a BTW route is later compat work.
+- A `/give`'d tripwire hook cannot be placed (above).
+- Bone meal keeps 1.20.1's behaviour on what BTW does not govern: moss, nylium, rooted dirt, pink petals,
+  tall flowers, glow lichen, sea pickles, seagrass, dripleaf, mangrove leaves (a hanging propagule) and
+  modded plants, and growWaterPlant on a block with no FC mapping. A later compat rule for modded plants on
+  BTW soil adds its condition to BoneMealPolicy.route as a SOIL_RELAY and reuses onBonemeal; it must not add
+  a second BonemealEvent listener.
+- The early return for bone meal restores the 4.B order for bone meal only. Every other FC item still runs
+  at HEAD of useItemOn, before block activation, RightClickBlock and the spectator check (BM8); generalising
+  the early return is the 4.B rule but needs its own regression pass.
+- Paced plants reproduce FC's mean pace, not its cadence: FC's reed and cactus counters are near-regular,
+  the thinning is geometric. Exact cadence would need a per-cell counter store that FC reads never see.
+- Twin identity is visible to every FC world reader: FC animals graze the crop twins (4.B BlockCrops
+  CanBeGrazedOn), FC weeds grow under them, FC saws and pistons harvest them. All of it is 4.B crop
+  behaviour, and the drops are the live 1.20.1 loot.
+- A modern sapling's FC stage lives in the overlay: an existing world's acacia sapling at 1.20.1 STAGE 1
+  starts at FC stage 0 (S18), as oak saplings did in (as). A lone dark oak sapling waits at stage 3 for
+  ever: 1.20.1 has no single dark oak.
+- A pitcher crop with no room above stays at its FC level; FC's IncrementGrowthLevel may still tell the soil
+  at level 7, using its fertilizer once.
+- Generated T2 blocks stay legacy blocks: a village torch broken drops the nether-coal torch
+  (FCBlockTorchLegacy.java:35-38), as in 4.B, and 1.20.1 villages have many (not checked at runtime).
+- Removed blocks already in worlds are left alone and keep whatever behaviour they had; hand-harvest goes
+  through FC, as in 4.B (a stub drops itself, the comparator drops nothing). Making them 4.B-inert (the
+  hopper ticker, the GUIs) is not done: it would break existing contraptions.
+- In the 1.20.1 data the result rule (pass 4) removed nothing beyond FC's records; it guards modded recipes
+  and logs foreign removals at INFO.
+- Supersedes the D2 and D4 caveats of 2026-10-14 (as) and narrows the CT6 caveat of 2026-10-11 (ap) (all
+  annotated there).

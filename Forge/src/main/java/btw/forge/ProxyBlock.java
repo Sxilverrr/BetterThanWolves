@@ -543,6 +543,8 @@ public class ProxyBlock extends Block implements EntityBlock {
                                            btw.modern.World world, BlockPos pos, int side,
                                            float hitX, float hitY, float hitZ) {
         if (fcHeld == null) return false;
+        // 1.20.1 white dye reads as FC dye 15; only bone meal is FC fertilizer (BoneMealPolicy)
+        if (!BoneMealPolicy.mayUseAsFcItem(player.getMainHandItem(), fcHeld)) return false;
         // Runs inside the use-item packet handler with no catch above it: an FC onItemUse failure is logged
         // once and treated as "nothing placed" instead of taking the server down.
         if (!player.isCreative()) {

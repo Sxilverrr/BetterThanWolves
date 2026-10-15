@@ -41,6 +41,7 @@ public final class BridgeSelfAudit {
         if (tickPolicyAudited) return;
         tickPolicyAudited = true;
         auditTickPolicy();
+        auditTwins();
         auditLightPolicy();
     }
 
@@ -211,7 +212,7 @@ public final class BridgeSelfAudit {
         btw.modern.Block[] list = btw.modern.Block.blocksList;
         for (int id = 1; id < FIRST_PROXY_ID && id < list.length; id++) {
             btw.modern.Block fc = list[id];
-            if (fc == null) continue;
+            if (fc == null || btw.modern.ModernTwins.isTwin(id)) continue;   // twins: auditTwins
             boolean expected = EXPECTED_4B_RANDOM.contains(id);
             if (expected == fc.getTickRandomly()) continue;
             if (KNOWN_FLAG_GAPS.contains(id)) {
@@ -233,8 +234,200 @@ public final class BridgeSelfAudit {
         return switch (owner) {
             case TickPolicy.FC -> "FC";
             case TickPolicy.NONE -> "NONE";
+            case TickPolicy.PACED -> "PACED";
             default -> "VANILLA";
         };
+    }
+
+    /**
+     * Post-1.5.2 plant self-audit ({@link TwinRegistry}): logs each twin id, twin family and paced plant, and WARNs on
+     * (a) a twin that was not built, or whose blocksList slot is not the expected FC class, or whose id has a
+     *     ProxyBlock, a 1.20.1 block or item mapping, or lies in the ProxyBlock range;
+     * (b) a twin state FC's world reads do not see as its twin's id;
+     * (c) a metadata codec that does not round-trip: {@code stateForMeta(s, deriveMeta(s)) == s} for every twin state,
+     *     and for every crop level m, {@code deriveMeta(stateForMeta(s, m))} is the highest visible level not above m
+     *     (the torchflower crop's level 7 is the TORCHFLOWER block);
+     * (d) a cached owner, twin id, gate or pace that differs from TickPolicy (BlockStateBaseTickMixin not applied);
+     * (e) an unclassified growth block: a minecraft block that overrides randomTick or is bonemealable and is neither
+     *     FC-mapped, a twin, paced nor kept on 1.20.1 on purpose ({@link #isKeptOn1201}); other mods' blocks are
+     *     reported at INFO.
+     * Expected: {@code 6 twin families (11 blocks), 41 twin states, 173 paced states, 0 warnings}.
+     */
+    private static void auditTwins() {
+        if (!BTWLifecycle.isFcReady()) return;   // the tick audit already warned
+        int warnings = 0, families = 0, familyBlocks = 0, twinStates = 0, pacedStates = 0, modded = 0;
+
+        // (a) the twin objects
+        for (TwinRegistry.Kind kind : TwinRegistry.Kind.values()) {
+            int id = TwinRegistry.idOf(kind);
+            if (id <= 0) {
+                LOGGER.warn("[SELF-AUDIT/twin] the {} twin ({}) was not built: its plants keep their 1.20.1 growth",
+                        kind.name(), kind.fcClass);
+                warnings++;
+                continue;
+            }
+            btw.modern.Block fc = btw.modern.Block.blocksList[id];
+            String cls = fc == null ? "null" : fc.getClass().getName();
+            if (!kind.fcClass.equals(cls) || !btw.modern.ModernTwins.isTwin(id)) {
+                LOGGER.warn("[SELF-AUDIT/twin] twin id {} holds {} (expected the {} twin, {})", id, cls, kind.name(),
+                        kind.fcClass);
+                warnings++;
+            }
+            if (id >= FIRST_PROXY_ID || ProxyRegistry.getProxy(id) != null || ProxyRegistry.isLegacyIdMapped(id)
+                    || ProxyRegistry.getModernItem(id) != null) {
+                LOGGER.warn("[SELF-AUDIT/twin] twin id {} collides with a ProxyBlock, a mapped 1.20.1 block or item, "
+                        + "or the ProxyBlock range", id);
+                warnings++;
+            }
+            LOGGER.info("[SELF-AUDIT/twin] id {} = {} ({} twin)", id, cls, kind.name());
+        }
+
+        // (b)-(d) the twin families
+        for (TwinRegistry.Family family : TwinRegistry.Family.values()) {
+            int id = TwinRegistry.idOf(family.kind);
+            if (id <= 0) continue;
+            List<Block> blocks = TwinRegistry.blocksOf(family);
+            families++;
+            familyBlocks += blocks.size();
+            List<BlockState> states = new java.util.ArrayList<>();
+            java.util.TreeSet<Integer> visible = new java.util.TreeSet<>();
+            for (Block b : blocks) {
+                for (BlockState s : b.getStateDefinition().getPossibleStates()) {
+                    if (TwinRegistry.familyOf(s) != family) continue;
+                    states.add(s);
+                    visible.add(TwinRegistry.deriveMeta(s));
+                }
+            }
+            boolean idMismatch = false, codecMismatch = false, cacheMismatch = false;
+            for (BlockState s : states) {
+                if (ProxyRegistry.getWorldBlockId(s, net.minecraft.world.level.EmptyBlockGetter.INSTANCE,
+                        net.minecraft.core.BlockPos.ZERO) != id) {
+                    idMismatch = true;
+                }
+                if (TwinRegistry.stateForMeta(s, TwinRegistry.deriveMeta(s)) != s) codecMismatch = true;
+                if (family.crop) {
+                    for (int m = 0; m <= 7; m++) {
+                        BlockState t = TwinRegistry.stateForMeta(s, m);
+                        if (TwinRegistry.familyOf(t) != family) {
+                            if (!(family == TwinRegistry.Family.TORCHFLOWER && m == 7
+                                    && t.is(net.minecraft.world.level.block.Blocks.TORCHFLOWER))) {
+                                codecMismatch = true;
+                            }
+                            continue;
+                        }
+                        Integer expected = visible.floor(m);
+                        if (expected == null || TwinRegistry.deriveMeta(t) != expected) codecMismatch = true;
+                    }
+                }
+                TickPolicy.Decision d = TickPolicy.decide(s);
+                FcBlockStateAccess cached = (FcBlockStateAccess) (Object) s;
+                if (d == null || d.random() != TickPolicy.FC || d.fcId() != id
+                        || cached.btw$randomOwner() != TickPolicy.FC || cached.btw$randomFcId() != id
+                        || !s.isRandomlyTicking()) {
+                    cacheMismatch = true;
+                }
+            }
+            if (idMismatch) {
+                LOGGER.warn("[SELF-AUDIT/twin] {}: a twin state does not read as twin id {} to FC", family.label, id);
+                warnings++;
+            }
+            if (codecMismatch) {
+                LOGGER.warn("[SELF-AUDIT/twin] {}: the FC metadata codec does not round-trip", family.label);
+                warnings++;
+            }
+            if (cacheMismatch) {
+                LOGGER.warn("[SELF-AUDIT/twin] {}: a cached owner, twin id or random-tick gate differs from TickPolicy "
+                        + "(BlockStateBaseTickMixin not applied?)", family.label);
+                warnings++;
+            }
+            twinStates += states.size();
+            LOGGER.info("[SELF-AUDIT/twin] family {} id={} ({}) blocks={} states={} levels={}", family.label, id,
+                    btw.modern.Block.blocksList[id].getClass().getSimpleName(), blocks.stream()
+                            .map(b -> String.valueOf(ForgeRegistries.BLOCKS.getKey(b))).toList(),
+                    states.size(), visible);
+        }
+
+        // (d) the paced plants
+        for (Block b : TwinRegistry.pacedBlocks()) {
+            int states = 0;
+            TwinRegistry.Pace pace = null;
+            boolean mismatch = false;
+            for (BlockState s : b.getStateDefinition().getPossibleStates()) {
+                TwinRegistry.Pace p = TwinRegistry.paceFor(s);
+                if (p == null) continue;
+                states++;
+                pace = p;
+                FcBlockStateAccess cached = (FcBlockStateAccess) (Object) s;
+                FcPaceAccess cachedPace = (FcPaceAccess) (Object) s;
+                if (cached.btw$randomOwner() != TickPolicy.PACED || cachedPace.btw$growthPace() != p.pace()
+                        || cachedPace.btw$paceEndBan() != p.endBan() || s.isRandomlyTicking() != b.isRandomlyTicking(s)) {
+                    mismatch = true;
+                }
+            }
+            if (pace == null) continue;
+            pacedStates += states;
+            Object key = ForgeRegistries.BLOCKS.getKey(b);
+            if (mismatch) {
+                LOGGER.warn("[SELF-AUDIT/twin] {}: a cached owner, pace or random-tick gate differs from TickPolicy "
+                        + "(BlockStateBaseTickMixin not applied?)", key);
+                warnings++;
+            }
+            LOGGER.info("[SELF-AUDIT/twin] paced {} ({}) pace={} endBan={} states={}", key, pace.name(), pace.pace(),
+                    pace.endBan(), states);
+        }
+
+        // (e) growth blocks nobody classified
+        for (Block b : ForgeRegistries.BLOCKS) {
+            if (b instanceof ProxyBlock || ProxyRegistry.getBlockId(b) != 0 || TwinRegistry.governsBlock(b)) continue;
+            boolean grows = b instanceof net.minecraft.world.level.block.BonemealableBlock
+                    || TickPolicy.overridesRandomTick(b.getClass());
+            if (!grows || isKeptOn1201(b)) continue;
+            net.minecraft.resources.ResourceLocation key = ForgeRegistries.BLOCKS.getKey(b);
+            if (key != null && "minecraft".equals(key.getNamespace())) {
+                LOGGER.warn("[SELF-AUDIT/twin] {} ({}) grows by random tick or bone meal but is neither FC-mapped, a "
+                        + "twin, paced nor kept on 1.20.1: classify it in TwinRegistry", key, b.getClass().getName());
+                warnings++;
+            } else {
+                modded++;
+            }
+        }
+        if (modded > 0) {
+            LOGGER.info("[SELF-AUDIT/twin] {} blocks of other mods grow by random tick or bone meal at their own pace",
+                    modded);
+        }
+
+        LOGGER.info("[SELF-AUDIT/twin] {} twin families ({} blocks), {} twin states, {} paced states, {} warnings",
+                families, familyBlocks, twinStates, pacedStates, warnings);
+    }
+
+    /**
+     * 1.20.1 blocks that keep their own random tick or bone meal on purpose (TwinRegistry, kept list): leaves of the
+     * new species (decay already at 4.B pacing, S13), nylium (S14), bone-meal-only spreaders (S15: moss, dripleaf,
+     * rooted dirt, pink petals, tall flowers, glow lichen, sea pickles, seagrass, the vine and kelp bodies), and what is
+     * not a plant (copper weathering, dripstone, amethyst, turtle eggs, frosted ice, deepslate redstone ore, stairs
+     * delegating to their base block).
+     */
+    private static boolean isKeptOn1201(Block b) {
+        return b instanceof net.minecraft.world.level.block.LeavesBlock
+                || b instanceof net.minecraft.world.level.block.NyliumBlock
+                || b instanceof net.minecraft.world.level.block.MossBlock
+                || b instanceof net.minecraft.world.level.block.BigDripleafBlock
+                || b instanceof net.minecraft.world.level.block.BigDripleafStemBlock
+                || b instanceof net.minecraft.world.level.block.SmallDripleafBlock
+                || b instanceof net.minecraft.world.level.block.RootedDirtBlock
+                || b instanceof net.minecraft.world.level.block.PinkPetalsBlock
+                || b instanceof net.minecraft.world.level.block.TallFlowerBlock
+                || b instanceof net.minecraft.world.level.block.GlowLichenBlock
+                || b instanceof net.minecraft.world.level.block.SeaPickleBlock
+                || b instanceof net.minecraft.world.level.block.SeagrassBlock
+                || b instanceof net.minecraft.world.level.block.GrowingPlantBodyBlock
+                || b instanceof net.minecraft.world.level.block.WeatheringCopper
+                || b instanceof net.minecraft.world.level.block.PointedDripstoneBlock
+                || b instanceof net.minecraft.world.level.block.BuddingAmethystBlock
+                || b instanceof net.minecraft.world.level.block.TurtleEggBlock
+                || b instanceof net.minecraft.world.level.block.FrostedIceBlock
+                || b instanceof net.minecraft.world.level.block.RedStoneOreBlock
+                || b instanceof net.minecraft.world.level.block.StairBlock;
     }
 
     /**

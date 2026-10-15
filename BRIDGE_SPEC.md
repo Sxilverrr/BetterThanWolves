@@ -29,7 +29,8 @@ behaviour has to change, the change goes outside FC code:
   or load time). Patches never write back to FC sources. The build-time ASM transforms in
   `Forge/build.gradle` (`widenFcHookDescriptors`, `openUpEntityAccess`,
   `extendFcPathingBuildRange`, `extendFcTreeBuildRange`) are its precursors and are expected to move
-  into it.
+  into it, as are the load-time mixins on FC classes in `btw.forge.mixin.fcext` (2026-10-15, keyed
+  on the plant-twin ids so FC's own blocks are untouched).
 
 Legacy port edits that predate this rule:
 
@@ -83,13 +84,20 @@ MC ItemStack  ◄── ItemStackBridge ──► btw.modern.ItemStack
 - `btw.modern.AxisAlignedBB` — wraps `AABB`
 - `btw.modern.Vec3` — wraps `Vec3`
 - `btw.modern.ChunkCoordinates` — data class
-- Mixins (`Forge/src/main/resources/betterthanwolves.mixins.json`, updated 2026-10-14):
+- Mixins (`Forge/src/main/resources/betterthanwolves.mixins.json`, updated 2026-10-15):
   - block hooks: `BlockBehaviorMixin` (FC neighbour, place, remove, use, entity, signal and dig hooks;
     no tick routing since 2026-10-14), `BlockMixin`;
   - tick ownership (see [Tick ownership (TickPolicy)](#tick-ownership-tickpolicy)):
     `BlockStateBaseTickMixin`, `BlockStateRandomTickMixin`, `LavaFluidMixin`;
   - rule bridges for the ticks FC now owns: `FireBlockMixin`, `PlantSoilMixin`, `FarmBlockMixin`,
     `AttachedStemBlockMixin`;
+  - post-1.5.2 plants (twins and paced owners, see the tick-ownership section):
+    `fcext.FCBlockSaplingTwinMixin` and `fcext.FCBlockMushroomTwinMixin` (load-time, on FC classes),
+    `BeeGrowCropGoalMixin`, `BeeAccessor`;
+  - bone meal (see [Bone meal (BoneMealPolicy)](#bone-meal-bonemealpolicy)): `BoneMealItemMixin`,
+    `BonemealableGateMixin`;
+  - stays removed (see [Stays removed (RemovedContent)](#stays-removed-removedcontent)):
+    `StructureTemplateRemovedMixin`, `StructurePieceRemovedMixin`;
   - entities, players, items and the world: `LivingEntityMixin`, `PlayerMixin`, `ServerPlayerMixin`,
     `ServerPlayerGameModeMixin`, `FoodDataMixin`, `ItemEntityMixin`, `ItemStackMixin`,
     `ServerLevelMixin`, `BonusChestFeatureMixin`;
@@ -105,10 +113,12 @@ MC ItemStack  ◄── ItemStackBridge ──► btw.modern.ItemStack
 
 ## Tick ownership (TickPolicy)
 
-Added 2026-10-14 (`STUB_CATALOGUE.md` (as)). Code: `Forge/src/main/java/btw/forge/TickPolicy.java`
-(the rule and the dispatch bodies), `mixin/BlockStateBaseTickMixin.java`,
-`mixin/BlockStateRandomTickMixin.java`, `mixin/LavaFluidMixin.java`, `FcBlockStateAccess.java` (the
-cached owners), `LightPolicy.java`, `FcMetaOverlay.java`, `BridgeSelfAudit.java`.
+Added 2026-10-14 (`STUB_CATALOGUE.md` (as)); extended 2026-10-15 to post-1.5.2 plants ((at),
+`INTEGRATIONS.md` #018). Code: `Forge/src/main/java/btw/forge/TickPolicy.java` (the rule and the
+dispatch bodies), `mixin/BlockStateBaseTickMixin.java`, `mixin/BlockStateRandomTickMixin.java`,
+`mixin/LavaFluidMixin.java`, `FcBlockStateAccess.java` (the cached owners), `FcPaceAccess.java` (the
+cached pace), `TwinRegistry.java` (twins and paced plants), `mixin/fcext/`,
+`mixin/BeeGrowCropGoalMixin.java`, `LightPolicy.java`, `FcMetaOverlay.java`, `BridgeSelfAudit.java`.
 
 **The rule.** FC decides the random and scheduled ticks of every FC-mapped vanilla-id `BlockState`. The
 decision is made once per state, from the FC block at the state's legacy id (`TickPolicy.decide`), and
@@ -121,7 +131,8 @@ hooks in `BlockBehaviorMixin` never ran for them.
   non-zero, `blocksList` slot populated), is not a `ProxyBlock`, and `BTWLifecycle.isFcReady()` holds
   (set as the last statement of `initialize()`). ProxyBlocks keep their own forwarding
   (`ProxyBlock.tick` / `randomTick` / `isRandomlyTicking`). Unmanaged states keep the 1.20.1 flag and
-  both owners stay VANILLA.
+  both owners stay VANILLA. Post-1.5.2 plants have no legacy id; `decide` classifies them first, from
+  `TwinRegistry` (see Post-1.5.2 plants below).
 - **Random ticks:** gate = `fc.getTickRandomly()` and the runtime FC class declares `updateTick` or
   `RandomUpdateTick` below `btw.modern.Block` (a 4.B tick that reaches only a Modern-Common stub stays
   off). Owner FC when the gate holds, else NONE. An FC random tick runs `RandomUpdateTick` and cancels
@@ -133,7 +144,9 @@ hooks in `BlockBehaviorMixin` never ran for them.
   de-duplicates by (pos, block), so an FC and a 1.20.1 schedule for one cell become one tick, which the
   rule hands to exactly one engine.
 - **Owners** (byte per state): VANILLA 0, the 1.20.1 body runs; FC 1, FC runs and 1.20.1 is cancelled;
-  NONE 2, the state does not random-tick (a direct call passes through to 1.20.1).
+  NONE 2, the state does not random-tick (a direct call passes through to 1.20.1); PACED 3 (random
+  ticks of post-1.5.2 plants only), the 1.20.1 body runs on the fraction `pace` of the random ticks and
+  never in the End under FC's End ban.
 - **Determinism:** `decide` is a pure function of the state and FC's static data; it never reads
   gamerules, config or world state. It runs at every registry bake and `Blocks.rebuildCache` (server
   start, /reload, client tag sync), and `LevelChunkSection` recounts ticking states from the cached flag
@@ -151,7 +164,9 @@ hooks in `BlockBehaviorMixin` never ran for them.
   |                                                         |                                    | the random / scheduled owners
 2 | BlockStateBase.initCache m_60611_, TAIL                 | BlockStateBaseTickMixin, @Inject   | LightPolicy emission over lightEmission
 3 | BlockStateBase.randomTick m_222972_, HEAD               | BlockStateRandomTickMixin (1100)   | random owner FC: TickPolicy.runRandom,
-  |                                                         |                                    | 1.20.1 body cancelled
+  |                                                         |                                    | 1.20.1 body cancelled; PACED: the
+  |                                                         |                                    | 1.20.1 body runs when pacedRollPasses,
+  |                                                         |                                    | else cancelled
 4 | BlockStateBase.tick m_222963_, HEAD                     | BlockStateBaseTickMixin            | scheduled owner FC: runScheduled,
   |                                                         |                                    | 1.20.1 body cancelled
 5 | LavaFluid.randomTick m_213812_, HEAD                    | LavaFluidMixin                     | cancelled when the lava state's random
@@ -160,8 +175,10 @@ hooks in `BlockBehaviorMixin` never ran for them.
 
 - The tick loop reaches the state level at exactly two points: `ServerLevel.tickChunk` ->
   `state.randomTick` (ServerLevel.java:481) and `ServerLevel.tickBlock` -> `state.tick` (:680). The
-  fluid random tick follows the block's (:484-487), hence row 5. Other `randomTick` callers (bone meal on
-  a stem, other mods' growth accelerators) reach the same dispatch.
+  fluid random tick follows the block's (:484-487), hence row 5. Other `randomTick` callers (other mods'
+  growth accelerators, and since 2026-10-15 a bee's pollination visit, `BeeGrowCropGoalMixin`) reach the
+  same dispatch. Bone meal no longer does: `BonemealableGateMixin` cancels `StemBlock.performBonemeal`
+  on every state whose growth FC governs (see Bone meal (BoneMealPolicy)).
 - Row 1 is a `@Redirect` of the single PUTFIELD, not a TAIL overwrite: `LevelChunkSection` counts
   ticking states with the cached flag from any thread, and an interim 1.20.1 value between two writes
   could drift a section's count. It stays at default priority so it never depends on other mods'
@@ -172,7 +189,10 @@ hooks in `BlockBehaviorMixin` never ran for them.
   body (DENY skips it) and `Post` when the state changed and is not air, for the classes whose 1.20.1
   `randomTick` fires them (CropBlock, StemBlock, CactusBlock, SugarCaneBlock, NetherWartBlock,
   CocoaBlock; SweetBerryBush, BambooStalk, ChorusFlower and GrowingPlantHead are listed but unmapped).
-  `INTEGRATIONS.md` #016.
+  `INTEGRATIONS.md` #016. Since 2026-10-15 those four are paced, and their own 1.20.1 body, which fires
+  the events, runs when the roll lets it. The beetroot and torchflower twins are CropBlocks, so
+  `runRandom` fires the events for them; the sapling and fungus twins end in 1.20.1 growers, which fire
+  Forge's `BlockGrowFeatureEvent`.
 - Do not add tick or randomTick injects at the `BlockBehaviour` level (see `BlockBehaviorMixin`'s
   javadoc): such a hook keys on the wrong block (StairBlock passes the stair state to `base.tick`, which
   ran FCBlockStoneBrick.updateTick at a stair position), never sees the overriding classes, and would be
@@ -184,20 +204,24 @@ unless the 1.20.1 class overrides `tick`):
 ```
 # | Block (legacy id)       | Random owner / gate                   | Scheduled owner      | Why
 ──┼─────────────────────────┼───────────────────────────────────────┼──────────────────────┼──────────────────────────────────────────
-1 | WATER (8)               | NONE, gate false                      | by rule              | 4.B's id-8 random tick is the 1.5.2 flow
+1 | twin state (no id; a    | FC as the twin's id, gate true        | VANILLA              | the nearest FC plant class runs the
+  | TwinRegistry family)    |                                       |                      | tick (2026-10-15)
+2 | paced state (no id)     | PACED, 1.20.1 flag, pace and End flag | VANILLA              | no FC class can drive it; FC's mean
+  |                         |                                       |                      | pace (2026-10-15)
+3 | WATER (8)               | NONE, gate false                      | by rule              | 4.B's id-8 random tick is the 1.5.2 flow
   |                         |                                       |                      | step; the 1.20.1 fluid engine owns flow
-2 | LAVA (10)               | FC as id 11, gate forced true         | by rule, as id 10    | all settled 4.B lava is id 11
+4 | LAVA (10)               | FC as id 11, gate forced true         | by rule, as id 10    | all settled 4.B lava is id 11
   |                         | (VANILLA if blocksList[11] is empty)  |                      | (FCBlockLavaStationary)
-3 | RedStoneOreBlock (73)   | VANILLA, 1.20.1 flag                  | by rule              | blocksList[73] is the unlit ore; 1.20.1
+5 | RedStoneOreBlock (73)   | VANILLA, 1.20.1 flag                  | by rule              | blocksList[73] is the unlit ore; 1.20.1
   |                         |                                       |                      | LIT + unlight = 4.B id 74
-4 | IceBlock (79)           | VANILLA                               | by rule              | FCBlockIce assumes 1.5.2 opacity 3;
+6 | IceBlock (79)           | VANILLA                               | by rule              | FCBlockIce assumes 1.5.2 opacity 3;
   |                         |                                       |                      | 1.20.1 melts at light 12, as 4.B does
-5 | DETECTOR_RAIL (28)      | NONE, gate false                      | VANILLA (override)   | rail SHAPE + POWERED <-> metadata is
+7 | DETECTOR_RAIL (28)      | NONE, gate false                      | VANILLA (override)   | rail SHAPE + POWERED <-> metadata is
   |                         |                                       |                      | not mapped
-6 | DEAD_BUSH (32)          | NONE, gate false (decision D3)        | by rule              | its FC tick is survival on sand 12 only
-7 | PENDING ids (staging)   | VANILLA, 1.20.1 flag                  | by rule              | empty
-8 | LeavesBlock (18)        | FC, gate = !PERSISTENT                | VANILLA (DISTANCE)   | replaces 1.20.1's DISTANCE == 7 gate
-9 | everything else         | general rule                          | by rule / FC_SCHED   | stairs: their own FC block (off), not
+8 | DEAD_BUSH (32)          | NONE, gate false (decision D3)        | by rule              | its FC tick is survival on sand 12 only
+9 | PENDING ids (staging)   | VANILLA, 1.20.1 flag                  | by rule              | empty
+10| LeavesBlock (18)        | FC, gate = !PERSISTENT                | VANILLA (DISTANCE)   | replaces 1.20.1's DISTANCE == 7 gate
+11| everything else         | general rule                          | by rule / FC_SCHED   | stairs: their own FC block (off), not
   |                         |                                       |                      | StairBlock's base; NETHER_PORTAL (90):
   |                         |                                       |                      | general rule, FC (no entry)
 ```
@@ -251,6 +275,10 @@ StemBlock, AttachedStemBlock          | growth 0-14 (AGE = growth / 2); 15 =    
 LeavesBlock                           | species, bit 4 PERSISTENT, bit 8 decay check   | state + overlay (bit 8)
 SaplingBlock                          | type + (stage << 2)                            | state + overlay (stage)
 carved pumpkin, jack o'lantern        | facing 0-3, bit 8 player-placed                | state + overlay (bit 8)
+twin saplings, azaleas (2026-10-15)   | species bits; FC stage << 2                    | state (species) + overlay (stage)
+beetroots, torchflower and pitcher    | growth level 0-7; AGE shows the levels         | state + overlay (levels between)
+crops (twins, 2026-10-15)             | {0,2,4,7}, {0,4} and {0,2,4,6,7}               |
+crimson, warped fungus (twins)        | species bit 0                                  | state
 ```
 
 - **FcMetaOverlay** (`FcMetaOverlay.java`): a SavedData per dimension, key `btw_fc_meta`, file
@@ -315,6 +343,10 @@ freeze, after FMLCommonSetupEvent: read at common setup, every cached flag is a 
 [SELF-AUDIT/tick] <n> blocks, <n> FC-random states, <n> FC-scheduled blocks, <n> warnings (0 expected)
 [SELF-AUDIT/light] <block key> id=<id> emission <1.20.1>-><4.B> (<n>/<states> states)
 [SELF-AUDIT/light] <n> mapped blocks emit 4.B light that differs from 1.20.1, <n> warnings (0 expected)
+[SELF-AUDIT/twin] id <id> = <FC class> (<KIND> twin)
+[SELF-AUDIT/twin] family <family> id=<id> (<FC class>) blocks=[...] states=<n> levels=[...]
+[SELF-AUDIT/twin] paced <block> (<plant>) pace=<pace> endBan=<true|false> states=<n>
+[SELF-AUDIT/twin] <n> twin families (<n> blocks), <n> twin states, <n> paced states, <n> warnings
 ```
 
 - The tick audit WARNs on: a class that overrides `tick` but is neither FC_SCHED nor an expected
@@ -325,8 +357,19 @@ freeze, after FMLCommonSetupEvent: read at common setup, every cached flag is a 
   not initialised.
 - The light audit WARNs on a cached emission that differs from LightPolicy's answer, and on a mapped
   emitter made dark other than id 39 (`EXPECTED_DARKENED_IDS`).
+- The twin audit (`auditTwins`, 2026-10-15, after the tick audit; the tick audit's 4.B flag check skips
+  twin ids, which lie in 1-174) WARNs on: a twin that was not built, whose `blocksList` slot is not its
+  FC class, or whose id has a ProxyBlock, a mapped 1.20.1 block or item, or lies in the ProxyBlock range;
+  a twin state FC's world reads do not see as its twin's id; a metadata codec that does not round-trip
+  (`stateForMeta(s, deriveMeta(s)) == s`, and every crop level lands on the highest visible level not
+  above it); a cached owner, twin id, gate or pace that differs from `decide`; a `minecraft` block that
+  grows by random tick or bone meal and is neither FC-mapped, a twin, paced nor kept on 1.20.1 on purpose
+  (`isKeptOn1201`: the new leaves, nylium, bone-meal-only spreaders, growing-plant bodies, copper,
+  dripstone, amethyst, turtle eggs, frosted ice, redstone ore, stairs). Other mods' growing blocks are
+  counted at INFO.
 - 2026-10-14 values: `238 blocks, 778 FC-random states, 200 FC-scheduled blocks, 0 warnings`;
-  `brown_mushroom id=39 emission 1->0 (1/1 states)`, `1 mapped blocks ..., 0 warnings`.
+  `brown_mushroom id=39 emission 1->0 (1/1 states)`, `1 mapped blocks ..., 0 warnings`. 2026-10-15: tick
+  and light unchanged; `6 twin families (11 blocks), 41 twin states, 173 paced states, 0 warnings`.
 
 **Rule bridges.** The ticks FC now owns meet 1.20.1 executors that stay 1.20.1's (survival checks, fire
 placement, farmland reversion, attached stems). These hooks give those executors FC's rule; they
@@ -350,6 +393,321 @@ implement rules, not dispatch.
 6 | AttachedStemBlockMixin            | AttachedStemBlock.updateShape         | FC stems: attachment left to FC
   |                                   | m_7417_, HEAD                         | (FCBlockStem.ValidateFruitState)
 ```
+
+**Post-1.5.2 plants: twins and paced owners** (2026-10-15, maintainer ruling: each plant added after
+1.5.2 takes the 4.B rule of its nearest 1.5.2 / FC relative, adapted to its lore; `STUB_CATALOGUE.md`
+(at), `INTEGRATIONS.md` #018). These blocks have no legacy id, so the general rule never saw them.
+`decide` asks `TwinRegistry` first, after the FC-ready and ProxyBlock checks (exception rows 1 and 2).
+S numbers name the design's per-plant lore calls (scratchpad t2/modern_plants.md, section 2.2).
+
+- **Twins** (random owner FC, scheduled VANILLA, gate true). A twin is a plain instance of an existing
+  FC plant class at a reserved legacy id; the twin state's random tick runs that object's FC
+  `updateTick` unchanged (survival, End ban, light, stages, weeds, hydration, fertilizer). Gate true:
+  azaleas and fungi gain the random tick 1.20.1 never gave them, and crops tick at every age, as FC's
+  crops do.
+
+```
+Id  | FC class (kind)                 | Family: 1.20.1 blocks                                    | Twin states
+────┼─────────────────────────────────┼──────────────────────────────────────────────────────────┼────────────
+174 | FCBlockSapling (SAPLING)        | sapling: acacia, cherry, dark oak saplings; mangrove     | 26
+    |                                 | propagule with HANGING false                             |
+169 | FCBlockSapling (AZALEA)         | azalea: azalea, flowering azalea                         | 2
+168 | FCBlockCarrot (ROOT_CROP)       | beetroot: beetroots                                      | 4
+167 | FCBlockWheatLegacy (SEED_CROP)  | torchflower: torchflower crop; pitcher: pitcher crop,    | 2 + 5
+    |                                 | lower half                                               |
+166 | FCBlockMushroom (FUNGUS)        | fungus: crimson, warped fungus                           | 2
+```
+
+  - **Ids.** The free legacy range 159-174 lies below the ProxyBlock range (175 up, which
+    BTWRegistration and BlockModelBridge walk); 159 and 170-173 are 1.6+ ids the vanilla table maps.
+    `BTWLifecycle` step 5d (`TwinRegistry.createTwins`, after the opaque-table fill, before `fcReady`)
+    takes the free ids from the top, before any `ModernBlockStandIn` exists; the stand-ins allocate from
+    the bottom (160 solid, 161 collider, flammable from 162), so four flammable stand-ins remain. Each
+    twin comes from its FC class's own constructor (its ItemBlock at `itemsList[id]` is never
+    registered: no loop below 175 does); `opaqueCubeLookup[id] = false`; `ModernTwins.markTwin(id)`. A
+    kind that cannot be built leaves its plants on 1.20.1 (logged, and the audit warns). The ids never
+    reach a save: the overlay keys on the 1.20.1 block.
+  - **World reads only.** `ProxyRegistry.getWorldBlockId` answers the twin id for a twin state (before
+    the stripped-log and stand-in branches); `getBlockId` stays 0, so `BlockBehaviorMixin`, items,
+    placement, shape-update survival, loot and scheduled ticks stay 1.20.1's. `getRemovalLegacyId`
+    answers the twin id for the crop families, so FC farmland under a harvested crop twin becomes loose
+    dirt (S16).
+  - **Results** (load-time mixins on the FC classes, `btw.forge.mixin.fcext`, `@Pseudo`, `remap =
+    false`, descriptors from javap of the remapped FC output, keyed on `TwinRegistry.isTwinId(blockID)`
+    so FC's own sapling 6 and mushroom 40 are untouched): `FCBlockSaplingTwinMixin` at `growTree` HEAD,
+    cancellable, grows the live sapling's 1.20.1 tree (`SaplingBlock.advanceTree` at STAGE 1, or
+    `AzaleaTreeGrower`); dark oak first passes FC's own 2x2 stage check (`isSameSapling`,
+    `GetSaplingGrowthStage`), and a tree that does not fit writes FC stage 3 back to every sapling of
+    its square, FC's restore rule. At `CanGrowOnBlock` RETURN it also accepts a soil the live plant's
+    1.20.1 `canSurvive` accepts (clay and mud, S3). `FCBlockMushroomTwinMixin` at `updateTick` HEAD,
+    cancellable, runs `TwinRegistry.fungusTick`: not in the End; on the species' own nylium 1 in 50
+    random ticks to its planted huge fungus (with Forge's `BlockGrowFeatureEvent`), no spread.
+  - **WorldBridge.** `deriveVanillaMetadata` / `setBlockMetadata` consult `TwinRegistry.deriveMeta` /
+    `stateForMeta` first (before the water-holder branch, which would answer 0 for a waterlogged
+    propagule, and the CropBlock branch); `setTwinMetadata` switches the torchflower crop to the
+    TORCHFLOWER block at level 7 under the metadata-only write guard and places the pitcher's upper half
+    as `PitcherCropBlock.grow` does (the write is refused when there is no room); `isMetaFullyDerived`
+    is false for twin blocks; `getBlockMaterial` answers water for a waterlogged twin cell; collision
+    boxes come from the live block's shape; `DropModernBlockLoot` drops the live state's 1.20.1 loot,
+    which Modern-Common `Block` / `BlockCrops.dropBlockAsItemWithChance` call for a twin
+    (`ModernTwins.isTwin`).
+- **Paced** (random owner PACED, scheduled VANILLA, gate null: 1.20.1's own flag). No FC class can drive
+  these bodies (FCBlockReed hard-codes air above and a 3-block cap, FCBlockVine works on side bits,
+  FCBlockCocoa on log attachment), so the 1.20.1 body runs on the fraction `pace` = FC relative's chance
+  / 1.20.1's chance of the random ticks: the mean pace is FC's. Row 3: `TickPolicy.pacedRollPasses` is
+  false in the End under the End ban, else `random.nextFloat() < pace`. `BlockStateBaseTickMixin` caches
+  the pace and End flag per state (`FcPaceAccess.btw$growthPace` / `btw$paceEndBan`).
+
+```
+Plant (paced states)                    | 4.B relative and rate                         | Pace    | End
+────────────────────────────────────────┼───────────────────────────────────────────────┼─────────┼────────
+bamboo shoot, bamboo (1 + 12)           | FCBlockReed 1/32 per segment; 1.20.1 1/3      | 3/32    | banned
+kelp (26)                               | FCBlockReed 1/32; 1.20.1 0.14                 | 0.2232  | banned
+cave, weeping, twisting vines (52+26+26)| FCBlockVine hanging pace 1/16; 1.20.1 0.1     | 0.625   | banned
+sweet berry bush (4)                    | FCBlockCocoa 1/20 per stage; 1.20.1 1/5       | 0.25    | banned
+mangrove propagule, HANGING true (20)   | FCBlockCocoa 1/20 per age; 1.20.1 every tick  | 0.05    | banned
+chorus flower (6)                       | FCBlockCactus 16 ticks per step; 1.20.1 every | 1/16    | allowed
+                                        | tick                                          |         | (S10)
+```
+
+- **Growth outside the random tick.** `TickPolicy.isFcGrowthGoverned(state)`: an FC-owned growing plant
+  (a random owner FC whose FC block has plant, vine or cactus material), a ProxyBlock plant, any twin or
+  paced state (pitcher upper halves and hanging propagules included); a growing-plant body (kelp,
+  weeping, twisting and cave vine plants) follows its head. Pure; false before FC is ready. Bone meal
+  reads it (see Bone meal (BoneMealPolicy)), and so do bees:
+
+```
+# | Target (SRG)                                     | Hook                                  | Does
+──┼──────────────────────────────────────────────────┼───────────────────────────────────────┼──────────────────────────────────
+1 | Bee$BeeGrowCropGoal.tick m_8037_: the one        | BeeGrowCropGoalMixin, @Redirect       | a visit to a governed plant runs
+  | Level.getBlockState m_8055_                      | (the bee from the goal's constructor, | its random tick once (FC body or
+  |                                                  | RETURN)                               | paced roll) and answers air; 2005
+  |                                                  |                                       | when it changed
+2 | Bee.incrementNumCropsGrownSincePollination       | BeeAccessor, @Invoker                 | counts the visit where vanilla
+  | m_27871_                                         |                                       | counts it (ten per pollination)
+```
+
+- **Kept on 1.20.1** (`BridgeSelfAudit.isKeptOn1201`): the leaves of the new species and nylium decay
+  (already 4.B pacing, S13, S14), blocks that only multiply by bone meal (S15), growing-plant bodies,
+  and what is not a plant.
+- LightPolicy is unchanged: the twin plants emit no light in either table, and the light audit still
+  reports one block.
+
+---
+
+## Bone meal (BoneMealPolicy)
+
+Added 2026-10-15 (maintainer ruling: bone meal behaves exactly as in 4.B, fertilising the soil through
+FC and never growing a plant the 1.20.1 way; `STUB_CATALOGUE.md` (at), `INTEGRATIONS.md` #017). Code:
+`Forge/src/main/java/btw/forge/BoneMealPolicy.java`, `client/BoneMealPrediction.java`,
+`mixin/BoneMealItemMixin.java`, `mixin/BonemealableGateMixin.java`,
+`mixin/ServerPlayerGameModeMixin.java` (the early return), `ProxyBlock.tryPlaceHeldItem` (the white-dye
+guard), Modern-Common `BlockFlower.java` (the FCBlockPlants relay and weed pull) and `Item.java` (the
+block-dispenser default).
+
+**The rule.** Bone meal is FC fertilizer and nothing else. Its only effect on a block is 4.B's
+`FCItemDye.ApplyBoneMeal`: the clicked block's `AttemptToApplyFertilizerTo`, which plants relay to their
+soil (FCBlockPlants) and FC farmland and planters take once. The item is used up exactly when that
+returns true. On a block the rule owns, 1.20.1's `BonemealableBlock.performBonemeal` and
+`BoneMealItem.growWaterPlant` never run and levelEvent 1505 (particles, sound) never plays. Only
+`minecraft:bone_meal` is fertilizer (`isFertilizer`); 1.20.1 white dye, which `LegacyVariants` also
+reads as FC dye 15, is not.
+
+**Routes** (`BoneMealPolicy.route(state)`, pure; VANILLA before FC is ready):
+
+```
+Route       | When                                                     | Effect
+────────────┼──────────────────────────────────────────────────────────┼──────────────────────────────────────────
+FC_TARGET   | ProxyRegistry.getBlockId != 0: every FC-mapped block,    | blocksList[id].AttemptToApplyFertilizerTo
+            | vanilla ids and ProxyBlocks (grass block, netherrack,    | at the clicked cell (the block's own 4.B
+            | sand and cocoa included: 4.B's "nothing")                | rule, relays included)
+SOIL_RELAY  | TickPolicy.isFcGrowthGoverned: twin and paced            | FCBlockPlants' relay: the soil below the
+            | post-1.5.2 plants, bodies following their head           | plant's lowest cell (a multi-cell plant
+            |                                                          | relays through its own cells)
+VANILLA     | everything else (moss, nylium, pink petals, seagrass,    | 1.20.1 bone meal
+            | modded plants, ...)                                      |
+```
+
+**Paths** (Forge 47.3.0; the refmap carries the SRG names):
+
+```
+# | Path                          | Target (SRG)                              | Hook                      | Does
+──┼───────────────────────────────┼───────────────────────────────────────────┼───────────────────────────┼──────────────────────────────
+1 | player use, not sneaking,     | ServerPlayerGameMode.useItemOn m_7179_,   | ServerPlayerGameModeMixin | returns early for FC dye 15
+  | main hand                     | HEAD (existing inject)                    | (isFcBoneMeal)            | (no pre-emption): RightClick-
+  |                               |                                           |                           | Block and the spectator check,
+  |                               |                                           |                           | then blockstate.use: Stage 1
+  |                               |                                           |                           | onBlockActivated (weed pull),
+  |                               |                                           |                           | Stage 2 FCItemDye
+2 | sneaking, off hand, targets   | BoneMealItem.useOn m_6225_, HEAD,         | BoneMealItemMixin         | route VANILLA: 1.20.1. Server:
+  | without Stage 2, any useOn    | cancellable                               | (onBoneMealUseOn)         | fertilize, shrink 1, CONSUME,
+  | caller                        |                                           |                           | else PASS. Client: predict the
+  |                               |                                           |                           | swing, SUCCESS / PASS
+3 | other applyBonemeal callers   | BonemealEvent (Forge-added, no SRG), LOW, | BoneMealPolicy.onBonemeal | ALLOW when FC took it (Forge
+  | (mods, fake players, growCrop)| DEFAULT results only                      |                           | uses one), else cancel; the
+  |                               |                                           |                           | client always cancels
+4 | direct performBonemeal /      | isValidBonemealTarget m_7370_ and         | BonemealableGateMixin, on | false / cancelled when
+  | isValidBonemealTarget callers | performBonemeal m_214148_, HEAD           | the 31 classes declaring  | governsGrowth (route not
+  |                               |                                           | them                      | VANILLA), per state
+5 | vanilla dispenser             | DispenserBlock.registerBehavior m_52672_  | BoneMealPolicy.Setup      | DefaultDispenseItemBehavior
+  |                               | (a call at FMLCommonSetupEvent,           |                           | for Items.BONE_MEAL: eject,
+  |                               | enqueueWork; a put into the registry)     |                           | aux 1000 and 2000
+6 | FC block dispenser            | Modern-Common Item                        | port code                 | 1.5.2 default: SpitOutItem
+  |                               | .OnItemUsedByBlockDispenser               |                           | inlined, aux 1000, true
+7 | Stage 2 with white dye        | ProxyBlock.tryPlaceHeldItem               | BoneMealPolicy            | FCItemDye does not run for a
+  |                               |                                           | .mayUseAsFcItem           | stack that is not bone meal
+```
+
+- Row 1 restores 4.B's `activateBlockOrUseItem` order (vanilla/server ItemInWorldManager.java:376-407)
+  for bone meal: weeds are pulled first, claim mods and Serene Seasons' bone-meal veto see the
+  `RightClickBlock` event, and a spectator cannot fertilize. Every other FC item still runs at HEAD
+  (`STUB_CATALOGUE.md` (at) caveat BM8).
+- Modern-Common `BlockFlower` carries FCBlockPlants' `AttemptToApplyFertilizerTo` (Client
+  FCBlockPlants.java:129-143) and `onBlockActivated` (the weed pull, FX 2001, :84-102). Without the
+  relay FCItemDye returned false for the whole 1.5.2 flower family and 1.20.1's growth ran.
+- Client: `BoneMealPrediction` (`@OnlyIn(Dist.CLIENT)`, reached through `DistExecutor`, render thread)
+  runs `applyFertilizer` on `ClientFcWorld`, whose writes are no-ops, so it answers 4.B's boolean for
+  the swing without changing anything. The client never shrinks the stack (as `BoneMealItem.useOn` does
+  not); the server's slot update does, and the soil's new state arrives through the normal block update.
+- Creative: `ServerPlayerGameMode.useItemOn` restores the count around `useOn`, and
+  `ProxyBlock.tryPlaceHeldItem` restores it for Stage 2, as 4.B did.
+- An FC failure inside `AttemptToApplyFertilizerTo` is logged once and counts as declined (the use
+  packet handler has no catch above it).
+- Dropped bone meal keeps FC's own item rule (`FCBlockFarmlandBase` / `FCBlockPlanterBase
+  .onEntityCollidedWithBlock` through the item bridges). Gap: that path sees white dye as FC dye 15 too
+  (`STUB_CATALOGUE.md` (at), WD5).
+- Extension point: a compat rule for modded plants on BTW soil adds its condition to `route` as a
+  SOIL_RELAY and reuses `relayToSoil` and `onBonemeal`; it does not add a second `BonemealEvent`
+  listener.
+
+---
+
+## Stays removed (RemovedContent)
+
+Added 2026-10-15 (maintainer ruling: blocks that 4.B explicitly removed stay removed; modern-only blocks
+4.B never had are not covered; `STUB_CATALOGUE.md` (at), `INTEGRATIONS.md` #019). Code:
+`Forge/src/main/java/btw/forge/removed/RemovedContent.java` (the table),
+`removed/RemovedContentEvents.java`, `removed/RemovedCreativeTabs.java`, `FcRecipeRemovals.java`,
+`RetiredIngredientWidening.java`, `RecipeBridge.java`, `data/FCRemovedContentLootModifier.java`,
+`data/FCLootOverrides.java`, `mixin/StructureTemplateRemovedMixin.java`,
+`mixin/StructurePieceRemovedMixin.java`, Modern-Common `CraftingManager.java` (the removal records).
+
+**The table.** One row per removed id: the 1.20.1 item and blocks, the tier, the expected 1.5.2 ids, the
+4.B citation, and the structure rule (T1) or BTW successor (T2). Every hook reads it; the lookups are
+immutable after class init, so worldgen threads may read them.
+
+```
+Tier                | Ids                                               | Recipes | Loot        | Creative | Structures
+────────────────────┼───────────────────────────────────────────────────┼─────────┼─────────────┼──────────┼──────────────────
+T1 stubbed (12)     | hopper, comparator, daylight_detector, dropper,   | removed | filtered    | hidden   | substituted (below)
+                    | trapped_chest, light / heavy weighted plates,     |         |             |          |
+                    | activator_rail, tnt_minecart, hopper_minecart,    |         |             |          |
+                    | tripwire_hook, tripwire                           |         |             |          |
+T2 retired (8)      | crafting_table, chest, ladder, torch (+ wall      | removed | the BTW     | hidden   | kept: FC's legacy
+                    | torch), snow_block, clay, cobweb, nether_brick    |         | successor   |          | drops convert them
+T3 recipe-only (8)  | wooden sword, shovel, pickaxe, axe, hoe;          | removed | filtered    | listed   | kept
+                    | stone_hoe; snow (layer); furnace                  |         |             |          |
+```
+
+- T2 successors (FCBetterThanWolves fields, resolved to registered 1.20.1 items at first use): BTW
+  workbench, chest, ladder, the unlit finite torch, solid snow, unfired clay, BTW web, BTW nether brick.
+  A successor that does not resolve is filtered instead, and the audit warns.
+- Ingredient successors (RetiredIngredientWidening): FC's legacy conversion target of each T2 id
+  (FCRecipes.java:5080-5102); the torch stands for the nether-coal torch, lit (1057) or unlit (1033),
+  never the finite torch, which would become a permanent light.
+
+**Hooks:**
+
+```
+# | Concern         | Target (SRG)                                         | Code                          | Does
+──┼─────────────────┼──────────────────────────────────────────────────────┼───────────────────────────────┼─────────────────────────────
+1 | recipes         | RecipeBridge.injectRecipes, on the map before        | FcRecipeRemovals.apply, then  | the four passes below; then
+  |                 | RecipeManager.replaceRecipes (also the               | RetiredIngredientWidening     | widening; /reload re-applies
+  |                 | OnDatapackSyncEvent re-inject)                       | .apply                        | both
+2 | loot            | global loot modifier                                 | FCRemovedContentLootModifier  | T1 / T3 filtered, T2 the
+  |                 | betterthanwolves:removed_content, no conditions:     | (FCLootOverrides emits the    | successor at the same count
+  |                 | every top-level LootTable.getRandomItems             | JSON)                         |
+  |                 | (ForgeHooks.modifyLoot)                              |                               |
+3 | templates       | StructureTemplate.processBlockInfos(                 | StructureTemplateRemovedMixin | T1 states substituted after
+  |                 | ServerLevelAccessor, BlockPos, BlockPos,             | at RETURN, cancellable,       | every processor, before
+  |                 | StructurePlaceSettings, List, StructureTemplate),    | remap = false (Forge-added,   | mirror / rotation; NBT kept
+  |                 | the Forge overload (StructureTemplate.java:374)      | no mapping)                   | only where it still fits
+4 | code pieces     | StructurePiece.placeBlock m_73434_, HEAD             | StructurePieceRemovedMixin,   | same substitutes (generateBox
+  |                 |                                                      | @ModifyVariable on the state  | and createDispenser go
+  |                 |                                                      |                               | through it)
+5 | creative, JEI   | BuildCreativeModeTabContentsEvent (MOD bus, LOWEST)  | RemovedCreativeTabs           | T1 and T2 entries removed
+  |                 |                                                      |                               | from every tab (JEI and
+  |                 |                                                      |                               | Search follow the tabs)
+6 | placement       | PlayerInteractEvent.RightClickBlock                  | RemovedContentEvents          | setUseItem(DENY) for an item
+  |                 |                                                      |                               | that places a T1 block
+  |                 |                                                      |                               | without being one (string)
+7 | entities        | EntityJoinLevelEvent (not loadedFromDisk); server    | RemovedContentEvents          | fresh TNT / hopper minecarts
+  |                 | tick END and ServerStoppingEvent                     |                               | cancelled, plain minecarts
+  |                 |                                                      |                               | added (contents dropped)
+8 | trades (guard)  | VillagerTradesEvent, WandererTradesEvent (LOWEST)    | RemovedContentEvents          | listings wrapped: T1 / T3
+  |                 |                                                      | .GuardedListing               | offers dropped, T2 sells the
+  |                 |                                                      |                               | successor
+9 | audit           | FMLCommonSetupEvent (enqueueWork)                    | RemovedContent.audit          | [REMOVED-AUDIT] line
+```
+
+**Structure substitutes (T1):** trapped chest -> chest (FACING, TYPE, WATERLOGGED and chest data kept);
+dropper -> dispenser (FACING and inventory data kept); comparator -> repeater (same FACING, delay 1);
+activator rail -> rail (shape kept); light and heavy weighted plates -> stone pressure plate; hopper,
+daylight detector, tripwire hook and tripwire -> air. A modded state without the expected properties
+becomes air. `StructurePiece.createChest` writes `Blocks.CHEST` directly, a T2 id that is deliberately
+not substituted.
+
+**Recipe passes** (`FcRecipeRemovals.apply`; passes 1-3 behind
+`RecipeBridge.MIRROR_FC_VANILLA_REMOVALS`, true; pass 4 always):
+1. FC's records: Modern-Common `CraftingManager.RemoveRecipe` / `RemoveShapelessRecipe` record every
+   call (`RemovedVanillaRecipe`, parsed as 1.5.2 parsed it). Each removes the `minecraft:` crafting
+   recipes whose result and ingredient multiset match: shape ignored, tags resolved (an FC ingredient
+   accepts a 1.20.1 `Ingredient` when any of its items maps back to that id and metadata, 32767 = any),
+   the count compared only when an exact-count recipe exists, results equivalent across a recipe group
+   whose results map to one legacy block (the 16 beds). The MC-to-legacy mapping never allocates a
+   headless id.
+2. Special recipes: every `MAP_EXTENDING` and `REPAIR_ITEM` recipe (vanilla/server
+   CraftingManager.java:49-51, 283-382).
+3. Cooking: the inputs FC took out of the 1.5.2 furnace table (vanilla/server FurnaceRecipes.java:37-55,
+   compared with FC's live list; clay keeps its brick); every `minecraft:` smelting, blasting, smoking
+   and campfire recipe whose ingredient maps to one.
+4. Stays removed: every recipe of any type and namespace whose result is a table item; foreign
+   namespaces are logged at INFO. FC's injected `fc_*` recipes are never removed; one that makes a table
+   item is reported as a WARN.
+
+**Widening** (`RetiredIngredientWidening.apply`, after the removals): a recipe outside
+`betterthanwolves` whose ingredient accepts a T2 id also accepts its ingredient successors
+(`Ingredient.merge` for a vanilla ingredient, Forge `CompoundIngredient` otherwise). Only ShapedRecipe,
+ShapelessRecipe, SmeltingRecipe, BlastingRecipe, SmokingRecipe, CampfireCookingRecipe and
+StonecutterRecipe are rebuilt, with the same id, result, group, category, pattern and timings; other
+classes are named in one log line. A recipe whose result FC makes its own way is not widened (FC's route
+wins). Recipes stranded by a T1 or T3 ingredient are reported once.
+
+**Audit** (`RemovedContent.audit`): every FC block of class FCBlockStub, FCBlockVanillaHopper,
+FCBlockDaylightDetector or FCBlockTripWireSource and every FCItemStub must be a T1 row (class names, not
+a null-tab test); every row's blocks and item must map to the cited 1.5.2 ids; every T2 successor and
+ingredient successor must resolve.
+
+```
+[REMOVED-AUDIT] stays-removed table: <n> T1, <n> T2, <n> T3 rows; FC stub blocks [...] and items [...] covered; <n> warning(s)
+FC vanilla-recipe removals on: <m>/<n> records matched (<n> count-insensitive, <n> unmatched), <n> crafting
+  + <n> special + <n> cooking recipes removed (removed furnace inputs [...]); stays-removed rule removed <n>
+  more (<n> outside minecraft); <n> recipes removed in total                          (logger BTW-RecipeRemovals)
+Widened <n> recipes whose retired-id ingredients now also accept the BTW successor (...); not widened because
+  FC makes the result its own way: [...]; not rebuildable: [...]                     (logger BTW-RecipeWidening)
+Stranded by a stubbed (T1) or recipe-only (T3) ingredient, ...: [...]                (logger BTW-RecipeWidening)
+```
+
+2026-10-15 values: `12 T1, 8 T2, 8 T3 rows; FC stub blocks [154, 149, 150, 151, 158, 146, 147, 148, 157,
+131, 132] and items [404, 407, 408] covered; 0 warning(s)`; `93/94 records matched (3 count-insensitive,
+1 unmatched), 108 crafting + 2 special + 20 cooking recipes removed ... 130 recipes removed in total`
+(the unmatched record is FC's 6-stick fence); 13 recipes widened; stranded: blast_furnace, smoker,
+furnace_minecart, crossbow.
+
+**Not covered, by the ruling's scope:** removed blocks already in a world or placed by commands (left
+alone; `/give` and `/setblock` stay op tools, as in 4.B); modern-only blocks 4.B never had; the
+remaining CT6 rows (records other than 13, enchanted books, wheat seeds and legacy wheat, glowing
+redstone ore, the BlockStem / BlockNetherStalk / BlockRedstoneTorch stand-ins).
 
 ---
 

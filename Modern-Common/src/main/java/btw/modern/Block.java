@@ -650,6 +650,14 @@ public abstract class Block {
     }
 
     public void dropBlockAsItemWithChance(World world, int x, int y, int z, int metadata, float chance, int fortune) {
+        if (ModernTwins.isTwin(blockID)) {
+            // A twin stands for a live 1.20.1 plant (FCBlockSapling / FCBlockMushroom twins inherit this): that plant's
+            // loot, rolled once against chance as the stand-ins do, instead of an item of the twin's own id.
+            if (!world.isRemote && (chance >= 1.0F || world.rand.nextFloat() <= chance)) {
+                world.DropModernBlockLoot(x, y, z);
+            }
+            return;
+        }
         if (!world.isRemote) {
             int count = this.quantityDroppedWithBonus(fortune, world.rand);
 

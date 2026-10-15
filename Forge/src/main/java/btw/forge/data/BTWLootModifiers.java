@@ -29,5 +29,9 @@ public final class BTWLootModifiers {
     public static final RegistryObject<Codec<FCAddItemToLootModifier>> ADD_ITEM =
             LOOT_MODIFIERS.register("add_item", FCAddItemToLootModifier.CODEC);
 
+    // FCMOD-INTEGRATION(1.20.1): stays-removed: table-driven filter/substitute for the ids 4.B removed
+    public static final RegistryObject<Codec<FCRemovedContentLootModifier>> REMOVED_CONTENT =
+            LOOT_MODIFIERS.register("removed_content", FCRemovedContentLootModifier.CODEC);
+
     private BTWLootModifiers() {}
 }

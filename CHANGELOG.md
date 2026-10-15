@@ -14,7 +14,7 @@ around it.
 
 ## [Unreleased]
 
-Not released yet. These fixes were made on 2026-10-10, 2026-10-11 and 2026-10-14, in seven
+Not released yet. These fixes were made on 2026-10-10, 2026-10-11, 2026-10-14 and 2026-10-15, in eight
 implementation waves on top of 1.3.0-alpha.3 (`48e9825`). The five waves of 2026-10-10 address the
 CurseForge feedback triage and an earlier design pass; they were committed as `f6ec9be`, and `d55db5d`
 set the version to 1.4.0-alpha.5. The 2026-10-11 wave fixes bugs the maintainer found in mechanical
@@ -22,11 +22,15 @@ power, sounds and the BTW creative tab, after an audit that proved each root cau
 code before anything was changed. The 2026-10-14 wave makes BTW's own rules decide how blocks that keep
 a Minecraft id grow, spread, decay, burn and fall; its root cause was proven with a scripted in-world
 test on a dedicated server before anything was changed, and the result was checked the same way
-afterwards. `docs/curseforge-feedback-triage.md` has a status table for every triage finding; the ids
+afterwards. The 2026-10-15 wave carries out three rulings by the maintainer: bone meal works as in 4.B,
+plants added after 1.5.2 follow the 4.B rules of their nearest BTW relative, and blocks that 4.B removed
+stay removed. It was checked the same way, with scripted in-world tests before and after the change.
+`docs/curseforge-feedback-triage.md` has a status table for every triage finding; the ids
 in parentheses refer to it, to the design pass and to the 2026-10-11 audit (`STUB_CATALOGUE.md`
-entries (an) to (as)). The 2026-10-10 and 2026-10-11 waves build and pass the link and bridge audits,
-the 2026-10-14 wave builds and passes the link and bridge audits, and a dedicated server boots a fresh world
-without errors. None of the client-side fixes has been checked in game yet (see Known issues).
+entries (an) to (at)). The 2026-10-10 and 2026-10-11 waves build and pass the link and bridge audits,
+the 2026-10-14 wave builds and passes the link and bridge audits, the 2026-10-15 wave builds and passes
+the link audit, and a dedicated server boots a fresh world without errors. None of the client-side fixes
+has been checked in game yet (see Known issues).
 
 ### Fixed
 
@@ -251,6 +255,53 @@ decide for every one of these blocks:
   not spread or burn out, and lava sets nothing alight. With the rule on (the default), fire and lava
   behave exactly as in BTW. A burning ladder and a campfire can still spread fire.
 
+Bone meal, newer plants and removed blocks (2026-10-15):
+
+Three rulings by the maintainer bring more of Minecraft 1.20.1 in line with BTW 4.B. Each was tested in
+a world on a dedicated server before and after the change.
+
+- **Bone meal grew plants instantly.** On carrots, potatoes, wheat, stems, saplings, cocoa, beetroot or
+  sweet berries it jumped them several stages, it grew mushrooms into huge mushrooms, and it was used
+  up while the soil stayed as it was. In BTW bone meal never grows a plant: it fertilises BTW farmland
+  and planters, which then grow crops twice as fast until the crop is fully grown. Bone meal now does
+  exactly that, from either hand:
+  - used on a plant, it fertilises the soil under the plant;
+  - used on anything BTW cannot fertilise (grass blocks, netherrack, sand under water, a sapling on
+    grass, ...), it does nothing and is kept: no grass, flowers, nylium or seagrass appear;
+  - used on a crop whose soil has weeds, it pulls the weeds first and is kept, as in BTW;
+  - it makes no particles or sound, as in BTW; the fertilised soil's look shows that it worked;
+  - it no longer skips Minecraft's right-click checks, so protection mods can stop it.
+- **White dye** no longer works as bone meal when you use it (dropped white dye still does; see Known
+  issues).
+- **Dispensers.** A vanilla dispenser now shoots bone meal out as an item, as in BTW, and the item
+  fertilises the farmland it lands on. BTW's block dispenser now spits out items it has no use for
+  (bone meal, dyes, string, ...), as in BTW; before, it clicked and kept them.
+- **Weeds.** Right-clicking a crop, stem, sapling or flower whose soil has weeds pulls the weeds, as in
+  BTW. Before, only BTW's own wheat did.
+- **Bees** grew crops, stems and berry bushes a full stage per visit, ignoring BTW's growth rules. Each
+  visit now gives the plant one extra growth chance under BTW's rules.
+- **Plants added after 1.5.2 grew at 1.20.1's speed.** Each now follows the 4.B rules of its nearest
+  BTW relative:
+  - **Saplings.** Acacia, cherry and dark oak saplings and planted mangrove propagules grow like BTW's
+    own saplings, about 18 times more slowly than in 1.20.1: they need light and never grow in the End.
+    Dark oak needs four fully grown saplings in a square, like BTW's big jungle trees. Azaleas now grow
+    into azalea trees by themselves, at the same pace.
+  - **Crops.** Beetroot grows like BTW's carrots, and torchflower and pitcher crops like BTW's old
+    wheat, at half the carrots' speed. They need light and watered soil, stop while weeds grow, grow
+    twice as fast on fertilised soil and never grow in the End. Harvesting them turns BTW farmland back
+    into loose dirt, as BTW's own crops do, and they still drop their own items.
+  - **Nether fungi.** Crimson and warped fungi on their own nylium now grow into huge fungi by
+    themselves, as BTW's mushrooms grow huge on mycelium, but never in the End.
+  - **Other plants** keep their own growth but at the pace of their nearest BTW relative, and never in
+    the End: bamboo and kelp grow like sugar cane, cave, weeping and twisting vines like BTW vines, and
+    sweet berries and hanging mangrove propagules ripen like cocoa. Chorus flowers grow 16 times more
+    slowly and still grow in the End, where they belong.
+  - The leaves of the newer trees and nylium keep 1.20.1's decay, which is already as quick as BTW's.
+- **Blocks and items that BTW 4.B removed came back.** The vanilla hopper, comparator, crafting table,
+  chest, torch and others could be crafted again, found in chests and structures and picked from the
+  creative tabs. They now stay removed (see Changed). The Minecraft recipes that 4.B removed or
+  replaced with its own are gone too.
+
 Other fixes:
 
 - **Mining speed.** Every BTW block broke at the same speed with any tool: rough stone took about
@@ -430,6 +481,38 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   Minecraft id grow several times more slowly than in 1.20.1 (a sapling takes hours, not minutes),
   need light (crops also watered soil) and never grow in the End. Farms built around 1.20.1's rates
   produce much less. Leaves drop only saplings, and unripe crops drop nothing.
+- **Bone meal is fertiliser, and newer plants grow at BTW's pace** (see Fixed). Farms that relied on
+  bone meal, or on 1.20.1's speed for bamboo, kelp, sweet berries, beetroot or the newer trees, produce
+  much less, and in the End only chorus grows. Bone meal still works the 1.20.1 way on blocks that
+  BTW's rules do not cover, such as moss, nylium, pink petals, seagrass and sea pickles.
+- **Blocks and items that BTW 4.B removed stay removed.**
+  - **Removed:** the vanilla hopper, comparator, daylight detector, dropper, trapped chest, weighted
+    pressure plates, activator rail, TNT and hopper minecarts and tripwire hook can no longer be
+    crafted, are never found in loot and are not in the creative tabs or JEI, and string no longer
+    places tripwire. BTW's own hopper, block dispenser, detector block and chest do their jobs, as in
+    4.B. Structures place a 4.B block instead: a chest for the woodland mansion's trapped chest,
+    repeaters for the ancient city's comparators, nothing for the jungle temple's tripwire trap. TNT
+    and hopper minecarts that structures, spawn eggs, dispensers or commands create become plain
+    minecarts.
+  - **Replaced by BTW's own:** the vanilla crafting table, chest, ladder, torch, snow block, clay block
+    and cobweb and the vanilla nether brick item can no longer be crafted and are not in the creative
+    tabs. Loot gives the BTW version instead (an unlit finite torch, a block of BTW snow, BTW nether
+    bricks from piglins, ...). The copies that structures place stay, and turn into the BTW item when
+    broken, as in 4.B. Recipes that need one of them also accept the BTW item: the lantern takes a
+    nether-coal torch, chest boats and the shulker box a BTW chest, terracotta BTW unfired clay, red
+    nether bricks a BTW nether brick.
+  - **Recipe removed:** wooden tools, the stone hoe, the snow layer and the furnace can no longer be
+    crafted or found in loot, but stay in the creative tabs, as in 4.B.
+  - Removed blocks that are already in a world, or placed with commands, are left alone. Operators can
+    still `/give` and `/setblock` them, as in 4.B.
+- **Minecraft recipes that BTW 4.B removed or replaced are gone.** All of 4.B's recipe removals now
+  apply: 108 crafting recipes, 20 smelting, blasting, smoking and campfire recipes, extending maps and
+  repairing two tools in the crafting grid. For example:
+  - planks come from chopping logs with an axe or from the saw, bread from baking bread dough, stone
+    axes, pickaxes and shovels from sharp stone, and diamond tools and armour from diamond ingots;
+  - the enchanting table, the brewing stand and eyes of ender come only from BTW villagers;
+  - ores, sand, cobblestone, logs and netherrack no longer cook in a furnace, blast furnace, smoker or
+    campfire. BTW's kiln, crucible and other routes take over where 4.B has one.
 - **BTW creative tab and JEI follow 4.B.** BTW items that 4.B kept out of its creative inventory,
   though they can be made in survival (Witch Wart, Mail, Steel Nugget, cut and tanned leather, Golden
   Dung and a few more), are no longer listed in the BTW tab, the Search tab or JEI's item list.
@@ -478,14 +561,16 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
 - **Not checked on a client yet.** A dedicated server has been run on a fresh world three times
   (twice on 2026-10-10, once after the 2026-10-11 wave): it boots with no errors, BTW initialises
   and vanilla mobs are replaced. For the 2026-10-14 wave it ran three more times with scripted
-  in-world tests of BTW's growth, fire and falling-block rules. The maintainer has played development
-  builds, which is how the 2026-10-11 bugs were found, and the last session ran a build from the
-  middle of that wave (its log shows the BTW tab built with 355 entries), but none of the in-game
+  in-world tests of BTW's growth, fire and falling-block rules, and for the 2026-10-15 wave with
+  scripted tests of bone meal, the newer plants and the removed blocks. The maintainer has played
+  development builds, which is how the 2026-10-11 bugs were found, and the last session ran a build from
+  the middle of that wave (its log shows the BTW tab built with 355 entries), but none of the in-game
   checks has been run on the final code. Every rendering fix (red tint, mob renderers and animations,
   held items, chests and baskets, block and item models, animated textures), every client-side sound,
   the creative tab and JEI are checked by code review only, and so is how BTW blocks draw their faces
-  next to other blocks now that BTW's table of opaque blocks is filled (2026-10-14). Multiplayer is
-  untested too.
+  next to other blocks now that BTW's table of opaque blocks is filled (2026-10-14). So are the arm
+  swing when bone meal is used, bone meal from the off hand, and the removed items' absence from the
+  vanilla creative tabs and JEI (2026-10-15). Multiplayer is untested too.
 - **Re-entering a world.** No cause was found. It has not been tested whether a world now always
   shuts down cleanly and releases its `session.lock`. If a world will not open again, please report
   it with `logs/latest.log` and any crash report.
@@ -496,24 +581,25 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
 - **BTW villagers and witches make no idle, hurt or death sounds** (witches still idle with BTW's
   quiet ghast scream). This is expected: it is how 4.B sounds, because Minecraft 1.5.2 had no
   villager or witch sound files. 1.3.0-alpha.3 played 1.20.1's witch hurt and death sounds.
-- **The vanilla creative tabs still list Minecraft items that 4.B hid or replaced**, such as the
-  chest, cobweb and ladder (BTW's own chest, web and ladder are in the BTW tab), the crafting table,
-  music discs and the comparator. Hiding them is waiting for the maintainer's decision (CT6). Blocks
-  whose recipes 4.B removed (the vanilla hopper, comparator, daylight sensor, dropper, trapped chest,
-  weighted pressure plates and activator rail) still work as in 1.20.1; whether to keep, hide or tie
-  them to BTW progress is part of the same decision.
+- **The vanilla creative tabs still list a few Minecraft items that 4.B hid**, such as music discs
+  other than "13", enchanted books and wheat seeds. Hiding them is waiting for the maintainer's
+  decision (CT6). The blocks and items that 4.B removed or replaced (the vanilla hopper, comparator,
+  chest, crafting table, cobweb, ladder, ...) are now hidden from the tabs (see Changed).
 - **BTW's own placement code is skipped in some cases.** When you place a block item while sneaking,
   from the off hand, or against a block added after 1.5.2 (deepslate, tuff, ...) or a vanilla block
   with its own right-click action, Minecraft's placement runs with BTW's facing and variant, but
   without BTW's item-specific placement code: slabs do not join into a double slab, saplings ignore
   BTW's soil rules, a burning torch does not light the block you click, and BTW's "cannot be placed
   here" checks are not made (MISSED-1). Placing against any other block uses BTW's code.
-- **Bone meal still grows plants instantly**, the 1.20.1 way, although saplings, crops and other
-  plants now grow at BTW's rates. In 4.B bone meal never grows a plant; it fertilises the soil. This
-  is waiting for the maintainer's decision.
-- Plants added after 1.5.2 keep 1.20.1's growth: acacia, dark oak, cherry and mangrove saplings,
-  beetroot, sweet berries and bamboo grow several times faster than BTW's plants, and the leaves of
-  those newer trees decay the 1.20.1 way.
+- **Dropped white dye fertilises BTW farmland and planters** like bone meal, and is used up. Used by
+  hand it does nothing. BTW reads 1.20.1's white dye as its own bone meal (see the dye note below), and
+  the check that stops this for dropped items is still missing.
+- **The blast furnace, smoker, furnace minecart and crossbow cannot be crafted from new materials**:
+  their recipes need a furnace or a tripwire hook, which BTW 4.B removed. A furnace mined with Silk
+  Touch (as in 4.B) or a hook from an older world still works in them. A BTW route for these recipes
+  is planned.
+- A tripwire hook given with `/give` cannot be placed. This is an older placement problem, not part of
+  the removal of the hook.
 - Dead bushes on grass blocks or dirt (1.20.1 places some in swamps and giant taigas) are removed when
   a block next to them changes, because BTW lets dead bushes grow only on sand. Dead bushes on sand,
   red sand and terracotta stay.
@@ -533,8 +619,6 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   squid's tentacle attack, and villager and witch particles (R8).
 - BTW's Hardcore Buoy option has no effect: dropped items float as in 1.20.1. The "Obstructed"
   player-names option hides only players' name tags behind walls, not named mobs'.
-- Vanilla 1.20.1 crafting recipes that BTW 4.B removed can still be crafted, because BTW's recipe
-  removals are not applied.
 - Foods stack to 64 in the player's inventory, not to BTW's 16.
 - BTW mobs do not trigger pressure plates or tripwire, do not travel through nether or end portals,
   and are not slowed by soul sand. Moving piston blocks are solid cubes to them (SW-M1).

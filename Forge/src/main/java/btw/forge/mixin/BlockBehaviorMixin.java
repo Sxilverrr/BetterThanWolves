@@ -72,6 +72,19 @@ public abstract class BlockBehaviorMixin {
     }
 
     /**
+     * The FC twin of a post-1.5.2 plant state (btw.forge.TwinRegistry: modern saplings, azaleas, beetroots, the
+     * torchflower and pitcher crops, fungi), or null. Identity routing of these plants stays 0 (btw$getFcBlock), but
+     * FC's weeds grow under a twin crop (BlockCrops.CanWeedsGrowInBlock, read by FCBlockFarmland through the twin's
+     * world id) and stop it (BlockCrops.AttemptToGrow), and 4.B pulls weeds only through the plant's
+     * onBlockActivated (Client FCBlockPlants.java:84-102, Modern-Common BlockFlower.onBlockActivated), which runs
+     * before the held item: bone meal on a weedy crop pulls the weeds and is kept. Used by btw$use, Stage 1 only.
+     */
+    private static btw.modern.Block btw$getTwinFcBlock(BlockState state) {
+        int id = btw.forge.TwinRegistry.worldIdFor(state);
+        return id > 0 && id < btw.modern.Block.blocksList.length ? btw.modern.Block.blocksList[id] : null;
+    }
+
+    /**
      * Wraps a Minecraft entity into an FC entity for use in FC block callbacks.
      * Uses EntityBridge as a fallback for vanilla entities without dedicated proxies.
      */
@@ -206,6 +219,12 @@ public abstract class BlockBehaviorMixin {
         // Skip for ProxyBlocks — they handle FC delegation in ProxyBlock.use()
         if (state.getBlock() instanceof btw.forge.ProxyBlock) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
+        // FCMOD-INTEGRATION(1.20.1): modern_plant_growth: a twin plant gets FC's activation (Stage 1 only), so the weeds FC grows under twin crops can be pulled as under FC's own crops
+        boolean twin = false;
+        if (fcBlock == null) {
+            fcBlock = btw$getTwinFcBlock(state);
+            twin = fcBlock != null;
+        }
         if (fcBlock == null) return;
 
         if (level instanceof ServerLevel sl) {
@@ -225,7 +244,9 @@ public abstract class BlockBehaviorMixin {
             boolean result = fcBlock.onBlockActivated(world, pos.getX(), pos.getY(), pos.getZ(),
                     fcPlayer, side, hitX, hitY, hitZ);
 
-            if (!result) {
+            // A twin stands for a 1.20.1 plant whose items stay 1.20.1's (identity id 0): no FC Stage 2 on it, the held
+            // item's own use follows (bone meal: BoneMealItemMixin's soil relay).
+            if (!result && !twin) {
                 // Stage 2: FC item use on block (e.g., flint & steel igniting campfire)
                 // This mirrors FC's ItemInWorldManager.activateBlockOrUseItem pipeline
                 // (creative: damage/stackSize restored like ItemInWorldManager.java:394-402, see tryPlaceHeldItem)

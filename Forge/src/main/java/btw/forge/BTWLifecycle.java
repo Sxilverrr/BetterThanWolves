@@ -150,6 +150,16 @@ public class BTWLifecycle {
         LOGGER.info("Step 5c: Filling the opaque-cube table (Block.opaqueCubeLookup)...");
         fillOpaqueCubeLookup();
 
+        // Post-1.5.2 plants grow by FC's rules through plain instances of FC's plant classes ("twins") at reserved
+        // legacy ids (TwinRegistry: 174, 169, 168, 167, 166 of the free range 159..174, below the ProxyBlock range).
+        // Built after FC's own table is complete and before fcReady, so TickPolicy's gate sees them at every bake.
+        LOGGER.info("Step 5d: Building the FC plant twins for post-1.5.2 plants...");
+        try {
+            TwinRegistry.createTwins();
+        } catch (Throwable t) {
+            LOGGER.error("Building the FC plant twins failed; post-1.5.2 plants keep their 1.20.1 growth", t);
+        }
+
         LOGGER.info("Step 6: Block/item registration happens via RegisterEvent (see BTWForgeMod).");
         // Registration moved to BTWForgeMod.onRegister() which calls BTWRegistration.registerAllBTWContent(event)
         try {

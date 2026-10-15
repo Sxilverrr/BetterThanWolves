@@ -103,6 +103,9 @@ public class BTWForgeMod {
         event.enqueueWork(BridgeSelfAudit::runCommon);
         // Every literal 1.5.2 sound name FC plays must resolve to a legacy sound event.
         event.enqueueWork(SoundMapping::verifyCoverage);
+        // FCMOD-INTEGRATION(1.20.1): stays-removed: the removed-id table must cover every FC stub/inert id and
+        // resolve every BTW successor; FC init (RegisterEvent/BLOCKS) and proxy registration are done by now.
+        event.enqueueWork(btw.forge.removed.RemovedContent::audit);
     }
 
     @SubscribeEvent

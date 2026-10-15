@@ -111,6 +111,23 @@ import java.util.concurrent.ConcurrentHashMap;
  * (vanilla/server BlockPortal.java:29-52) that 1.20.1's piglin spawn replaces. FCBlockPortal instead possesses
  * a creature near a surface-world portal and sets the nether-accessed progress flag.</p>
  *
+ * <p><b>Post-1.5.2 plants</b> ({@link TwinRegistry}) grow at 4.B speeds, following each plant's nearest 1.5.2 / FC
+ * relative. Their Blocks have no legacy id, so the general rule never sees them; two entries decide them first:</p>
+ * <ul>
+ *   <li>Twin states (acacia, cherry, dark oak saplings, the planted mangrove propagule, azaleas, beetroots, the
+ *       torchflower crop, the pitcher crop's lower half, crimson and warped fungi): random owner FC with the twin's
+ *       id, gate true (azaleas and fungi gain the random tick 1.20.1 never gave them; crops tick at every age as
+ *       FC's crops do, their tick being their survival check too). Scheduled owner VANILLA: 1.20.1 keeps survival
+ *       from shape updates. The FC body is the twin's: FCBlockSapling, FCBlockCarrot, FCBlockWheatLegacy,
+ *       FCBlockMushroom.</li>
+ *   <li>Paced states (bamboo shoot and bamboo, kelp, cave / weeping / twisting vines, sweet berry bush, the hanging
+ *       mangrove propagule, chorus flower): random owner {@link #PACED}, gate null (1.20.1's flag), with a pace: the
+ *       1.20.1 body runs on that fraction of the random ticks, and never in the End unless the plant is exempt
+ *       (chorus). The mean growth is FC's relative's.</li>
+ * </ul>
+ * <p>{@link #isFcGrowthGoverned} names the states whose growth FC governs (these, and FC-owned plants), for the
+ * paths that bypass random ticks (bone meal, bees).</p>
+ *
  * <p><b>Determinism.</b> {@link #decide} is a pure function of the BlockState and FC's static data. It runs at
  * every registry bake and Blocks.rebuildCache (server start, /reload) while chunk sections exist, and
  * LevelChunkSection counts ticking states with the cached flag (from worldgen threads too), so the gate must never
@@ -132,6 +149,11 @@ public final class TickPolicy {
     public static final byte FC = 1;
     /** Owner: nobody random-ticks the state (gate false); a direct call passes through to 1.20.1. */
     public static final byte NONE = 2;
+    /**
+     * Owner: the 1.20.1 body runs on a fraction of the random ticks ({@link Decision#pace}), never in the End when
+     * {@link Decision#paceEndBan} (post-1.5.2 plants FC has no class for, {@link TwinRegistry}).
+     */
+    public static final byte PACED = 3;
 
     /**
      * Maintainer decision D1: FC fire and FC lava honour /gamerule doFireTick. With it false, a scheduled FC fire
@@ -168,12 +190,21 @@ public final class TickPolicy {
      *
      * @param fcId   legacy id whose FC block runs the random tick (11 for every lava state)
      * @param schedId legacy id whose FC block runs a scheduled tick (the state's own id)
-     * @param random random-tick owner ({@link #VANILLA}, {@link #FC} or {@link #NONE})
+     * @param random random-tick owner ({@link #VANILLA}, {@link #FC}, {@link #NONE} or {@link #PACED})
      * @param sched  scheduled-tick owner ({@link #VANILLA} or {@link #FC})
      * @param gate   the random-tick flag to cache, or null to keep the 1.20.1 flag
-     * @param rule   which rule decided (general, an exception name, or pending); for the self-audit
+     * @param rule   which rule decided (general, an exception name, twin:&lt;family&gt;, paced:&lt;plant&gt; or
+     *               pending); for the self-audit
+     * @param pace   {@link #PACED} only: the fraction of random ticks on which the 1.20.1 body runs (1 otherwise)
+     * @param paceEndBan {@link #PACED} only: no growth in the End (FC's End ban)
      */
-    public record Decision(int fcId, int schedId, byte random, byte sched, Boolean gate, String rule) {}
+    public record Decision(int fcId, int schedId, byte random, byte sched, Boolean gate, String rule,
+                           float pace, boolean paceEndBan) {
+
+        public Decision(int fcId, int schedId, byte random, byte sched, Boolean gate, String rule) {
+            this(fcId, schedId, random, sched, gate, rule, 1F, false);
+        }
+    }
 
     /** Blocks whose scheduled ticks FC owns although their 1.20.1 class overrides tick. Built on first use. */
     private static final class FcSched {
@@ -189,6 +220,17 @@ public final class TickPolicy {
         if (!BTWLifecycle.isFcReady()) return null;
         Block block = s.getBlock();
         if (block instanceof ProxyBlock) return null;
+
+        // Post-1.5.2 plants (no legacy id): FC twins and paced plants, see the class javadoc and TwinRegistry.
+        TwinRegistry.Family twin = TwinRegistry.familyOf(s);
+        if (twin != null) {
+            return new Decision(TwinRegistry.idOf(twin.kind), 0, FC, VANILLA, Boolean.TRUE, "twin:" + twin.label);
+        }
+        TwinRegistry.Pace pace = TwinRegistry.paceFor(s);
+        if (pace != null) {
+            return new Decision(0, 0, PACED, VANILLA, null, "paced:" + pace.name(), pace.pace(), pace.endBan());
+        }
+
         int id = ProxyRegistry.getBlockId(block);
         if (id <= 0 || id >= btw.modern.Block.blocksList.length) return null;
         btw.modern.Block fc = btw.modern.Block.blocksList[id];
@@ -299,6 +341,55 @@ public final class TickPolicy {
      */
     public static boolean fcOwnsRandomTick(BlockState state) {
         return (Object) state instanceof FcBlockStateAccess access && access.btw$randomOwner() == FC;
+    }
+
+    /**
+     * The roll of a {@link #PACED} state's random tick: true lets the 1.20.1 body run. False in the End for a plant
+     * under FC's End ban, else true on {@code pace} of the ticks (one {@code nextFloat} of the tick's random).
+     */
+    public static boolean pacedRollPasses(FcPaceAccess paced, ServerLevel level, RandomSource random) {
+        if (paced.btw$paceEndBan() && level.dimension() == net.minecraft.world.level.Level.END) return false;
+        return random.nextFloat() < paced.btw$growthPace();
+    }
+
+    /**
+     * True when FC governs the growth of {@code state}: an FC-owned growing plant (a random owner of {@link #FC} whose
+     * FC block is a plant, vine or cactus: saplings, crops, stems, mushrooms, reeds, cactus, cocoa, nether wart, vines,
+     * tall grass, flowers, lily pads), a ProxyBlock whose FC block is one (FC's own crops, hemp, weeds), and every
+     * twin or paced state of a post-1.5.2 plant ({@link TwinRegistry#governs}: pitcher upper halves and hanging
+     * propagules included). Growth that bypasses the random tick (bone meal, villagers, bees) must follow FC's rule
+     * for these: 4.B bone meal never grows a plant, it fertilizes the soil. A pure function of the state, its cached
+     * owners (BlockStateBaseTickMixin) and FC's static data; false before FC is ready.
+     */
+    public static boolean isFcGrowthGoverned(BlockState state) {
+        if (state == null || !BTWLifecycle.isFcReady()) return false;
+        Block block = state.getBlock();
+        if (block instanceof ProxyBlock) return isGrowingPlant(ProxyRegistry.getFcBlock(block));
+        if (TwinRegistry.governs(state)) return true;
+        // A body segment follows its head's rule: 1.20.1 bone meal on a body grows the head
+        // (GrowingPlantBodyBlock.performBonemeal) and gives cave-vine berries
+        Block head = growingPlantHead(block);
+        if (head != null) return isFcGrowthGoverned(head.defaultBlockState());
+        if (!((Object) state instanceof FcBlockStateAccess access)) return false;
+        byte owner = access.btw$randomOwner();
+        if (owner == PACED) return true;
+        return owner == FC && isGrowingPlant(fcBlock(access.btw$randomFcId()));
+    }
+
+    /** The head block of a 1.20.1 growing-plant body (kelp, weeping, twisting and cave vines), else null. */
+    private static Block growingPlantHead(Block body) {
+        if (body == Blocks.KELP_PLANT) return Blocks.KELP;
+        if (body == Blocks.WEEPING_VINES_PLANT) return Blocks.WEEPING_VINES;
+        if (body == Blocks.TWISTING_VINES_PLANT) return Blocks.TWISTING_VINES;
+        if (body == Blocks.CAVE_VINES_PLANT) return Blocks.CAVE_VINES;
+        return null;
+    }
+
+    /** FC's plant materials (1.5.2 Material.plants, vine, cactus): the blocks a 4.B growth rule applies to. */
+    private static boolean isGrowingPlant(btw.modern.Block fc) {
+        if (fc == null) return false;
+        btw.modern.Material m = fc.blockMaterial;
+        return m == btw.modern.Material.plants || m == btw.modern.Material.vine || m == btw.modern.Material.cactus;
     }
 
     /**

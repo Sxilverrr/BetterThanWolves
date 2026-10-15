@@ -876,6 +876,14 @@ public abstract class World implements IBlockAccess {
         return -1;
     }
 
+    /**
+     * Port hook for the FC twins ({@link ModernTwins}): drops the 1.20.1 loot of the live block at (x, y, z), where
+     * FC's code would drop the 1.5.2 items of the twin standing for it. Base worlds have no live block behind a twin
+     * and drop nothing.
+     */
+    public void DropModernBlockLoot(int x, int y, int z) {
+    }
+
     // 1.5.2 World.setItemData/loadItemData/getUniqueDataId (vanilla/server World.java:3873-3894) —
     // FCItemEmptyMap.java:41,45 map crafting; delegates to mapStorage exactly like
     // vanilla (WorldBridge installs a live MapStorage backed by the MC level).

@@ -28,7 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 1.20.1 state carries only its properties, which {@link WorldBridge#deriveVanillaMetadata} reads back as FC
  * metadata. What no property expresses lives here: the leaf decay-check flag (bit 8), the sapling growth stage
  * (bits 2-3; STAGE is 0-1), stem growth 0-14 (AGE is 0-7), the pushed-ice bit 8, the jack o'lantern
- * player-placed bit 8, the melon's stem-attachment facing. It used to be an in-memory map cleared at server stop,
+ * player-placed bit 8, the melon's stem-attachment facing, and for the post-1.5.2 plants FC grows through twins
+ * (TwinRegistry) the FC sapling stage of modern saplings and azaleas and the growth levels between the visible AGE
+ * steps of beetroots, torchflower and pitcher crops. It used to be an in-memory map cleared at server stop,
  * so all of that was lost on every restart (saplings restarted their growth, flagged leaves never decayed).
  *
  * <p>An entry is {@code (block, derivedAtWrite, meta)}: the block FC wrote to, what derive answered for the state

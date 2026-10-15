@@ -151,13 +151,67 @@ public class CraftingManager {
         return recipe;
     }
 
+    // FCMOD-INTEGRATION(1.20.1): stays-removed: FC's vanilla-recipe removals are recorded here so the Forge
+    // bridge can mirror them onto the 1.20.1 RecipeManager (btw.forge.FcRecipeRemovals).
+
+    /**
+     * One FC removal of a 1.5.2 vanilla crafting recipe: FCRecipes.RemoveVanillaRecipe / RemoveVanillaShapelessRecipe
+     * (Server FCRecipes.java:78-86), called from RemoveVanillaRecipes (:5112-5760). Parsed exactly as 1.5.2 parsed the
+     * removal (vanilla/server CraftingManager.java:382-412 -> CreateRecipe / CreateShapelessRecipe, which parse like
+     * addRecipe / addShapelessRecipe): a shaped Block ingredient is "any metadata" (32767), a shapeless one damage 0.
+     * Port types only (no MC classes): Modern-Common has no recipe manager of its own to remove from.
+     */
+    public static final class RemovedVanillaRecipe {
+        /** The 1.5.2 result (id, count, damage). */
+        public final ItemStack output;
+        /** The ingredient stacks: the non-empty cells of a shaped pattern, or the shapeless parameters. */
+        public final List<ItemStack> ingredients;
+        /** True for RemoveRecipe (shaped), false for RemoveShapelessRecipe. */
+        public final boolean shaped;
+
+        RemovedVanillaRecipe(ItemStack output, List<ItemStack> ingredients, boolean shaped) {
+            this.output = output;
+            this.ingredients = java.util.Collections.unmodifiableList(ingredients);
+            this.shaped = shaped;
+        }
+    }
+
+    /** Every FC vanilla-recipe removal, in call order. Filled once during FC init (FCRecipes.AddAllModRecipes). */
+    private static final List<RemovedVanillaRecipe> REMOVED_VANILLA_RECIPES = new ArrayList<>();
+
+    /** Snapshot of the recorded FC vanilla-recipe removals (see {@link RemovedVanillaRecipe}). */
+    public static synchronized List<RemovedVanillaRecipe> getRemovedVanillaRecipes() {
+        return new ArrayList<>(REMOVED_VANILLA_RECIPES);
+    }
+
+    /**
+     * 1.5.2 removed the matching vanilla recipe from this manager's list (vanilla/server CraftingManager.java:382-396).
+     * The port's list only ever holds FC's own recipes (vanilla recipes live in the 1.20.1 RecipeManager), so the
+     * removal is recorded instead and applied to the RecipeManager by the Forge bridge. FC ignores the result.
+     */
     public boolean RemoveRecipe(ItemStack output, Object... params) {
-        // Mark a recipe for removal — the bridge will handle vanilla recipe removal
+        ShapedRecipes parsed = createShapedRecipe(output, params);
+        List<ItemStack> cells = new ArrayList<>();
+        for (ItemStack cell : parsed.recipeItems) {
+            if (cell != null) cells.add(cell.copy());
+        }
+        record(new RemovedVanillaRecipe(output != null ? output.copy() : null, cells, true));
         return true;
     }
 
+    /** Shapeless twin of {@link #RemoveRecipe} (vanilla/server CraftingManager.java:398-412). */
     public boolean RemoveShapelessRecipe(ItemStack output, Object... params) {
+        List<ItemStack> items = new ArrayList<>();
+        for (Object param : params) {
+            ItemStack stack = toItemStack(param);
+            if (stack != null) items.add(stack.copy());
+        }
+        record(new RemovedVanillaRecipe(output != null ? output.copy() : null, items, false));
         return true;
+    }
+
+    private static synchronized void record(RemovedVanillaRecipe removal) {
+        REMOVED_VANILLA_RECIPES.add(removal);
     }
 
     public ItemStack findMatchingRecipe(InventoryCrafting inv, World world) {

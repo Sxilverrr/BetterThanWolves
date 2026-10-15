@@ -87,6 +87,12 @@ public class FCLootOverrides extends GlobalLootModifierProvider {
         addItemToTable("jungle_temple_lightning_rod",
                 new ResourceLocation("minecraft", "chests/jungle_temple"),
                 fcItem("block_1067"), 1, 1, 0.2F);
+
+        // ---- Stays removed (maintainer ruling: "blocks that 4.B explicitly removed must stay removed") ----
+        // FCMOD-INTEGRATION(1.20.1): stays-removed: one modifier with NO conditions, so it runs on every loot
+        // table (chests, archaeology, fishing, barter, gifts, entity and block drops). Which items it filters or
+        // substitutes is read from btw.forge.removed.RemovedContent at run time, not written into the JSON.
+        this.add("removed_content", new FCRemovedContentLootModifier(new LootItemCondition[0]));
     }
 
     private void removeFromTable(String name, ResourceLocation tableId,

@@ -46,9 +46,12 @@ final class ModernBlockStandIn extends btw.modern.Block {
 
     // Unused by 1.5.2 vanilla (Block.java ends at dropper, 158) and by FC (ParseID defaults start at 175,
     // FCBetterThanWolves.java:914). Kept < 175 so the blocksList[175..] loops (BTWRegistration:85,
-    // BlockModelBridge:413/424) never give a stand-in a ProxyBlock or a model.
-    private static final int FIRST_FREE_ID = 159;
-    private static final int LAST_FREE_ID = 174;
+    // BlockModelBridge:413/424) never give a stand-in a ProxyBlock or a model. 159 and 170-173 are 1.6+ ids the
+    // vanilla table maps (isLegacyIdMapped), so 160-169 and 174 are free. The FC plant twins (TwinRegistry) share
+    // the range: they are built at FC start-up, before any stand-in, and take the free ids from the top (174, 169,
+    // 168, 167, 166); stand-ins allocate from the bottom (160 solid, 161 collider, flammable ones from 162).
+    static final int FIRST_FREE_ID = 159;
+    static final int LAST_FREE_ID = 174;
     /** FCBlockBedrock: immovable, not BD-retrievable, spared by id in EntityWither (vanilla/client EntityWither.java:369-371). */
     private static final int BEDROCK_ID = 7;
 
@@ -162,7 +165,7 @@ final class ModernBlockStandIn extends btw.modern.Block {
         return -1;
     }
 
-    private static boolean isFreeId(int id) {
+    static boolean isFreeId(int id) {
         return btw.modern.Block.blocksList[id] == null && btw.modern.Item.itemsList[id] == null
                 && !ProxyRegistry.isLegacyIdMapped(id);
     }
@@ -198,7 +201,8 @@ final class ModernBlockStandIn extends btw.modern.Block {
 
     /**
      * Creates the stand-in for a new (shape, ignite, burn) bucket from the free range (the ids left between
-     * FIRST_FREE_ID and LAST_FREE_ID: about nine), with SetFireProperties(ignite, burn) as FC's own blocks set
+     * FIRST_FREE_ID and LAST_FREE_ID after the two plain stand-ins and the FC plant twins: four), with
+     * SetFireProperties(ignite, burn) as FC's own blocks set
      * theirs (vanilla/server Block.java:1975-1981). The last free id is kept for the other shape class until that
      * class has a flammable stand-in: a solid cube and a shaped collider are not interchangeable (collision,
      * isNormalCube). Once the range is used up a bucket reuses the stand-in of its shape class with the nearest odds

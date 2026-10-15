@@ -1,5 +1,6 @@
 package btw.forge.mixin;
 
+import btw.forge.BoneMealPolicy;
 import btw.forge.InventoryBridge;
 import btw.forge.ItemStackHelper;
 import btw.forge.LegacyProxyItem;
@@ -129,6 +130,18 @@ public abstract class ServerPlayerGameModeMixin {
         fcPlayer.syncFromReal();
         btw.modern.ItemStack fcStack = fcPlayer.getCurrentEquippedItem();
         if (fcStack == null) return;
+
+        // FCMOD-INTEGRATION(1.20.1): bone_meal: 4.B activates the block before the held bone meal, so bone meal must not pre-empt that order here
+        // FC dye 15 is bone meal (FCItemDye.onItemUse acts on nothing else, Client FCItemDye.java:34-47). 1.5.2 runs
+        // the clicked block's onBlockActivated before the held item unless the player sneaks (vanilla/server
+        // ItemInWorldManager.java:376-407), so bone meal on a weedy plant pulls the weeds and is not used
+        // (FCBlockPlants.onBlockActivated, Client FCBlockPlants.java:84-102). Pre-empting here ran FCItemDye first,
+        // and before Forge's RightClickBlock event and the spectator check (ServerPlayerGameMode.java:323-332). Left to
+        // 1.20.1, the same order holds: blockstate.use runs FC activation, then FCItemDye (BlockBehaviorMixin.btw$use /
+        // ProxyBlock.use Stage 1 and 2), and BoneMealItem.useOn applies FC fertilizer for a sneaking player and any
+        // target without Stage 2 (BoneMealItemMixin, BoneMealPolicy.onBoneMealUseOn). 1.20.1 white dye reads as the same
+        // FC stack (LegacyVariants.java:159) and is not fertilizer, so it never runs FCItemDye here either.
+        if (BoneMealPolicy.isFcBoneMeal(fcItem, fcStack)) return;
 
         int side = hitResult.getDirection().get3DDataValue();
         net.minecraft.world.phys.Vec3 hitLoc = hitResult.getLocation();

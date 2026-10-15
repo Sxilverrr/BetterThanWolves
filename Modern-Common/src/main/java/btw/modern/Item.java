@@ -598,8 +598,48 @@ public class Item {
 
     // --- BTW-added: Block dispenser ---
 
+    // 1.5.2 Item.OnItemUsedByBlockDispenser default (FCMOD, vanilla/server Item.java:1232-1240): an item with no
+    // block-dispenser use of its own (bone meal, dyes, string, ...) is spat out of the dispenser's face with a click,
+    // and returning true makes FCBlockBlockDispenser.DispenseBlockOrItem play its smoke and consume the one item
+    // (Client FCBlockBlockDispenser.java:439-479; the stack is GetCurrentItemToDispense's one-item copy, Common
+    // FCTileEntityBlockDispenser.java:170-190). With false, the block dispenser clicked low (aux 2238) and kept
+    // every such item. FCBetterThanWolves.fcBlockDispenser.SpitOutItem (Client FCBlockBlockDispenser.java:520-555)
+    // is inlined: FC classes are not visible from Modern-Common. SpitOutItem reads the facing from the dispenser's
+    // metadata, the iFacing DispenseBlockOrItem passes here (GetFacing(world, i, j, k), :443).
     public boolean OnItemUsedByBlockDispenser(ItemStack stack, World world, int i, int j, int k, int iFacing) {
-        return false;
+        FCUtilsBlockPos offsetPos = new FCUtilsBlockPos(0, 0, 0, iFacing);
+
+        double dXPos = i + (offsetPos.i * 0.5D) + 0.5D;
+        double dYPos = j + offsetPos.j + 0.2D;
+        double dZPos = k + (offsetPos.k * 0.5D) + 0.5D;
+
+        double dYHeading;
+
+        if (iFacing > 2) {
+            // slight upwards trajectory when fired sideways
+
+            dYHeading = 0.1D;
+        } else {
+            dYHeading = offsetPos.j;
+        }
+
+        EntityItem entityitem = new EntityItem(world, dXPos, dYPos, dZPos, stack);
+
+        double dRandVel = world.rand.nextDouble() * 0.1D + 0.2D;
+
+        entityitem.motionX = offsetPos.i * dRandVel;
+        entityitem.motionY = dYHeading * dRandVel + 0.2D;
+        entityitem.motionZ = offsetPos.k * dRandVel;
+
+        entityitem.motionX += world.rand.nextGaussian() * 0.0075D * 6D;
+        entityitem.motionY += world.rand.nextGaussian() * 0.0075D * 6D;
+        entityitem.motionZ += world.rand.nextGaussian() * 0.0075D * 6D;
+
+        world.spawnEntityInWorld(entityitem);
+
+        world.playAuxSFX(1000, i, j, k, 0); // normal pitch click
+
+        return true;
     }
 
     public static boolean m_bSuppressConflictWarnings = false;
