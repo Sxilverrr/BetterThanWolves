@@ -1,5 +1,6 @@
 package btw.forge;
 
+import btw.forge.farming.FcSoil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -13,6 +14,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.BushBlock;
+import net.minecraft.world.level.block.CropBlock;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityTicker;
@@ -25,6 +28,7 @@ import net.minecraft.world.level.storage.loot.LootParams;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.common.IPlantable;
 import net.minecraftforge.fml.DistExecutor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -332,6 +336,33 @@ public class ProxyBlock extends Block implements EntityBlock {
                     new Random(random.nextLong()));
         } catch (Exception ignored) {
         }
+        weedCue(level, pos, random);
+    }
+
+    /**
+     * Client cue for weeds under a modded crop (INTEGRATIONS #026): FC draws its weeds as part of its own crops' model
+     * (FCBlockCrops bounds and RenderCrops), which a modded crop's model lacks, so FC soil with weeds under a governed
+     * modded CropBlock (one the plant stand-in stands for) gives off one or two composter specks at the crop's base.
+     * Display only: the weeds themselves are the soil's metadata, which FC grows and the weed pull clears.
+     */
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: weeds under a modded crop show as particles, since the crop's own model cannot draw FC's weeds
+    private void weedCue(Level level, BlockPos pos, RandomSource random) {
+        try {
+            if (!ModernPlantStandIn.isNeeded() || random.nextInt(4) != 0) return;
+            BlockPos above = pos.above();
+            BlockState plant = level.getBlockState(above);
+            if (!(plant.getBlock() instanceof CropBlock) || !FcSoil.isGovernedPlant(plant)) return;
+            if (fc().GetWeedsGrowthLevel(createFcWorld(level, false), pos.getX(), pos.getY(), pos.getZ()) <= 0) return;
+            int specks = 1 + random.nextInt(2);
+            for (int n = 0; n < specks; n++) {
+                double x = above.getX() + 0.2D + random.nextDouble() * 0.6D;
+                double y = above.getY() + 0.05D + random.nextDouble() * 0.2D;
+                double z = above.getZ() + 0.2D + random.nextDouble() * 0.6D;
+                level.addParticle(net.minecraft.core.particles.ParticleTypes.COMPOSTER, x, y, z, 0.0D, 0.0D, 0.0D);
+            }
+        } catch (RuntimeException ignored) {
+            // display only: a failing read draws nothing
+        }
     }
 
     /** Maps FC particle names to MC 1.20.1 ParticleOptions. */
@@ -382,9 +413,65 @@ public class ProxyBlock extends Block implements EntityBlock {
                                 Block block, BlockPos neighborPos, boolean moving) {
         if (level instanceof ServerLevel sl) {
             btw.modern.World world = WorldBridge.getOrCreate(sl);
+            if (untillUnderRemovedModdedCrop(state, sl, world, pos, block, neighborPos)) return;
             int neighborId = ProxyRegistry.getNeighbourSourceId(block, level, neighborPos);
             fc().onNeighborBlockChange(world, pos.getX(), pos.getY(), pos.getZ(), neighborId);
         }
+    }
+
+    /**
+     * FCBlockPlants.breakBlock for a governed modded crop (INTEGRATIONS #026): FC's own crops tell the soil below that
+     * they were removed (Server FCBlockPlants.java:47-56), and FC farmland untills to loose dirt
+     * (FCBlockFarmland.NotifyOfPlantAboveRemoved, Common FCBlockFarmland.java:68-76, the only implementer, which never
+     * reads the plant). A modded crop has no legacy id, so BlockBehaviorMixin.onRemove never runs FC's breakBlock for
+     * it; its removal reaches this soil only as the neighbour update Level.markAndNotifyBlock sends with the old block
+     * (Level.java:250-251). Twins untill through ProxyRegistry.getRemovalLegacyId (S16) and are not governed here. A
+     * cell that now holds the same block or another plant grew or was replaced by FC's weeds (a growth transform),
+     * not removed. True when the soil changed, so its own neighbour logic must not run on the stale state.
+     */
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: removing a modded crop untills FC farmland under it, as FC's breakBlock does for its own crops
+    private boolean untillUnderRemovedModdedCrop(BlockState state, ServerLevel level, btw.modern.World world,
+                                                 BlockPos pos, Block removed, BlockPos neighborPos) {
+        if (!(removed instanceof CropBlock) || !neighborPos.equals(pos.above())) return false;
+        try {
+            if (!FcSoil.isGovernedPlantBlock(removed)) return false;
+            Block now = level.getBlockState(neighborPos).getBlock();
+            if (now == removed || now instanceof BushBlock || now instanceof IPlantable) return false;
+            fc().NotifyOfPlantAboveRemoved(world, pos.getX(), pos.getY(), pos.getZ(), null);
+        } catch (Throwable t) {
+            warnTickFailureOnce("PLANT-REMOVED", pos, t);
+            return false;
+        }
+        return level.getBlockState(pos) != state;
+    }
+
+    // --- isFertile (Forge: CropBlock.getGrowthSpeed's soil bonus) ---
+
+    /**
+     * FC's hydration answer for this soil (IsBlockHydratedForPlantGrowthOn: FC farmland's moisture, planter soil):
+     * IForgeBlock.isFertile knows only Blocks.FARMLAND, so every FC soil read as infertile to 1.20.1 growth-speed
+     * code. FC answers from the soil cell's own metadata, so the cell is resolved first: Forge 47.3.0's
+     * CropBlock.getGrowthSpeed (CropBlock.java:102-105, also reached from StemBlock and PitcherCropBlock) passes the
+     * PLANT cell above the soil ({@code pos.offset}, not {@code pos.below().offset}), other callers the soil itself;
+     * Forge's default ignores the position, FC's metadata read does not. Server only; a position holding neither this
+     * soil nor a cell above it, other readers, and an FC failure (logged once) keep Forge's default.
+     */
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: Forge's soil fertility question gets FC's hydration answer on FC soils, read at the soil cell whichever cell the caller passes
+    @Override
+    public boolean isFertile(BlockState state, BlockGetter level, BlockPos pos) {
+        if (level instanceof ServerLevel sl) {
+            try {
+                BlockPos soil = sl.getBlockState(pos) == state ? pos
+                        : sl.getBlockState(pos.below()) == state ? pos.below() : null;
+                if (soil != null) {
+                    return fc().IsBlockHydratedForPlantGrowthOn(WorldBridge.getOrCreate(sl), soil.getX(),
+                            soil.getY(), soil.getZ());
+                }
+            } catch (Throwable t) {
+                warnTickFailureOnce("FERTILE", pos, t);
+            }
+        }
+        return super.isFertile(state, level, pos);
     }
 
     // --- onPlace ---

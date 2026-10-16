@@ -1,0 +1,87 @@
+{
+  "_comment": "FC food values for the post-1.5.2 vanilla foods, each its nearest FC relative's (INTEGRATIONS #024). hunger is in 1.5.2 units (FC feeds x3); poison is FC's standard food poisoning (FCItemFood: 60 s, chance 0.3).",
+  "entries": {
+    "minecraft:mutton": {
+      "hunger": 3,
+      "fat": 0.25,
+      "wolf_meat": true,
+      "poison": { "chance": 0.3, "seconds": 60, "amplifier": 0 }
+    },
+    "minecraft:cooked_mutton": {
+      "hunger": 4,
+      "fat": 0.25,
+      "wolf_meat": true
+    },
+    "minecraft:rabbit": {
+      "hunger": 3,
+      "fat": 0.25,
+      "wolf_meat": true,
+      "poison": { "chance": 0.3, "seconds": 60, "amplifier": 0 }
+    },
+    "minecraft:cooked_rabbit": {
+      "hunger": 4,
+      "fat": 0.25,
+      "wolf_meat": true
+    },
+    "minecraft:salmon": {
+      "hunger": 3,
+      "fat": 0.25,
+      "poison": { "chance": 0.3, "seconds": 60, "amplifier": 0 }
+    },
+    "minecraft:tropical_fish": {
+      "hunger": 3,
+      "fat": 0.25,
+      "poison": { "chance": 0.3, "seconds": 60, "amplifier": 0 }
+    },
+    "minecraft:pufferfish": {
+      "hunger": 3,
+      "fat": 0.25,
+      "poison": { "chance": 0.3, "seconds": 60, "amplifier": 0 }
+    },
+    "minecraft:cooked_salmon": {
+      "hunger": 4,
+      "fat": 0.25
+    },
+    "minecraft:rabbit_stew": {
+      "hunger": 10,
+      "fat": 0.25,
+      "wolf_meat": true
+    },
+    "minecraft:beetroot": {
+      "hunger": 1,
+      "fat": 0.0,
+      "fodder": { "pig": "basic" }
+    },
+    "minecraft:beetroot_seeds": {
+      "fodder": { "chicken": "basic" }
+    },
+    "minecraft:beetroot_soup": {
+      "hunger": 3,
+      "fat": 0.25
+    },
+    "minecraft:suspicious_stew": {
+      "hunger": 3,
+      "fat": 0.25
+    },
+    "minecraft:sweet_berries": {
+      "hunger": 1,
+      "fat": 0.0
+    },
+    "minecraft:glow_berries": {
+      "hunger": 1,
+      "fat": 0.0
+    },
+    "minecraft:chorus_fruit": {
+      "hunger": 1,
+      "fat": 0.0
+    },
+    "minecraft:dried_kelp": {
+      "hunger": 1,
+      "fat": 0.0
+    },
+    "minecraft:honey_bottle": {
+      "hunger": 2,
+      "fat": 0.5
+    }
+  }
+}

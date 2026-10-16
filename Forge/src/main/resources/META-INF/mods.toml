@@ -38,5 +38,90 @@ versionRange="[15.0.0,)"
 ordering="AFTER"
 side="BOTH"
 
+# Optional mod integrations. None of these mods is bundled in the BTW jar, and
+# BTW runs unchanged without them. FML checks an installed optional dependency
+# against its range and refuses to launch on a mismatch, so every lower bound
+# below is either a verified API floor or deliberately wide. None of these
+# mods orders itself against betterthanwolves, so the ordering graph stays
+# acyclic.
+
+# Dynamic Trees is optional. If present, BTW's log, stump, saw, sapling and
+# fertilizer rules apply to living Dynamic Trees (integration #027).
+[[dependencies.betterthanwolves]]
+modId="dynamictrees"
+mandatory=false
+versionRange="[1.20.1-1.4.10,)"
+ordering="AFTER"
+side="BOTH"
+
+# Serene Seasons is optional. If present, seasons drive BTW crop growth,
+# snowfall and cold (integration #028). The range is deliberately wide: if an
+# installed SS lacks an API that BTW uses (for example the legacy 9.0.0.46
+# line), BTW disables that feature through capability probes instead of
+# refusing to launch.
+[[dependencies.betterthanwolves]]
+modId="sereneseasons"
+mandatory=false
+versionRange="[9.0.0.0,)"
+ordering="AFTER"
+side="BOTH"
+
+# AppleSkin is optional and client-only. If present, it shows BTW's 60-point
+# hunger, fat, poisoning and exhaustion (integration #029). 2.5.0 has the same
+# API and behaviour on every path BTW uses.
+[[dependencies.betterthanwolves]]
+modId="appleskin"
+mandatory=false
+versionRange="[2.5.0,)"
+ordering="NONE"
+side="CLIENT"
+
+# Cold Sweat is optional. If present, BTW's fire ladder, clothing, meals, fuels
+# and fat become Cold Sweat temperature content (integration #030).
+[[dependencies.betterthanwolves]]
+modId="cold_sweat"
+mandatory=false
+versionRange="[2.4.1,)"
+ordering="AFTER"
+side="BOTH"
+
+# Legendary Survival Overhaul is optional (integration #031). Older 1.20.1 LSO
+# builds are refused, because only 2.4.7 was inspected.
+[[dependencies.betterthanwolves]]
+modId="legendarysurvivaloverhaul"
+mandatory=false
+versionRange="[1.20.1-2.4.7,)"
+ordering="AFTER"
+side="BOTH"
+
+# Pam's HarvestCraft 2 modules are optional (integration #032).
+[[dependencies.betterthanwolves]]
+modId="pamhc2crops"
+mandatory=false
+versionRange="[1.0.3,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.betterthanwolves]]
+modId="pamhc2trees"
+mandatory=false
+versionRange="[1.0.2,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.betterthanwolves]]
+modId="pamhc2foodcore"
+mandatory=false
+versionRange="[1.0.0,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.betterthanwolves]]
+modId="pamhc2foodextended"
+mandatory=false
+versionRange="[1.0.0,)"
+ordering="AFTER"
+side="BOTH"
+
 [[mixins]]
 config="betterthanwolves.mixins.json"

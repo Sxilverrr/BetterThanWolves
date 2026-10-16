@@ -968,6 +968,21 @@ public class Item {
                 super.onFoodEaten(stack, world, player);
             }
         }
+
+        /**
+         * FCMOD-INTEGRATION(1.20.1): food_values: the rows onFoodEaten above applies, in seconds (600 and 6000 ticks),
+         * so FcFoodValues reports the enchanted apple's three effects (INTEGRATIONS #024).
+         */
+        @Override
+        public float[][] getPortEatEffects(int itemDamage) {
+            if (itemDamage > 0) {
+                return new float[][] {
+                        {Potion.regeneration.id, 30, 3, 1F},
+                        {Potion.resistance.id, 300, 0, 1F},
+                        {Potion.fireResistance.id, 300, 0, 1F}};
+            }
+            return super.getPortEatEffects(itemDamage);
+        }
     }
 
     // Concrete subclass for ItemMap (protected constructor)

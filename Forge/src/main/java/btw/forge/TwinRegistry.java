@@ -51,6 +51,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *       FCBlockSapling.java:40-64), then the species' own 1.20.1 tree. Dark oak takes FC's 2x2 jungle rule (all four
  *       at stage 3, FCBlockSapling.java:105-151); a lone dark oak waits at stage 3, as 1.20.1 has no single dark oak.
  *       The propagule keeps its 1.20.1 soils (clay, mud) beside FC's (S3).</li>
+ *   <li>Modded saplings ({@link #isFallbackSapling}, INTEGRATIONS #026): every other SaplingBlock with STAGE and no
+ *       legacy id (another mod's sapling, for instance HarvestCraft's fruit-tree saplings) is a {@link Family#SAPLING}
+ *       twin of species 0, by #018's lore line "a sapling is a sapling: the species only chooses the tree": FC's
+ *       survival (with the sapling's own soils through {@link #liveSoilAccepts}), light 9, four stages at 1/64 and the
+ *       End ban, then the mod's own tree through SaplingBlock.advanceTree. A modded sapling that overrides its random
+ *       tick (a Nether or End sapling) follows FC's rule instead of its own conditions.</li>
  *   <li>{@link Family#AZALEA}: azalea and flowering azalea on their own FCBlockSapling (S1, the bush is the sapling
  *       of the azalea tree; 1.20.1 grows it only by bone meal), with 1.20.1's fire odds for FC fire.</li>
  *   <li>{@link Family#BEETROOT}: beetroots on an FCBlockCarrot, the 4.B root crop: 0.1 per tick, seven levels, light
@@ -265,10 +271,29 @@ public final class TwinRegistry {
         return btw.modern.ModernTwins.isTwin(id);
     }
 
+    /**
+     * True for a modded sapling the {@link Family#SAPLING} twin runs (maintainer decision D2 (b)): a SaplingBlock with
+     * STAGE that the table above does not name and that has no legacy id (FC's own oak, spruce, birch and jungle
+     * saplings are id 6). A pure function of the block and FC's static id table.
+     */
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: every unmapped SaplingBlock with STAGE grows by FC's sapling rule through the sapling twin, into its own tree
+    public static boolean isFallbackSapling(Block block) {
+        return block instanceof SaplingBlock && !FAMILY.containsKey(block)
+                && ProxyRegistry.getBlockId(block) == 0
+                && block.defaultBlockState().hasProperty(SaplingBlock.STAGE);
+    }
+
+    /** The family of {@code block}: the table's, or SAPLING for a modded sapling ({@link #isFallbackSapling}). */
+    private static Family familyFor(Block block) {
+        Family family = FAMILY.get(block);
+        if (family != null) return family;
+        return isFallbackSapling(block) ? Family.SAPLING : null;
+    }
+
     /** The twin family {@code s} belongs to, or null (not a twin plant, a paced / upper-half state, or no twin built). */
     public static Family familyOf(BlockState s) {
         Block block = s.getBlock();
-        Family family = FAMILY.get(block);
+        Family family = familyFor(block);
         if (family == null || KIND_ID[family.kind.ordinal()] <= 0) return null;
         if (block == Blocks.MANGROVE_PROPAGULE && s.getValue(BlockStateProperties.HANGING)) return null;
         if (family == Family.PITCHER && s.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.UPPER) {
@@ -310,14 +335,14 @@ public final class TwinRegistry {
      * both), for the self-audit.
      */
     public static boolean governsBlock(Block block) {
-        Family family = FAMILY.get(block);
+        Family family = familyFor(block);
         return (family != null && KIND_ID[family.kind.ordinal()] > 0) || PACES.containsKey(block)
                 || block == Blocks.MANGROVE_PROPAGULE;
     }
 
     /** True when a state of {@code block} can be a twin state (the 1.20.1 block of a twin family whose twin was built). */
     static boolean isTwinBlock(Block block) {
-        Family family = FAMILY.get(block);
+        Family family = familyFor(block);
         return family != null && KIND_ID[family.kind.ordinal()] > 0;
     }
 

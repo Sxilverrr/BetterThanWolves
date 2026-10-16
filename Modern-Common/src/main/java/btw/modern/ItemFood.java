@@ -71,6 +71,45 @@ public class ItemFood extends Item {
         return this;
     }
 
+    // FCMOD-INTEGRATION(1.20.1): food_values: read-only views of the 1.5.2 eat fields, so btw.forge.food.FcFoodValues
+    // reports FC's own values to the modern food API (tooltips, food-bar mods, ProxyItem.getFoodProperties) without
+    // re-deriving them (INTEGRATIONS #024).
+
+    /** Whether the item is eaten at a full food bar (1.5.2 ItemFood.alwaysEdible, read by canEat). */
+    public boolean isAlwaysEdible() {
+        return this.alwaysEdible;
+    }
+
+    /** The 1.5.2 potion id applied by {@link #onFoodEaten}, or 0 for none. */
+    public int getPotionId() {
+        return this.potionId;
+    }
+
+    /** That effect's duration in SECONDS, as stored (onFoodEaten multiplies by 20). */
+    public int getPotionDuration() {
+        return this.potionDuration;
+    }
+
+    public int getPotionAmplifier() {
+        return this.potionAmplifier;
+    }
+
+    public float getPotionEffectProbability() {
+        return this.potionEffectProbability;
+    }
+
+    /**
+     * The effects {@link #onFoodEaten} applies to an eater of a stack with this damage, as rows
+     * {@code {fcPotionId, durationSeconds, amplifier, probability}}: the stored effect when there is one, else none.
+     * Overridden where onFoodEaten does more (the enchanted golden apple). Pure; never rolls the probability.
+     */
+    public float[][] getPortEatEffects(int itemDamage) {
+        if (this.potionId > 0) {
+            return new float[][] {{this.potionId, this.potionDuration, this.potionAmplifier, this.potionEffectProbability}};
+        }
+        return new float[0][];
+    }
+
     // 1.5.2 ItemFood.setPotionEffect — stores the effect applied on eating; live via
     // FCItemCreeperOysters ctor and FCItemFood.Set*FoodPoisoningEffect on raw foods.
     public ItemFood setPotionEffect(int potionId, int duration, int amplifier, float probability) {

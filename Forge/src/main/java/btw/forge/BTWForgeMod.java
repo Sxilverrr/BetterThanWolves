@@ -51,6 +51,9 @@ public class BTWForgeMod {
         // (before FMLCommonSetupEvent) so the channel exists when the server
         // starts sending penalty sync packets.
         BTWNetwork.register();
+
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: one guarded loader for optional mods; a missing or broken mod only switches its own integration off
+        btw.forge.compat.BTWCompat.init(modEventBus);
     }
 
     /**

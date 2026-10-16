@@ -14,7 +14,10 @@ public class ItemInWorldManager {
 
     public void setGameType(EnumGameType type) { this.gameType = type; }
     public EnumGameType getGameType() { return this.gameType; }
-    public boolean isCreative() { return false; }
+
+    // FCMOD-INTEGRATION(1.20.1): fc_harvest_parity: 1.5.2 isCreative() is the manager's game type (vanilla/server ItemInWorldManager.java:69-72); a constant false left FC without its creative branch
+    // A manager nobody gave a game type (null) stays survival, as before.
+    public boolean isCreative() { return gameType != null && gameType.isCreative(); }
     public void initBlockRemoving() {}
 
     /**
@@ -23,10 +26,33 @@ public class ItemInWorldManager {
      *
      * Called by the mixin when a player finishes breaking a block.
      * ALL gameplay logic is FC code — the mixin just calls this method.
+     *
+     * <p>1.5.2 order (vanilla/server ItemInWorldManager.java:421-444): a creative player only removes the block,
+     * everyone else runs SurvivalTryHarvestBlock (:446-504). 1.5.2's first clause (adventure without
+     * canCurrentToolHarvestBlock returns false) is not ported: adventure keeps 1.20.1's CanDestroy rule, which
+     * Forge's BreakEvent pre-cancel applies before the bridge gets here (ServerPlayerGameModeMixin).</p>
      */
     public boolean tryHarvestBlock(int i, int j, int k, int iFromSide) {
         if (theWorld == null || thisPlayerMP == null) {
             return false;
+        }
+
+        // FCMOD-INTEGRATION(1.20.1): fc_harvest_parity: 1.5.2's creative branch (vanilla/server ItemInWorldManager.java:427-439): the break effect and removeBlock, never a harvest, conversion or tool wear
+        if (isCreative()) {
+            int iBlockID = theWorld.getBlockId(i, j, k);
+            int iBlockMetadata = theWorld.getBlockMetadata(i, j, k);
+
+            theWorld.playAuxSFXAtEntity(thisPlayerMP, 2001, i, j, k, iBlockID + (iBlockMetadata << 12));
+
+            boolean bBlockRemoved = removeBlock(i, j, k);
+
+            // 1.5.2 then resends the block to the breaker (Packet53BlockChange). 1.20.1 does that through the
+            // break's sequence ack: destroyAndAck resends the block when destroyBlock reports failure, and an acked
+            // client prediction falls back to the last server state; the removal itself reaches every client
+            // through the chunk broadcast. The held stack is untouched.
+            this.lastHeldStack = thisPlayerMP.getCurrentEquippedItem();
+
+            return bBlockRemoved;
         }
 
         int iBlockID = theWorld.getBlockId(i, j, k);
@@ -65,7 +91,8 @@ public class ItemInWorldManager {
         }
 
         if (bRemovingBlock) {
-            boolean bRemoved = theWorld.setBlockToAir(i, j, k);
+            // FCMOD-INTEGRATION(1.20.1): fc_harvest_parity: 1.5.2 removes through removeBlock (vanilla/server ItemInWorldManager.java:479), whose hooks a bare setBlockToAir skipped
+            boolean bRemoved = removeBlock(i, j, k);
 
             if (bRemoved && !bConvertingBlock) {
                 if (bHarvestingBlock) {
@@ -89,5 +116,36 @@ public class ItemInWorldManager {
         this.lastHeldStack = currentStack;
 
         return true;
+    }
+
+    /**
+     * Removes a block and triggers the appropriate events: 1.5.2 ItemInWorldManager.removeBlock (vanilla/server
+     * ItemInWorldManager.java:258-280). The block hears onBlockHarvested before it goes (FCBlockVase explodes its
+     * contents unless silk-touched, Client FCBlockVase.java:154-160) and onBlockDestroyedByPlayer after (the mining
+     * charge drops itself, Client FCBlockMiningCharge.java:186-195; FCBlockStairs forwards it to its base block,
+     * :50-53), and FC's animals within 8 blocks panic at a survival player's removal (World.java:991-1010).
+     */
+    // FCMOD-INTEGRATION(1.20.1): fc_harvest_parity: the port removed FC blocks with setBlockToAir alone, so vases never exploded, mining charges dropped nothing and animals never panicked
+    private boolean removeBlock(int i, int j, int k) {
+        int iBlockID = theWorld.getBlockId(i, j, k);
+        Block block = iBlockID > 0 && iBlockID < Block.blocksList.length ? Block.blocksList[iBlockID] : null;
+        int iMetadata = theWorld.getBlockMetadata(i, j, k);
+
+        if (block != null) {
+            block.onBlockHarvested(theWorld, i, j, k, iMetadata, thisPlayerMP);
+        }
+
+        boolean bRemoved = theWorld.setBlockToAir(i, j, k);
+
+        if (block != null && bRemoved) {
+            block.onBlockDestroyedByPlayer(theWorld, i, j, k, iMetadata);
+
+            // FC animals panic at blocks removed near them (1.5.2 :273-275); the world skips creative players.
+            if (block.blockMaterial != null) {
+                theWorld.NotifyNearbyAnimalsOfPlayerBlockAddOrRemove(thisPlayerMP, block, i, j, k);
+            }
+        }
+
+        return bRemoved;
     }
 }

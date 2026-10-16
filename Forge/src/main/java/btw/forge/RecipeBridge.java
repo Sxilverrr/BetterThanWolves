@@ -1,12 +1,20 @@
 package btw.forge;
 
+import btw.forge.recipes.ModernCookingImport;
+import btw.forge.recipes.RawCraftedFoods;
+import btw.forge.recipes.RecipeReplacements;
+import btw.forge.recipes.TagMachineRecipes;
+import btw.forge.recipes.WorkbenchFallback;
 import net.minecraft.core.NonNullList;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.*;
+import net.minecraftforge.event.AddReloadListenerEvent;
 import net.minecraftforge.event.OnDatapackSyncEvent;
+import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
@@ -36,7 +44,29 @@ import java.util.*;
  * vanilla-recipe removals (behind {@link #MIRROR_FC_VANILLA_REMOVALS}) and, always, every recipe
  * whose result is a {@link btw.forge.removed.RemovedContent} id ("blocks that 4.B explicitly
  * removed must stay removed"). {@link RetiredIngredientWidening} then lets recipes that consume a
- * retired id accept its BTW successor. Working on the same map keeps both across /reload.</p>
+ * removed id accept its BTW successor. Working on the same map keeps both across /reload.</p>
+ *
+ * <p><b>Recipe bridge (INTEGRATIONS #025):</b> 1.20.1 recipes and other mods' recipes follow FC's
+ * recipe rules. {@link #injectRecipes} runs these steps in order, each in its own try/catch that
+ * logs one ERROR and leaves the recipes as they were:</p>
+ * <ol>
+ *   <li>clear the previous cooking and millstone imports (FC statics hold no stale headless ids);</li>
+ *   <li>collect the loaded non-FC recipes and inject FC's crafting and smelting recipes;</li>
+ *   <li>{@link RecipeReplacements}: data-driven replacements by id ({@code btw_recipe_replacements});</li>
+ *   <li>{@link FcRecipeRemovals}: 4.B's removals, the result-only fence rule and the stays-removed rule;</li>
+ *   <li>{@link RetiredIngredientWidening}: removed ingredients also accept their BTW successor (furnace to
+ *       brick oven and tripwire hook to FC iron nugget included);</li>
+ *   <li>install the map ({@code replaceRecipes});</li>
+ *   <li>{@link ModernCookingImport}: edible unmapped cooking inputs join FC's furnace and campfire tables;</li>
+ *   <li>{@link TagMachineRecipes}: item tags feed the FC millstone ({@code btw_machine_recipes});</li>
+ *   <li>{@link RawCraftedFoods}: crafted foods made from poisonous raw items are marked for food-core;</li>
+ *   <li>{@link WorkbenchFallback}: the FC workbench, work stump and soulforge fall back to every non-FC
+ *       RecipeManager crafting recipe after FC's own lists (installed with Part A's switch, so one switch
+ *       reverts A, the fence rule and the fallback together).</li>
+ * </ol>
+ * <p>It runs at ServerStarting, after the overworld's LevelEvent.Load restored the world's headless ids
+ * (FcWorldSavedData), and again after every /reload ({@link #onDatapackSync}), never earlier: steps 7 and 8
+ * hand out headless ids.</p>
  */
 @Mod.EventBusSubscriber(modid = BTWForgeMod.MOD_ID)
 public class RecipeBridge {
@@ -68,6 +98,15 @@ public class RecipeBridge {
     public static synchronized void injectRecipes(MinecraftServer server) {
         try {
             RecipeManager recipeManager = server.getRecipeManager();
+            RegistryAccess access = server.registryAccess();
+
+            // FCMOD-INTEGRATION(1.20.1): recipes: the previous load's imports leave FC's static tables first, so
+            // FC's own smelting list is exported below without them and no stale headless id survives a reload.
+            runStep("clear the previous cooking and millstone imports", () -> {
+                ModernCookingImport.clear();
+                TagMachineRecipes.clear();
+                return null;
+            }, null);
 
             // Everything currently loaded (vanilla + datapacks), minus FC entries left over from
             // an earlier injection; FC recipes are then (re)added under their stable ids.
@@ -81,20 +120,27 @@ public class RecipeBridge {
             int[] crafting = injectCraftingRecipes(all);
             int smeltingCount = injectSmeltingRecipes(all);
 
+            // FCMOD-INTEGRATION(1.20.1): recipes: replacements by id first, so the stays-removed rule and the
+            // widening below also govern replacement recipes; after every pack loaded, so pack order is irrelevant.
+            int[] replacements = mapStep(all, "Failed to apply BTW recipe replacements; recipes stay as loaded",
+                    () -> RecipeReplacements.applyTo(all), new int[3]);
+
             // FCMOD-INTEGRATION(1.20.1): stays-removed: 4.B's recipe removals, applied to the same map so a
             // /reload re-injection (onDatapackSync) re-applies them; a failure leaves the recipes as before.
-            try {
-                FcRecipeRemovals.apply(all, server.registryAccess(), MIRROR_FC_VANILLA_REMOVALS);
-            } catch (Throwable t) {
-                LOGGER.error("Failed to apply BTW recipe removals; vanilla recipes stay as loaded", t);
-            }
-            // FCMOD-INTEGRATION(1.20.1): stays-removed: integrate, don't disable -- recipes that consume a retired
-            // id (torch, chest, clay, nether brick, ...) also accept its BTW successor; after the removals, so only
-            // surviving recipes are widened, and on the same map, so /reload re-applies it.
-            try {
-                RetiredIngredientWidening.apply(all, server.registryAccess());
-            } catch (Throwable t) {
-                LOGGER.error("Failed to widen recipes that take retired ids; they stay as loaded", t);
+            int beforeRemovals = all.size();
+            mapStep(all, "Failed to apply BTW recipe removals; vanilla recipes stay as loaded",
+                    () -> FcRecipeRemovals.apply(all, access, MIRROR_FC_VANILLA_REMOVALS), null);
+            int removedCount = beforeRemovals - all.size();
+
+            // FCMOD-INTEGRATION(1.20.1): stays-removed: integrate, don't disable -- recipes that consume a removed
+            // id (torch, chest, clay, nether brick, furnace, tripwire hook, ...) also accept its BTW successor; after
+            // the removals, so only surviving recipes are widened, and on the same map, so /reload re-applies it.
+            Map<ResourceLocation, Recipe<?>> beforeWidening = new HashMap<>(all);
+            mapStep(all, "Failed to widen recipes that take removed ids; they stay as loaded",
+                    () -> RetiredIngredientWidening.apply(all, access), null);
+            int widenedCount = 0;
+            for (Map.Entry<ResourceLocation, Recipe<?>> e : all.entrySet()) {
+                if (beforeWidening.get(e.getKey()) != e.getValue()) widenedCount++;
             }
 
             recipeManager.replaceRecipes(all.values());
@@ -105,9 +151,97 @@ public class RecipeBridge {
             LOGGER.info("Injected {} crafting ({} code-driven) + {} smelting FC recipes into RecipeManager"
                             + " ({} FC crafting recipes skipped: unconvertible)",
                     crafting[0], crafting[1], smeltingCount, crafting[2]);
+
+            // FCMOD-INTEGRATION(1.20.1): recipes: FC's heat machines, millstone and food values follow the
+            // installed map; these hand out headless ids, so they run only here, after the world's table loaded.
+            int[] cooking = runStep("import modern cooking recipes into FC's furnace and campfire",
+                    () -> ModernCookingImport.apply(all.values(), access), new int[2]);
+            int millstone = runStep("apply tag-driven millstone recipes", TagMachineRecipes::apply, 0);
+            int rawCrafted = runStep("mark raw-crafted foods", () -> RawCraftedFoods.apply(all.values(), access),
+                    -1);
+
+            // FCMOD-INTEGRATION(1.20.1): recipes: the FC workbench, work stump and soulforge fall back to this map
+            // after FC's own lists; behind Part A's switch, so one switch reverts A, A2 and the fallback together.
+            boolean fallback = runStep("install the FC workbench fallback", () -> {
+                WorkbenchFallback.onRecipesReplaced();
+                btw.modern.CraftingManager.setExternalResolver(
+                        MIRROR_FC_VANILLA_REMOVALS ? WorkbenchFallback.INSTANCE : null);
+                return MIRROR_FC_VANILLA_REMOVALS;
+            }, false);
+
+            LOGGER.info("[BTW-Recipes] {} recipes installed: FC {} crafting + {} smelting; replacements {} replaced,"
+                            + " {} removed; 4.B removals {} recipes; widened {}; cooking import {} furnace + {}"
+                            + " campfire; millstone tag recipes {}; raw-crafted foods {}; FC workbench fallback {}",
+                    all.size(), crafting[0], smeltingCount, replacements[0], replacements[1], removedCount,
+                    widenedCount, cooking[0], cooking[1], millstone, rawCrafted < 0 ? "n/a" : rawCrafted,
+                    fallback ? "on" : "OFF");
         } catch (Throwable e) {
             LOGGER.error("Failed to inject FC recipes into the RecipeManager", e);
         }
+    }
+
+    /** One orchestration step: its own try/catch, one ERROR on failure, {@code fallback} returned instead. */
+    private static <T> T runStep(String what, java.util.function.Supplier<T> step, T fallback) {
+        try {
+            return step.get();
+        } catch (Throwable t) {
+            LOGGER.error("Failed to {}; skipped", what, t);
+            return fallback;
+        }
+    }
+
+    /** A step that edits the recipe map in place: on failure, one ERROR and the map is restored as it was. */
+    private static <T> T mapStep(Map<ResourceLocation, Recipe<?>> all, String error,
+                                 java.util.function.Supplier<T> step, T fallback) {
+        Map<ResourceLocation, Recipe<?>> snapshot = new LinkedHashMap<>(all);
+        try {
+            return step.get();
+        } catch (Throwable t) {
+            all.clear();
+            all.putAll(snapshot);
+            LOGGER.error(error, t);
+            return fallback;
+        }
+    }
+
+    /**
+     * Registers the recipe bridge's data loaders (btw_recipe_replacements, btw_machine_recipes) with every server
+     * data load; {@link #injectRecipes} applies what they read.
+     */
+    // FCMOD-INTEGRATION(1.20.1): recipes: data-driven replacements and machine recipes reload with the datapacks
+    @SubscribeEvent
+    public static void onAddReloadListeners(AddReloadListenerEvent event) {
+        event.addListener(new RecipeReplacements.Loader(event.getConditionContext()));
+        event.addListener(new TagMachineRecipes.Loader(event.getConditionContext()));
+    }
+
+    /**
+     * The world is gone: FC's static tables drop every import keyed to its headless ids, the FC grids stop asking the
+     * previous RecipeManager, and the raw-crafted marks are cleared, so the next world in this JVM starts clean.
+     */
+    // FCMOD-INTEGRATION(1.20.1): recipes: no FC static keeps a previous world's imports after ServerStopped
+    @SubscribeEvent
+    public static void onServerStopped(ServerStoppedEvent event) {
+        runStep("remove the FC workbench fallback", () -> {
+            btw.modern.CraftingManager.setExternalResolver(null);
+            return null;
+        }, null);
+        runStep("clear the cooking imports", () -> {
+            ModernCookingImport.clear();
+            return null;
+        }, null);
+        runStep("clear the millstone tag recipes", () -> {
+            TagMachineRecipes.clear();
+            return null;
+        }, null);
+        runStep("clear the raw-crafted foods", () -> {
+            btw.forge.food.FcFoodValues.setRawCrafted(Set.of());
+            return null;
+        }, null);
+        runStep("reset the FC workbench fallback cache", () -> {
+            WorkbenchFallback.onRecipesReplaced();
+            return null;
+        }, null);
     }
 
     /**
@@ -134,9 +268,53 @@ public class RecipeBridge {
     }
 
     /** True for the ids this bridge injects for FC ({@code fc_recipe_*}, {@code fc_smelting_*}). */
-    static boolean isFcRecipeId(ResourceLocation id) {
+    // FCMOD-INTEGRATION(1.20.1): recipes: public for btw.forge.recipes (the fallback skips FC's own copies)
+    public static boolean isFcRecipeId(ResourceLocation id) {
         return id != null && BTWForgeMod.MOD_ID.equals(id.getNamespace())
                 && (id.getPath().startsWith(CRAFTING_PREFIX) || id.getPath().startsWith(SMELTING_PREFIX));
+    }
+
+    /** canonical 1.20.1 item -> the 1.20.1 item FC reads as the same 1.5.2 subtype; built once, after FC init. */
+    private static volatile Map<net.minecraft.world.item.Item, net.minecraft.world.item.Item> legacyAliases;
+
+    /**
+     * The 1.20.1 item that FC cannot tell apart from {@code canonical}, or null. Both convert to the same 1.5.2
+     * (id, damage), and {@code canonical} is the one an FC stack converts back to (ItemStackHelper.toMcStack). These
+     * are LegacyVariants' modern-only spellings of a 1.5.2 subtype: the black, brown, blue and white dye items for ink
+     * sac, cocoa beans, lapis and bone meal (1.5.2 dye 0/3/4/15, ItemDye.java:19), the stone slab for the smooth stone
+     * slab (44:0) and smooth sandstone for cut sandstone (24:2). Lossy collapses (every modern flower onto the rose, the
+     * 16 bed colours onto one bed) are deliberately not aliases: those items are not the same 1.5.2 thing.
+     */
+    // FCMOD-INTEGRATION(1.20.1): recipes: the FC workbench fallback retries a grid with these spellings (INTEGRATIONS #025)
+    public static net.minecraft.world.item.Item legacyAlias(net.minecraft.world.item.Item canonical) {
+        if (canonical == null) return null;
+        Map<net.minecraft.world.item.Item, net.minecraft.world.item.Item> map = legacyAliases;
+        if (map == null) {
+            if (!BTWLifecycle.isFcReady()) return null; // the canonical pick needs FC's tables; never cache early
+            map = buildLegacyAliases();
+            legacyAliases = map;
+        }
+        return map.get(canonical);
+    }
+
+    private static Map<net.minecraft.world.item.Item, net.minecraft.world.item.Item> buildLegacyAliases() {
+        Map<net.minecraft.world.item.Item, net.minecraft.world.item.Item> out = new IdentityHashMap<>();
+        try {
+            for (net.minecraft.world.item.Item item : BuiltInRegistries.ITEM) {
+                int[] legacy = LegacyVariants.toLegacy(item);
+                if (legacy == null || legacy[0] <= 0 || legacy[0] == LegacyVariants.SPAWN_EGG_ID) continue;
+                // the item an FC stack of that subtype converts back to (toMcStack never allocates a headless id)
+                net.minecraft.world.item.Item canonical = ItemStackHelper.toMcStack(
+                        new btw.modern.ItemStack(legacy[0], 1, legacy[1])).getItem();
+                if (canonical == null || canonical == net.minecraft.world.item.Items.AIR || canonical == item) continue;
+                out.putIfAbsent(canonical, item); // registry order: deterministic
+            }
+        } catch (Throwable t) {
+            LOGGER.warn("Could not list FC's legacy item aliases; the FC workbench fallback matches canonical items only",
+                    t);
+        }
+        LOGGER.debug("FC legacy item aliases: {}", out);
+        return Collections.unmodifiableMap(out);
     }
 
     /**
@@ -205,6 +383,10 @@ public class RecipeBridge {
         for (Map.Entry<Integer, btw.modern.ItemStack> entry : fcSmelting.entrySet()) {
             int inputId = entry.getKey();
             btw.modern.ItemStack fcOutput = entry.getValue();
+
+            // FCMOD-INTEGRATION(1.20.1): recipes: a headless input is a modern item's own recipe imported into FC's
+            // table (ModernCookingImport); exporting it back would duplicate it as fc_smelting_25xxx
+            if (inputId >= ProxyRegistry.HEADLESS_BASE_ID) continue;
 
             try {
                 // Convert input ID to Ingredient

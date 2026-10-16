@@ -9,14 +9,17 @@ import btw.forge.ProxyItem;
 import btw.forge.ProxyRegistry;
 import btw.forge.WorldBridge;
 import net.minecraft.core.BlockPos;
+import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.ServerPlayerGameMode;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraftforge.common.ForgeHooks;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -24,22 +27,59 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Intercepts {@link ServerPlayerGameMode#destroyBlock(BlockPos)} at HEAD,
- * BEFORE vanilla removes the block from the world. This is critical because
- * FC's {@code tryHarvestBlock} queries the world for the block at (x,y,z) —
- * if vanilla already removed it, the query returns air and nothing happens.
+ * FCMOD-INTEGRATION(1.20.1): fc_harvest_events (INTEGRATIONS #022, FC actions visible to other mods)
  *
- * FC's complete harvest pipeline runs here:
- * <ol>
- *   <li>{@code canHarvestBlock} — FC decides if tool is correct</li>
- *   <li>{@code CanConvertBlock} — FC checks if block transforms (log → damaged log)</li>
- *   <li>{@code ConvertBlock} — FC does the transformation, drops bark</li>
- *   <li>{@code harvestBlock} — proper tool drops</li>
- *   <li>{@code OnBlockDestroyedWithImproperTool} — component drops (piles, sawdust)</li>
- * </ol>
+ * <p><b>Feature:</b> 1.20.1 / Forge's player block-break contract, {@code ServerPlayerGameMode.destroyBlock}
+ * (ServerPlayerGameMode.java:229-262): it posts {@code BlockEvent.BreakEvent} through
+ * {@code ForgeHooks.onBlockBreakEvent} (ForgeHooks.java:513-565) before anything is removed, which claim and
+ * protection mods cancel and LSO thirst / Cold Sweat listen to; that call also pre-cancels for spectators, for
+ * adventure players without a CanDestroy tag and for a held item whose {@code canAttackBlock} is false (a sword in
+ * creative). It then honours {@code IForgeItem.onBlockStartBreak} for the held item. The same class carries two
+ * more hook groups: right-click on a block ({@code useItemOn} HEAD, FC {@code onItemUse}; RETURN, the placed
+ * block's facing) and right-click in air ({@code useItem}, FC {@code onItemRightClick}).</p>
  *
- * Zero FC logic in this mixin — it just calls FC's {@code tryHarvestBlock}.
+ * <p><b>Conflict with FC:</b> FC's harvest pipeline ({@code ItemInWorldManager.tryHarvestBlock}: FC
+ * {@code canHarvestBlock}, then {@code CanConvertBlock}/{@code ConvertBlock} (log to chewed log, bark), then
+ * {@code harvestBlock} or {@code OnBlockDestroyedWithImproperTool}) reads the block from the world, so it must run
+ * BEFORE vanilla removes it: this mixin cancels {@code destroyBlock} at HEAD for every block with an FC identity.
+ * That cancel also skipped the BreakEvent, so claim, protection and thirst handlers never saw an FC harvest, and
+ * direct {@code destroyBlock} callers (machines, fake players, vein-miners; {@code handleBlockBreakAction} checks
+ * {@code blockActionRestricted} itself at START, ServerPlayerGameMode.java:149) bypassed the spectator and
+ * adventure rules. The FC pipeline had no creative branch either, so creative breaks chewed logs, dropped items and
+ * wore tools (1.5.2 just removes the block, vanilla/server ItemInWorldManager.java:421-444).</p>
+ *
+ * <p><b>Integration pattern:</b> D (FC-extend): the FC harvest keeps its HEAD cancel and runs inside Forge's
+ * contract, posting the BreakEvent and honouring {@code onBlockStartBreak} in vanilla's order, then hands FC the
+ * player's game mode so FC's own 1.5.2 creative branch decides creative breaks.</p>
+ *
+ * <p><b>Rebalance:</b> none; 4.B parity plus 1.20.1's break rules. A cancelled BreakEvent (or an
+ * {@code onBlockStartBreak} that claims the break) leaves the FC block in place and returns false, so
+ * {@code destroyAndAck} resends it. Another mod's BreakEvent listener or {@code onBlockStartBreak} that throws
+ * refuses the break the same way (logged once per block id, the block resent), which is vanilla's effective outcome
+ * without the per-hit FATAL task log or a LinkageError crash. Creative with a sword can no longer break FC blocks
+ * (the 1.20.1 rule for every block). Adventure keeps 1.20.1's rule (CanDestroy), not 1.5.2's {@code canCurrentToolHarvestBlock} clause. The
+ * event fires once per FC destroy call, including FC conversion stages: each log-chewing hit (Client
+ * FCBlockLog.ConvertBlock) is one BreakEvent, so a thirst mod charges per hit. The event's XP is ignored: FC drops
+ * its own XP in {@code harvestBlock}; the BreakEvent constructor's {@code getExpDrop} draw uses
+ * {@code level.random}, and FC draws from WorldBridge's own {@code java.util.Random} (WorldBridge.java:108), so FC's
+ * random stream is unchanged.</p>
+ *
+ * <p><b>Injection strategy:</b> {@link Inject} at HEAD of {@code destroyBlock(BlockPos)}, cancellable, as before.
+ * For a block with an FC identity it posts the BreakEvent and checks {@code onBlockStartBreak} first, then runs FC's
+ * {@code tryHarvestBlock}. {@code GameMasterBlock} is unreachable (legacy 137, the command block, has no FC block)
+ * and {@code blockActionRestricted} (Player.java:186-197) is the condition the BreakEvent pre-cancel already
+ * applies, so neither is repeated. Blocks without an FC identity (post-1.5.2 blocks, twin plants, the bark and
+ * stripped log forms, Dynamic Trees blocks) keep vanilla {@code destroyBlock}, which posts the event itself
+ * (:229), so the event never fires twice. {@code useItemOn} and {@code useItem} are HEAD injects and
+ * {@code btw$fixBlockFacing} a RETURN inject, unchanged.</p>
+ *
+ * <p><b>Alternative considered and rejected:</b> running the FC harvest after Forge's event, at a later point of
+ * vanilla's {@code destroyBlock}: by then vanilla has removed the block and spawned its drops, and FC's
+ * {@code tryHarvestBlock} reads the block from the world, which is the reason for the HEAD cancel. Posting the event
+ * from a BreakEvent listener of BTW's own: it would not see direct callers' game modes or onBlockStartBreak, and
+ * would order differently from every other block.</p>
  */
+// FCMOD-INTEGRATION(1.20.1): fc_harvest_events: an FC harvest cancels vanilla destroyBlock, so it must post Forge's BreakEvent and honour onBlockStartBreak itself
 @Mixin(ServerPlayerGameMode.class)
 public abstract class ServerPlayerGameModeMixin {
 
@@ -52,6 +92,33 @@ public abstract class ServerPlayerGameModeMixin {
         btw.modern.Block fcBlock = ProxyRegistry.getFcBlock(state.getBlock());
         if (fcBlock == null) return; // Not an FC block — let vanilla handle it
 
+        // FCMOD-INTEGRATION(1.20.1): fc_harvest_events: Forge's break contract in vanilla's order (destroyBlock:229-242) before the FC pipeline, so claim, protection and thirst handlers see FC harvests
+        // onBlockBreakEvent pre-cancels spectators, adventure without CanDestroy and canAttackBlock=false (a creative
+        // sword), sends the client the air update first and resends the block (and its BE data) on a cancel. Its XP
+        // is ignored: FC drops its own. Fires once per FC destroy call, conversion stages (log chewing) included.
+        ServerPlayerGameMode self = (ServerPlayerGameMode) (Object) this;
+        GameType gameMode = self.getGameModeForPlayer();
+        boolean refused;
+        try {
+            refused = ForgeHooks.onBlockBreakEvent(level, gameMode, player, pos) == -1
+                    || player.getMainHandItem().onBlockStartBreak(pos, player);
+        } catch (RuntimeException | LinkageError e) {
+            // FCMOD-INTEGRATION(1.20.1): fc_harvest_events: a third-party BreakEvent listener or onBlockStartBreak that throws refuses the break (fail closed) instead of escaping into the packet handler
+            // Vanilla's effective outcome (the throw aborts destroyBlock, the block stays) without the FATAL task log
+            // per hit or a LinkageError crash; a protection listener that failed is never bypassed. The air update
+            // onBlockBreakEvent may already have sent is undone here, also for direct callers that get no resend.
+            ProxyItem.logFcFailureOnce("BreakEvent/onBlockStartBreak of another mod (legacy block id)",
+                    fcBlock.blockID, e);
+            if (player.connection != null) {
+                player.connection.send(new ClientboundBlockUpdatePacket(level, pos));
+            }
+            refused = true;
+        }
+        if (refused) {
+            cir.setReturnValue(false);
+            return;
+        }
+
         PlayerBridge fcPlayer = PlayerBridge.getOrCreate(player);
         fcPlayer.syncFromReal();
 
@@ -59,6 +126,10 @@ public abstract class ServerPlayerGameModeMixin {
         btw.modern.ItemInWorldManager mgr = new btw.modern.ItemInWorldManager(
                 WorldBridge.getOrCreate(level));
         mgr.thisPlayerMP = fcPlayer;
+        // FCMOD-INTEGRATION(1.20.1): fc_harvest_events: FC's 1.5.2 creative branch keys on the manager's game type (vanilla/server ItemInWorldManager.java:421-444); 1.20.1 GameType ids 0-2 are 1.5.2's
+        // Spectator (3) never gets here: the BreakEvent pre-cancel above refuses it. setGameType only stores it
+        // (Modern-Common), the abilities stay 1.20.1's.
+        mgr.setGameType(btw.modern.EnumGameType.getByID(gameMode.getId()));
 
         boolean handled = true;
         try {

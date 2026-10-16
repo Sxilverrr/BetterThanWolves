@@ -28,8 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * collided with all of them (vanilla/client World.java:1601-1625). Only the world-read path uses this
  * (ProxyRegistry.getWorldBlockId): identity routing (getFcBlock / BlockBehaviorMixin / items) never returns a
  * stand-in id, so no FC callback runs on a modern block. Collision/solidity/pathing/hardness are bridged to
- * the live MC state; FC machine hooks stay inert, and WorldBridge.setBlock(standInId) is a no-op
- * (getModernBlock(standIn) == null), so FC can never write one.
+ * the live MC state, and WorldBridge.setBlock(standInId) is a no-op (getModernBlock(standIn) == null), so FC can never
+ * write one. FC's machine hooks (the saw, the stump remover, fertilizer) answer through {@link ModernBlockHooks}: inert
+ * (false) unless an integration registered a hook for the live state (INTEGRATIONS #022).
  *
  * <p>FC's fire and plant rules read two more properties through the id. Fire: FCBlockFire, which owns the FIRE tick,
  * reads only its own tables (BlockFire.abilityToCatchFire / chanceToEncourageFire, indexed by getBlockId), and FC lava
@@ -39,6 +40,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * (magma block) keeps FC fire on it burning (DoesInfiniteBurnToFacing). Soil: modern soils answer
  * FC's soil hooks from their 1.20.1 tags (maintainer decision D3), so plants 1.20.1 world generation put on podzol,
  * moss, mud, rooted or coarse dirt and red sand survive FC's survival rules.</p>
+ *
+ * <p>Plants: a governed modded crop on BTW soil that takes it (btw.forge.farming.FcSoil.governsAt) reads as the plant
+ * stand-in ({@link ModernPlantStandIn}, INTEGRATIONS #026), allocated with the plain stand-ins only when the pack has
+ * a modded crop; every other non-colliding state still reads as air.</p>
  */
 final class ModernBlockStandIn extends btw.modern.Block {
 
@@ -49,7 +54,8 @@ final class ModernBlockStandIn extends btw.modern.Block {
     // BlockModelBridge:413/424) never give a stand-in a ProxyBlock or a model. 159 and 170-173 are 1.6+ ids the
     // vanilla table maps (isLegacyIdMapped), so 160-169 and 174 are free. The FC plant twins (TwinRegistry) share
     // the range: they are built at FC start-up, before any stand-in, and take the free ids from the top (174, 169,
-    // 168, 167, 166); stand-ins allocate from the bottom (160 solid, 161 collider, flammable ones from 162).
+    // 168, 167, 166); stand-ins allocate from the bottom (160 solid, 161 collider, then the plant stand-in when the
+    // pack has a modded crop, then the flammable ones).
     static final int FIRST_FREE_ID = 159;
     static final int LAST_FREE_ID = 174;
     /** FCBlockBedrock: immovable, not BD-retrievable, spared by id in EntityWither (vanilla/client EntityWither.java:369-371). */
@@ -58,6 +64,9 @@ final class ModernBlockStandIn extends btw.modern.Block {
     private static volatile boolean created;   // written last in ensureCreated -> publishes the ids below
     private static int solidId;                // full, solid-render collision cube (1.5.2 "normal cube")
     private static int colliderId;             // any other colliding shape (slab, stair, wall, fence, glass, carpet, mud)
+    private static int plantId;                // governed modded crops on BTW soil (ModernPlantStandIn); 0 = none
+    /** Guards the plant check against re-entry: FcSoil reads the soil through FC's world while idFor runs. */
+    private static final ThreadLocal<Boolean> IN_PLANT_CHECK = new ThreadLocal<>();
     private static final Set<net.minecraft.world.level.block.Block> LOGGED = ConcurrentHashMap.newKeySet();
     private static volatile boolean idForFailureLogged;
     /** One FC StepSound per 1.20.1 SoundType (identity keys: SoundType has no equals; the instances are shared). */
@@ -109,6 +118,15 @@ final class ModernBlockStandIn extends btw.modern.Block {
         try {
             if (!created) ensureCreated();
             if (solidId <= 0) return 0;                                  // allocation failed -> legacy (air)
+            // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: a governed modded crop on BTW soil that takes it reads as the plant stand-in, not as air, so FC's weeds, animals and fire treat it as an FC crop
+            if (plantId > 0 && isGovernedCropOnBtwSoil(state, level, pos)) {
+                net.minecraft.world.level.block.Block mc = state.getBlock();
+                if (!LOGGED.contains(mc) && LOGGED.add(mc)) {
+                    LOGGER.info("[STAND-IN] {} on BTW soil reads as legacy id {} (plant) to FC",
+                            BuiltInRegistries.BLOCK.getKey(mc), plantId);
+                }
+                return plantId;
+            }
             VoxelShape shape = state.getCollisionShape(level, pos);      // MC-cached for non-dynamic shapes
             if (shape.isEmpty()) return 0;
             boolean full = net.minecraft.world.level.block.Block.isShapeFullBlock(shape);
@@ -132,6 +150,35 @@ final class ModernBlockStandIn extends btw.modern.Block {
         }
     }
 
+    /**
+     * True for a governed modded crop standing on BTW soil that takes it, read on the server thread of a ServerLevel
+     * (the FC world reads that see a live plant; world generation and other threads keep air).
+     */
+    private static boolean isGovernedCropOnBtwSoil(BlockState state, BlockGetter level, BlockPos pos) {
+        if (!(state.getBlock() instanceof net.minecraft.world.level.block.CropBlock)
+                || !(level instanceof ServerLevel sl) || !sl.getServer().isSameThread()
+                || IN_PLANT_CHECK.get() != null) {
+            return false;
+        }
+        IN_PLANT_CHECK.set(Boolean.TRUE);
+        try {
+            return btw.forge.farming.FcSoil.governsAt(sl, pos, state);
+        } finally {
+            IN_PLANT_CHECK.remove();
+        }
+    }
+
+    /** The plant stand-in's id (allocating the stand-ins first if needed), 0 when the pack has no modded crop. */
+    static int plantStandInId() {
+        if (!created) ensureCreated();
+        return plantId;
+    }
+
+    /** The plant stand-in's id if the stand-ins exist, else 0 (no allocation). */
+    static int plantId() {
+        return created ? plantId : 0;
+    }
+
     private static synchronized void ensureCreated() {
         if (created) return;
         try {
@@ -143,6 +190,7 @@ final class ModernBlockStandIn extends btw.modern.Block {
                 solidId = a;
                 colliderId = b;
                 LOGGER.info("[STAND-IN] modern-only blocks read by FC as legacy {} (solid cube) / {} (shaped collider)", a, b);
+                createPlantStandIn(b);
             } else {
                 LOGGER.warn("[STAND-IN] no two free legacy ids in {}..{}; modern-only blocks stay air to FC",
                         FIRST_FREE_ID, LAST_FREE_ID);
@@ -152,6 +200,30 @@ final class ModernBlockStandIn extends btw.modern.Block {
             LOGGER.error("[STAND-IN] creation failed; modern-only blocks stay air to FC", t);
         } finally {
             created = true;
+        }
+    }
+
+    /**
+     * The plant stand-in, right after the collider, only when the pack has a modded crop (ModernPlantStandIn.isNeeded):
+     * plain BTW keeps four free ids for flammable stand-ins, a pack with modded crops three. A failure leaves modded
+     * crops reading as air, as before.
+     */
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: one free legacy id for FC's view of modded crops on BTW soil, only when a modded crop exists
+    private static void createPlantStandIn(int collider) {
+        try {
+            if (!ModernPlantStandIn.isNeeded()) return;
+            int p = nextFreeId(collider + 1);
+            if (p <= 0) {
+                LOGGER.warn("[STAND-IN] no free legacy id in {}..{} for the plant stand-in; modded crops stay air "
+                        + "to FC", FIRST_FREE_ID, LAST_FREE_ID);
+                return;
+            }
+            new ModernPlantStandIn(p);
+            plantId = p;
+            LOGGER.info("[STAND-IN] modded crops on BTW soil read by FC as legacy {} (plant)", p);
+        } catch (Throwable t) {
+            plantId = 0;
+            LOGGER.error("[STAND-IN] plant stand-in creation failed; modded crops stay air to FC", t);
         }
     }
 
@@ -201,7 +273,8 @@ final class ModernBlockStandIn extends btw.modern.Block {
 
     /**
      * Creates the stand-in for a new (shape, ignite, burn) bucket from the free range (the ids left between
-     * FIRST_FREE_ID and LAST_FREE_ID after the two plain stand-ins and the FC plant twins: four), with
+     * FIRST_FREE_ID and LAST_FREE_ID after the two plain stand-ins, the FC plant twins and, in a pack with modded crops,
+     * the plant stand-in: four, or three), with
      * SetFireProperties(ignite, burn) as FC's own blocks set
      * theirs (vanilla/server Block.java:1975-1981). The last free id is kept for the other shape class until that
      * class has a flammable stand-in: a solid cube and a shaped collider are not interchangeable (collision,
@@ -470,7 +543,7 @@ final class ModernBlockStandIn extends btw.modern.Block {
         dropMcLoot(world, i, j, k);
     }
 
-    private static void dropMcLoot(btw.modern.World world, int x, int y, int z) {
+    static void dropMcLoot(btw.modern.World world, int x, int y, int z) {
         ServerLevel level = levelOf(world, null);
         if (level == null) return;
         try {
@@ -484,11 +557,62 @@ final class ModernBlockStandIn extends btw.modern.Block {
         }
     }
 
-    // ---- saw stays inert (modern blocks were air to FCBlockSaw.SawBlockToFront before): no broken saws on
-    // modern wood/stone. GetStackRetrievedByBlockDispenser (null) / IsBlockDestroyedByBlockDispenser (false)
-    // keep Modern-Common's inert defaults.
+    // ---- the saw never breaks on a modern block (modern blocks were air to FCBlockSaw.SawBlockToFront before): no
+    // broken saws on modern wood/stone. GetStackRetrievedByBlockDispenser (null) / IsBlockDestroyedByBlockDispenser
+    // (false) keep Modern-Common's inert defaults.
     @Override public boolean DoesBlockBreakSaw(btw.modern.World world, int i, int j, int k) { return false; }
     @Override public boolean OnBlockSawed(btw.modern.World world, int i, int j, int k) { return false; }
+
+    // ---- FC machine hooks (INTEGRATIONS #022): FCBlockSaw (the 7-argument OnBlockSawed it calls, javap offset 167),
+    // FCItemStumpRemover (GetDoesStumpRemoverWorkOnBlock) and FCItemDye (AttemptToApplyFertilizerTo) act on a modern
+    // block only through a hook an integration registered for the live state (ModernBlockHooks); with none, or when the
+    // hook throws, FC's inert answer (false) stands.
+    // FCMOD-INTEGRATION(1.20.1): fc_machine_hooks: FC's saw, stump remover and fertilizer reach modern blocks through registered hooks instead of always doing nothing
+
+    @Override
+    public boolean OnBlockSawed(btw.modern.World world, int i, int j, int k, int iSawPosI, int iSawPosJ,
+                                int iSawPosK) {
+        Direction sawFacing = Direction.fromDelta(i - iSawPosI, j - iSawPosJ, k - iSawPosK);
+        if (sawFacing == null) return false;
+        return askHook(world, i, j, k, (hook, level, pos, state) -> hook.onSawed(level, pos, state, sawFacing));
+    }
+
+    @Override
+    public boolean GetDoesStumpRemoverWorkOnBlock(btw.modern.IBlockAccess access, int i, int j, int k) {
+        return askHook(access, i, j, k, ModernBlockHooks.Hook::stumpRemoverWorks);
+    }
+
+    @Override
+    public boolean AttemptToApplyFertilizerTo(btw.modern.World world, int i, int j, int k) {
+        return askHook(world, i, j, k, ModernBlockHooks.Hook::applyFertilizer);
+    }
+
+    /** One FC machine question to a {@link ModernBlockHooks.Hook}. */
+    @FunctionalInterface
+    private interface HookCall {
+        boolean ask(ModernBlockHooks.Hook hook, ServerLevel level, BlockPos pos, BlockState state);
+    }
+
+    private static volatile boolean hookFailureLogged;
+
+    /** The registered hook's answer for the live state at (i, j, k); false without a live level or hook, or on a throw. */
+    private static boolean askHook(Object access, int i, int j, int k, HookCall call) {
+        ServerLevel level = levelOf(access, null);
+        if (level == null) return false;
+        BlockPos pos = new BlockPos(i, j, k);
+        try {
+            BlockState state = level.getBlockState(pos);
+            ModernBlockHooks.Hook hook = ModernBlockHooks.find(state);
+            return hook != null && call.ask(hook, level, pos, state);
+        } catch (Throwable t) {
+            // Runs inside FC item use and the saw's tick: never throw out of them.
+            if (!hookFailureLogged) {
+                hookFailureLogged = true;
+                LOGGER.warn("[STAND-IN] FC machine hook failed at {}; FC's inert answer stands (logged once)", pos, t);
+            }
+            return false;
+        }
+    }
 
     // ---- soils (maintainer decision D3). FC's plant rules ask the block below through these hooks: BlockFlower /
     // FCBlockPlants.CanGrowOnBlock (Server FCBlockPlants.java:167-171), FCBlockSapling (:218-222), FCBlockCactus

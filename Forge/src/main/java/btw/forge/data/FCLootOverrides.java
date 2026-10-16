@@ -93,6 +93,12 @@ public class FCLootOverrides extends GlobalLootModifierProvider {
         // table (chests, archaeology, fishing, barter, gifts, entity and block drops). Which items it filters or
         // substitutes is read from btw.forge.removed.RemovedContent at run time, not written into the JSON.
         this.add("removed_content", new FCRemovedContentLootModifier(new LootItemCondition[0]));
+
+        // ---- Modded plants on BTW soil (INTEGRATIONS #026) ----
+        // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: one condition-free modifier; which crops and soils it covers
+        // (an unripe CropBlock with no FC id on soil that takes crops, or on the loose dirt a break untilled) is
+        // decided at run time by btw.forge.farming.FcSoil, not written into the JSON.
+        this.add("immature_crops_drop_nothing", new FCImmatureCropLootModifier(new LootItemCondition[0]));
     }
 
     private void removeFromTable(String name, ResourceLocation tableId,

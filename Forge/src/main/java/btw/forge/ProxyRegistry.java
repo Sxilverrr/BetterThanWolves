@@ -971,10 +971,7 @@ public class ProxyRegistry {
             return 0;
         }
         nextHeadlessId = id + 1;
-        // Item constructor does: this.itemID = 256 + rawId; itemsList[itemID] = this;
-        // So rawId = id - 256
-        btw.modern.Item headless = new btw.modern.Item(id - 256);
-        headless.setMaxStackSize(modernItem.getMaxStackSize());
+        newHeadless(id, modernItem);
 
         // Register both directions
         itemsByLegacyId.put(id, modernItem);
@@ -984,6 +981,43 @@ public class ProxyRegistry {
 
         LOGGER.debug("Created headless FC item ID {} for modern item {}", id, name);
         return id;
+    }
+
+    /**
+     * Builds (and, through the FC Item constructor, installs at {@code itemsList[id]}) the FC item behind headless id
+     * {@code id} of {@code modernItem}; the one factory of createHeadlessItem and restoreHeadlessIds.
+     * <ul>
+     *   <li>An edible item, or one with a btw_foods hunger value: a {@link btw.forge.food.ModernFoodItem} (an FC
+     *       ItemFood carrying the item's FC food value), stacking to min(its 1.20.1 size, 16) like 4.B ItemFood.</li>
+     *   <li>An item the table gives only fodder values: a {@link btw.forge.food.ModernFodderItem}.</li>
+     *   <li>Anything else: a plain FC Item with the 1.20.1 stack size, as before.</li>
+     * </ul>
+     * The class is fixed when the id is created: a /reload that adds a table value for a non-edible item applies to its
+     * headless id only from the next world load (resetHeadlessIds clears every id when the server stops).
+     * FCMOD-INTEGRATION(1.20.1): food_values: FC code that knows items only by id (wolves, animals, the cauldron) sees
+     * modern foods and fodder as FC food (INTEGRATIONS #024).
+     */
+    private static btw.modern.Item newHeadless(int id, Item modernItem) {
+        // Item constructor does: this.itemID = 256 + rawId; itemsList[itemID] = this; so rawId = id - 256
+        try {
+            btw.forge.food.BtwFoodTable.Entry entry = btw.forge.food.BtwFoodTable.get(modernItem);
+            if (modernItem.isEdible() || (entry != null && entry.hunger() != null)) {
+                btw.modern.Item food = new btw.forge.food.ModernFoodItem(id, modernItem);
+                food.setMaxStackSize(Math.min(modernItem.getMaxStackSize(), 16));
+                return food;
+            }
+            if (entry != null && entry.fodder() != null) {
+                btw.modern.Item fodder = new btw.forge.food.ModernFodderItem(id, modernItem);
+                fodder.setMaxStackSize(modernItem.getMaxStackSize());
+                return fodder;
+            }
+        } catch (Throwable t) {
+            LOGGER.warn("Headless FC food item {} for {} failed; a plain FC item stands in: {}",
+                    id, registryName(modernItem), t.toString());
+        }
+        btw.modern.Item headless = new btw.modern.Item(id - 256);
+        headless.setMaxStackSize(modernItem.getMaxStackSize());
+        return headless;
     }
 
     /** Registry name of a modern item, or null if it is not registered. */
@@ -1053,8 +1087,7 @@ public class ProxyRegistry {
                 missing++;
                 continue;
             }
-            btw.modern.Item headless = new btw.modern.Item(id - 256);
-            headless.setMaxStackSize(item.getMaxStackSize());
+            newHeadless(id, item);
             itemsByLegacyId.put(id, item);
             if (!proxyItemToLegacyId.containsKey(item) && !hasRealLegacyId(item)) {
                 proxyItemToLegacyId.put(item, id);

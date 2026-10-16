@@ -23,8 +23,10 @@ import java.util.function.Supplier;
  *       FC|OP hardcore options; {@link FCPayload}). FCPacket166StartBlockHarvest
  *       needs no packet (see register()).</li>
  *   <li>Penalty level sync: sends FC penalty levels (gloom, fat, hunger,
- *       health) and the FC food level from server to client each tick,
+ *       health), the FC food level, fat and exhaustion from server to client each tick,
  *       so the client-side HUD overlay can display them.</li>
+ *   <li>Food table sync: the server's resolved btw_foods table at login and after every reload
+ *       ({@link FoodTableSync}).</li>
  * </ul>
  *
  * <p>FC originally synced penalty levels via DataWatcher entries (IDs 22-31).
@@ -38,7 +40,8 @@ public class BTWNetwork {
     // "2": FCAnimSync added (message ids are positional, so a mismatched peer must be refused).
     // "3": FCPayload added (FC login handshake payloads).
     // "4": FcAuxSfx added (1.5.2 Packet61 aux effects run by the client's FC handler).
-    private static final String PROTOCOL_VERSION = "4";
+    // "5": PenaltySync carries FC exhaustion; FoodTableSync added.
+    private static final String PROTOCOL_VERSION = "5";
 
     /** FCBetterThanWolves.fcCustomPacketChannelVersionCheck (Client FCBetterThanWolves.java:666). */
     public static final String FC_CHANNEL_VERSION_CHECK = "FC|VC";
@@ -72,6 +75,12 @@ public class BTWNetwork {
 
     /** FC saturation level (0-20). */
     public static float clientSaturation = 0f;
+
+    /**
+     * FC exhaustion towards the next hunger or fat burn (0-40; FoodStats.HUNGER_BURN_THRESHOLD burns one hunger unit,
+     * FAT_BURN_THRESHOLD some fat, FoodStats.shouldBurnFatBeforeHunger says which). For food-bar mods and the HUD.
+     */
+    public static float clientExhaustion = 0f;
 
     private static int nextMessageId = 0;
 
@@ -121,6 +130,12 @@ public class BTWNetwork {
         // Id 5.
         CHANNEL.registerMessage(nextMessageId++, FcAuxSfx.class,
                 FcAuxSfx::encode, FcAuxSfx::decode, FcAuxSfx::handle,
+                java.util.Optional.of(net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT));
+
+        // FCMOD-INTEGRATION(1.20.1): food_values: the server's resolved btw_foods table for a dedicated server's client
+        // (stack sizes and food values of table foods). Id 6; server -> client only.
+        CHANNEL.registerMessage(nextMessageId++, FoodTableSync.class,
+                FoodTableSync::encode, FoodTableSync::decode, FoodTableSync::handle,
                 java.util.Optional.of(net.minecraftforge.network.NetworkDirection.PLAY_TO_CLIENT));
 
         LOGGER.info("BTW network channel registered.");
@@ -245,8 +260,29 @@ public class BTWNetwork {
                         pb.GetHungerPenaltyLevel(),
                         pb.GetHealthPenaltyLevel(),
                         pb.foodStats.getFoodLevel(),
-                        pb.foodStats.getSaturationLevel()
+                        pb.foodStats.getSaturationLevel(),
+                        pb.foodStats.getFoodExhaustionLevel()
                 ));
+    }
+
+    /**
+     * Sends the server's resolved btw_foods table ({@link btw.forge.food.BtwFoodTable#snapshotForSync}) to
+     * {@code target}, or to every player when null (after /reload). Always sent, even empty, at login and after every
+     * reload, so a client never keeps another server's table. Never throws.
+     * FCMOD-INTEGRATION(1.20.1): food_values: table foods stack and preview the same on a dedicated server's client.
+     */
+    public static void sendFoodTable(@javax.annotation.Nullable ServerPlayer target) {
+        if (CHANNEL == null) return;
+        try {
+            FoodTableSync msg = new FoodTableSync(btw.forge.food.BtwFoodTable.snapshotForSync());
+            if (target != null) {
+                CHANNEL.send(PacketDistributor.PLAYER.with(() -> target), msg);
+            } else {
+                CHANNEL.send(PacketDistributor.ALL.noArg(), msg);
+            }
+        } catch (Throwable t) {
+            LOGGER.warn("Sending the BTW food table failed: {}", t.toString());
+        }
     }
 
     // =================================================================
@@ -254,10 +290,10 @@ public class BTWNetwork {
     // =================================================================
 
     /**
-     * Carries the five FC penalty/status values from server to client.
-     * All values are small non-negative integers (0-5 for penalties,
-     * 0-60 for food level), so {@code writeVarInt}/{@code readVarInt}
-     * keeps the packet compact.
+     * Carries the FC penalty/status values from server to client.
+     * The penalties and the food level are small non-negative integers
+     * (0-5 for penalties, 0-60 for food level), so {@code writeVarInt}/{@code readVarInt}
+     * keeps the packet compact; fat and exhaustion are floats.
      */
     public static class PenaltySync {
         final int gloom;
@@ -266,14 +302,16 @@ public class BTWNetwork {
         final int health;
         final int food;
         final float saturation;
+        final float exhaustion;
 
-        public PenaltySync(int gloom, int fat, int hunger, int health, int food, float saturation) {
+        public PenaltySync(int gloom, int fat, int hunger, int health, int food, float saturation, float exhaustion) {
             this.gloom = gloom;
             this.fat = fat;
             this.hunger = hunger;
             this.health = health;
             this.food = food;
             this.saturation = saturation;
+            this.exhaustion = exhaustion;
         }
 
         public static void encode(PenaltySync msg, FriendlyByteBuf buf) {
@@ -283,6 +321,8 @@ public class BTWNetwork {
             buf.writeVarInt(msg.health);
             buf.writeVarInt(msg.food);
             buf.writeFloat(msg.saturation);
+            // FCMOD-INTEGRATION(1.20.1): hunger_contract: FC exhaustion for food-bar mods (protocol "5")
+            buf.writeFloat(msg.exhaustion);
         }
 
         public static PenaltySync decode(FriendlyByteBuf buf) {
@@ -292,6 +332,7 @@ public class BTWNetwork {
                     buf.readVarInt(),
                     buf.readVarInt(),
                     buf.readVarInt(),
+                    buf.readFloat(),
                     buf.readFloat()
             );
         }
@@ -306,7 +347,90 @@ public class BTWNetwork {
                 clientHealthPenalty = msg.health;
                 clientFoodLevel = msg.food;
                 clientSaturation = msg.saturation;
+                clientExhaustion = msg.exhaustion;
             });
+            ctx.setPacketHandled(true);
+        }
+    }
+
+    // =================================================================
+    // Packet: FoodTableSync (server -> client) - the resolved btw_foods table
+    // =================================================================
+
+    /**
+     * The server's resolved btw_foods table (item id -> entry), so a dedicated server's client caps and previews table
+     * foods as the server feeds them. The integrated server's own client (a memory connection) skips it: it shares the
+     * server's static table. Registered PLAY_TO_CLIENT, id 6. Sent by {@link #sendFoodTable}.
+     */
+    public static class FoodTableSync {
+        /** Decoder bound: far above any real table, so a corrupt count cannot allocate without limit. */
+        private static final int MAX_ENTRIES = 1 << 16;
+
+        final java.util.Map<ResourceLocation, btw.forge.food.BtwFoodTable.Entry> entries;
+
+        public FoodTableSync(java.util.Map<ResourceLocation, btw.forge.food.BtwFoodTable.Entry> entries) {
+            this.entries = entries != null ? entries : java.util.Map.of();
+        }
+
+        public static void encode(FoodTableSync msg, FriendlyByteBuf buf) {
+            buf.writeVarInt(msg.entries.size());
+            for (java.util.Map.Entry<ResourceLocation, btw.forge.food.BtwFoodTable.Entry> e : msg.entries.entrySet()) {
+                btw.forge.food.BtwFoodTable.Entry entry = e.getValue();
+                buf.writeResourceLocation(e.getKey());
+                buf.writeBoolean(entry.hunger() != null);
+                if (entry.hunger() != null) buf.writeVarInt(entry.hunger());
+                buf.writeFloat(entry.fat());
+                btw.forge.food.FcFoodValues.Effect poison = entry.poison();
+                buf.writeBoolean(poison != null);
+                if (poison != null) {
+                    buf.writeFloat(poison.chance());
+                    buf.writeVarInt(poison.durationTicks());
+                    buf.writeVarInt(poison.amplifier());
+                }
+                btw.forge.food.BtwFoodTable.Fodder fodder = entry.fodder();
+                buf.writeBoolean(fodder != null);
+                if (fodder != null) {
+                    buf.writeVarInt(fodder.herbivore());
+                    buf.writeVarInt(fodder.chicken());
+                    buf.writeVarInt(fodder.pig());
+                }
+                buf.writeBoolean(entry.wolfMeat());
+            }
+        }
+
+        public static FoodTableSync decode(FriendlyByteBuf buf) {
+            int count = buf.readVarInt();
+            if (count < 0 || count > MAX_ENTRIES) {
+                throw new IllegalArgumentException("BTW food table with " + count + " entries");
+            }
+            java.util.Map<ResourceLocation, btw.forge.food.BtwFoodTable.Entry> entries = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < count; i++) {
+                ResourceLocation id = buf.readResourceLocation();
+                Integer hunger = buf.readBoolean() ? buf.readVarInt() : null;
+                float fat = buf.readFloat();
+                btw.forge.food.FcFoodValues.Effect poison = null;
+                if (buf.readBoolean()) {
+                    float chance = buf.readFloat();
+                    int ticks = buf.readVarInt();
+                    int amplifier = buf.readVarInt();
+                    // FC food poisoning is always potion 17, hunger (FCItemFood.SetStandardFoodPoisoningEffect)
+                    poison = new btw.forge.food.FcFoodValues.Effect(17, ticks, amplifier, chance);
+                }
+                btw.forge.food.BtwFoodTable.Fodder fodder = buf.readBoolean()
+                        ? new btw.forge.food.BtwFoodTable.Fodder(buf.readVarInt(), buf.readVarInt(), buf.readVarInt())
+                        : null;
+                boolean wolfMeat = buf.readBoolean();
+                entries.put(id, new btw.forge.food.BtwFoodTable.Entry(hunger, fat, poison, fodder, wolfMeat));
+            }
+            return new FoodTableSync(entries);
+        }
+
+        public static void handle(FoodTableSync msg,
+                Supplier<net.minecraftforge.network.NetworkEvent.Context> ctxSupplier) {
+            net.minecraftforge.network.NetworkEvent.Context ctx = ctxSupplier.get();
+            if (!ctx.getNetworkManager().isMemoryConnection()) {
+                ctx.enqueueWork(() -> btw.forge.food.BtwFoodTable.acceptSync(msg.entries));
+            }
             ctx.setPacketHandled(true);
         }
     }

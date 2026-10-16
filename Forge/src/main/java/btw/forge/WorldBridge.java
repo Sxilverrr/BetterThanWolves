@@ -2558,8 +2558,8 @@ public class WorldBridge extends btw.modern.WorldServer {
         if (!canBlockSeeTheSky(i, j, k)) return false;
         if (getPrecipitationHeight(i, k) > j) return false;
         net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(i, j, k);
-        net.minecraft.world.level.biome.Biome biome = level.getBiome(pos).value();
-        return biome.coldEnoughToSnow(pos);
+        // FCMOD-INTEGRATION(1.20.1): climate_seams: a registered live climate (a season mod) decides snow here, so FC's snow reversion and cover follow the seasons; 1.20.1's verdict without one
+        return btw.forge.climate.BTWClimate.coldEnoughToSnow(level, level.getBiome(pos), pos);
     }
 
     @Override

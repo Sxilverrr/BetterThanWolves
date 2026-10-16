@@ -7,6 +7,7 @@ import btw.forge.ProxyItem;
 import btw.forge.ProxyRegistry;
 import btw.forge.WorldBridge;
 import btw.forge.ItemStackHelper;
+import btw.forge.food.FcFoodValues;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -32,6 +33,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * both fired FC twice (e.g. two arrows from an FC bow). The read-only hooks
  * (getUseDuration, getUseAnimation) apply to every item.
  * For vanilla items with FC replacements, this mixin is the ONLY path to FC code.
+ *
+ * <ul>
+ *   <li>finishUsingItem: FC onEaten (one feed, one bowl, one burp)</li>
+ *   <li>getEatingSound: silent closing sound while FC owns the eat</li>
+ *   <li>onCraftedBy: FC onCreated</li>
+ *   <li>releaseUsing: FC onPlayerStoppedUsing (bows)</li>
+ *   <li>hurtEnemy / mineBlock / interactLivingEntity: FC hitEntity / onBlockDestroyed / entity use</li>
+ *   <li>getUseDuration / getUseAnimation: FC use duration and action</li>
+ *   <li>getMaxStackSize: foods stack no higher than their FC limit (FC item limit, else 16; #024)</li>
+ * </ul>
  */
 @Mixin(ItemStack.class)
 public abstract class ItemStackMixin implements ProxyItem.FcOwnedEat {
@@ -385,6 +396,45 @@ public abstract class ItemStackMixin implements ProxyItem.FcOwnedEat {
             if (duration > 0) {
                 cir.setReturnValue(duration);
             }
+        }
+    }
+
+    // ================================================================
+    // getMaxStackSize → FC food stack limit
+    // ================================================================
+
+    /**
+     * FCMOD-INTEGRATION(1.20.1): food_values
+     *
+     * <p><b>Feature:</b> 1.20.1 stack sizes: bread, cooked meat, apples, seeds and most modded foods stack to 64.</p>
+     *
+     * <p><b>Conflict with FC:</b> 4.B stacks every food to 16 (ItemFood's constructor, vanilla/server
+     * ItemFood.java:56) and some to their own FC size (cured meat 32, FCItemFoodCured.java:27); a stack of 64 bread is
+     * four times FC's carrying limit for food.</p>
+     *
+     * <p><b>Integration pattern:</b> C (rebalance, preserve feature): FcFoodValues.foodStackLimit gives each food its FC
+     * limit: the FC item's own limit for a food FC has an item for, 16 for table and converted foods (modded foods
+     * included), none for drinkable buckets and non-foods.</p>
+     *
+     * <p><b>Rebalance:</b> food stacks are capped at that limit. The value is only ever lowered: the 1.20.1 mushroom
+     * stew stays at 1 (raising it to 4.B's 16 would let BowlFoodItem replace a whole stack with one bowl), the milk
+     * bucket stays at 1. Existing oversized stacks stay valid but no longer merge past the cap.</p>
+     *
+     * <p><b>Injection strategy:</b> {@link Inject} at RETURN of {@code getMaxStackSize()} (SRG m_41741_), cancellable:
+     * the final value of Forge's {@code Item.getMaxStackSize(ItemStack)}, so another mod's own size change is seen and
+     * only lowered further. foodStackLimit is a cached O(1) lookup that never throws, for this hot path on both
+     * sides.</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> re-registering vanilla foods with {@code stacksTo(16)}: vanilla
+     * items cannot be re-registered, and modded foods would not be covered. Capping every food at a flat 16 shrank BTW's
+     * cured meat from 32.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): food_values: foods stack no higher than their FC limit (FC item limit, else 4.B's 16); lower only
+    @Inject(method = "getMaxStackSize", at = @At("RETURN"), cancellable = true)
+    private void btw$foodStackLimit(CallbackInfoReturnable<Integer> cir) {
+        int cap = FcFoodValues.foodStackLimit(((ItemStack) (Object) this).getItem());
+        if (cap > 0 && cir.getReturnValueI() > cap) {
+            cir.setReturnValue(cap);
         }
     }
 

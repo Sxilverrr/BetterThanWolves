@@ -78,5 +78,14 @@
   "jei.betterthanwolves.info.cooking_vessel.1": "Cauldron and crucible: cook while upright over fire. Normal fire or a medium/large campfire uses the normal recipes; stoked fire uses the stoked recipes. Each matching fire among the 8 blocks around the one beneath speeds it up: a batch takes about 43 seconds over a single fire and 7.5 seconds when fully surrounded.",
   "jei.betterthanwolves.info.cooking_vessel.2": "A vessel tilted by mechanical power does not cook. Hellfire dust, gunpowder, TNT or blasting oil inside a vessel over stoked fire will explode.",
   "jei.betterthanwolves.info.campfire.1": "Campfire: right-click it with a pointy stick to add a spit, then place one food item on the spit. It cooks after 4 minutes over a medium fire; a small fire does not cook.",
-  "jei.betterthanwolves.info.campfire.2": "A blazing fire burns whatever is on the spit into burned meat after 2 minutes. A damaged spit breaks when food is placed on it."
+  "jei.betterthanwolves.info.campfire.2": "A blazing fire burns whatever is on the spit into burned meat after 2 minutes. A damaged spit breaks when food is placed on it.",
+  "btw.compat.food.fat_gain": "+%s fat",
+  "btw.compat.food.clears": "clears %s",
+  "btw.compat.food.regen_resumes": "regen resumes",
+  "btw.compat.food.full": "(full)",
+  "btw.compat.food.poison_chance": "%s%% food poisoning",
+  "btw.compat.food.debug": "BTW food: %s/60, fat: %s, exh: %s/%s (%s)",
+  "btw.compat.food.burning_fat": "burning fat",
+  "btw.compat.food.burning_hunger": "hunger",
+  "btw.compat.harvestcraft.notice": "Better Than Wolves: grown, eaten and cooked by BTW rules"
 }

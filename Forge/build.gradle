@@ -130,6 +130,11 @@ minecraft {
             workingDirectory project.file('run/data')
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+            // FCMOD-INTEGRATION(1.20.1): mod compat: the same refmap remap as the server and client runs.
+            // Serene Seasons, GlitchCore and Cold Sweat ship SRG refmaps with defaultRequire 1, so
+            // `runData -PbtwDevMods=sereneseasons,coldsweat` fails to apply their mixins without it.
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${project.projectDir}/build/createSrgToMcp/output.srg"
             args '--mod', 'betterthanwolves', '--all',
                  '--output', file('src/generated/resources/'),
                  '--existing', file('src/main/resources/')
@@ -1714,11 +1719,192 @@ tasks.named('jar').configure {
     }
 }
 
+// Bundling guard: the dist jar carries BTW's own classes and nothing else.
+// FCMOD-INTEGRATION(1.20.1): mod compat: the optional mods below are compile-time APIs and dev runtimes only.
+// Their licences forbid shipping them inside BTW: Serene Seasons and GlitchCore are All Rights Reserved,
+// Pam's HarvestCraft forbids redistribution, Cold Sweat allows library use only, and LSO's licence is unclear.
+// An allowlist, not a denylist of known roots: third-party roots are open-ended (maxhyper/ for dtphc2,
+// darkorg/ for ss-hc2crops, mezz/ for JEI, and Cold Sweat ships default-package ChangelogGenerator classes).
+// Resources under other namespaces stay allowed; they are BTW-authored data (e.g. datagen tags for another
+// mod's namespace). Runs after the precedence guard, before reobfJar.
+tasks.named('jar').configure {
+    doLast { jarTask ->
+        def jarFile = jarTask.archiveFile.get().asFile
+        def allowedClassRoots = ['btw/', 'net/minecraft/src/']
+        List<String> offending = []
+        int classes = 0
+        new java.util.zip.ZipFile(jarFile).withCloseable { zip ->
+            Collections.list(zip.entries()).each { e ->
+                String n = e.name
+                if (n.endsWith('.class')) {
+                    classes++
+                    if (!allowedClassRoots.any { n.startsWith(it) }) {
+                        offending << n
+                    }
+                } else if (n.endsWith('.jar') || n.startsWith('META-INF/jarjar/')) {
+                    offending << n
+                }
+            }
+        }
+        if (offending) {
+            throw new GradleException("${jarFile.name} contains ${offending.size()} third-party entr(ies), first: " +
+                "${offending.take(10)}. Optional mods are compileOnly/runtimeOnly fg.deobf only; never bundle, " +
+                "jarJar or shadow another mod's code (licences, see the bundling guard comment).")
+        }
+        logger.lifecycle("Jar bundling OK (${classes} classes, all under btw/ or net/minecraft/src/)")
+    }
+}
+
+// Mixin-config guard: betterthanwolves.mixins.json and the mixin classes in the jar must agree.
+// FCMOD-INTEGRATION(1.20.1): mod compat: the config is edited by hand whenever a mixin class lands, and both
+// directions of drift fail late or silently. A listed entry with no class crashes at load (defaultRequire 1,
+// "required": true); an annotated class nobody lists is never applied, and since Serene Seasons, GlitchCore and
+// Cold Sweat mix several of the same targets, the missing BTW behaviour would read as their bug. Fails when:
+//  - an entry of mixins/client/server has no class under the config's package;
+//  - a class under that package carries @Mixin and is not listed (inner-class mixins list as 'Outer$Inner');
+//  - an entry is listed twice;
+//  - the manifest MixinConfigs is not exactly betterthanwolves.mixins.json (production loads it from there).
+// Non-mixin classes in the package (BTWMixinConnector, anonymous helpers) carry no @Mixin and are ignored.
+// @Mixin has CLASS retention, so it is read with ASM (RuntimeInvisibleAnnotations), not reflection.
+tasks.named('jar').configure {
+    doLast { jarTask ->
+        def jarFile = jarTask.archiveFile.get().asFile
+        String configName = 'betterthanwolves.mixins.json'
+        String mixinDesc = 'Lorg/spongepowered/asm/mixin/Mixin;'
+        new java.util.zip.ZipFile(jarFile).withCloseable { zip ->
+            def configEntry = zip.getEntry(configName)
+            if (configEntry == null) {
+                throw new GradleException("Mixin config drift: ${configName} is missing from ${jarFile.name}")
+            }
+            def config = zip.getInputStream(configEntry).withCloseable { new groovy.json.JsonSlurper().parse(it, 'UTF-8') }
+            String pkgPath = (config['package'] as String).replace('.', '/') + '/'
+            List<String> listed = ['mixins', 'client', 'server'].collectMany { (config[it] ?: []) as List<String> }
+            Set<String> listedSet = listed as Set
+            List<String> duplicated = listed.countBy { it }.findAll { k, v -> v > 1 }.keySet() as List<String>
+            List<String> missing = listedSet.findAll { zip.getEntry(pkgPath + it.replace('.', '/') + '.class') == null } as List<String>
+            List<String> unlisted = []
+            Collections.list(zip.entries()).each { e ->
+                String n = e.name
+                if (!n.startsWith(pkgPath) || !n.endsWith('.class')) {
+                    return
+                }
+                List<String> annotations = []
+                byte[] bytes = zip.getInputStream(e).withCloseable { it.bytes }
+                new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM9) {
+                    @Override
+                    org.objectweb.asm.AnnotationVisitor visitAnnotation(String desc, boolean visible) {
+                        annotations << desc
+                        return null
+                    }
+                }, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES)
+                String entryName = n.substring(pkgPath.length(), n.length() - '.class'.length()).replace('/', '.')
+                if (annotations.contains(mixinDesc) && !listedSet.contains(entryName)) {
+                    unlisted << entryName
+                }
+            }
+            def manifestEntry = zip.getEntry('META-INF/MANIFEST.MF')
+            String manifestValue = manifestEntry == null ? null : zip.getInputStream(manifestEntry).withCloseable {
+                new java.util.jar.Manifest(it).mainAttributes.getValue('MixinConfigs')
+            }
+            List<String> manifestConfigs = (manifestValue ?: '').split(',')*.trim().findAll { it }
+            List<String> problems = []
+            if (missing) {
+                problems << "listed but missing from the jar: ${missing.sort()}"
+            }
+            if (unlisted) {
+                problems << "unlisted @Mixin class(es), never applied: ${unlisted.sort()}"
+            }
+            if (duplicated) {
+                problems << "listed more than once: ${duplicated.sort()}"
+            }
+            if (manifestConfigs != [configName]) {
+                problems << "manifest MixinConfigs is '${manifestValue}', expected '${configName}'"
+            }
+            if (problems) {
+                throw new GradleException("Mixin config drift in ${jarFile.name}: ${problems.join('; ')}. Edit " +
+                    "src/main/resources/${configName} (case-insensitive alphabetical order) in the same change " +
+                    "as the mixin class.")
+            }
+            logger.lifecycle("Mixin config OK (${listed.size()} entries, all present, no unlisted @Mixin)")
+        }
+    }
+}
+
 repositories {
     // JEI
     maven {
         url 'https://maven.blamejared.com/'
     }
+    // FCMOD-INTEGRATION(1.20.1): mod compat: optional-mod APIs and dev runtimes. Plain content filters, NOT
+    // exclusiveContent. fg.deobf asks for '<v>_mapped_official_1.20.1' of the SAME group, and only ForgeGradle's
+    // bundled_deobf_repo serves that (its filter admits any group with a _mapped_ version). exclusiveContent
+    // would give every unlisted repository, the deobf repo included, an excludeGroup for these groups, so the
+    // curse.maven and maven.modrinth compileOnly lines below could not resolve. Never wrap fg.repository in
+    // exclusiveContent either: that limits the deobf repo to one group and breaks the JEI deobf.
+    // maven.minecraftforge.net (Serene Seasons, GlitchCore) already comes from the root build.gradle.
+    maven { url 'https://harleyoconnor.com/maven'; content { includeGroup 'com.ferreusveritas.dynamictrees' } }
+    maven { url 'https://maven.ryanliptak.com/'; content { includeGroup 'squeek.appleskin' } }
+    maven { url 'https://cursemaven.com'; content { includeGroup 'curse.maven' } }
+    maven { url 'https://api.modrinth.com/maven'; content { includeGroup 'maven.modrinth' } }
+}
+
+// FCMOD-INTEGRATION(1.20.1): mod compat: opt-in dev runtime. -PbtwDevMods=<comma-separated tokens> (or the
+// ORG_GRADLE_PROJECT_btwDevMods environment variable) puts those mods, deobfuscated like JEI, on the runtime
+// classpath of every run (runServer, runClient, runData). Off by default: without the property the only
+// third-party runtime mod is JEI, and nothing here can reach the jar (see the bundling guard). The first
+// resolution of a new token set needs network; afterwards --offline works from the Gradle/ForgeGradle caches.
+//   gradlew :Forge:runServer -PbtwDevMods=dynamictrees,sereneseasons
+//   gradlew :Forge:runClient -PbtwDevMods=appleskin,lso
+// /forge mods then prints: dynamictrees 1.20.1-1.4.10 (dynamictrees-latest: 1.20.1-1.4.11), sereneseasons
+// 9.1.0.3 + glitchcore 0.0.1.1, appleskin 2.5.1+mc1.20.1, cold_sweat 2.4.3.2, legendarysurvivaloverhaul
+// 1.20.1-2.4.7, pamhc2crops 1.0.3, pamhc2trees 1.0.2, pamhc2foodcore 1.0.5, pamhc2foodextended 1.0.1,
+// dtphc2 1.20.1-1.3.2, sereneseasonsphc2crops 1.20.1-1.0.0.
+// HarvestCraft: Food Extended needs Food Core although its mods.toml does not say so. Food Core 1.0.5 and Food
+// Extended 1.0.1 passed only a static SRG check; if they crash, the fallbacks are Food Core 372534:5020789
+// (1.0.3) or :4580935 (1.0.0) and Food Extended 402231:4606448 (1.0.0).
+def btwDevModCoords = [
+    'dynamictrees'       : ['com.ferreusveritas.dynamictrees:DynamicTrees-1.20.1:1.4.10'],
+    'dynamictrees-latest': ['maven.modrinth:dynamictrees:1.20.1-1.4.11'],
+    'sereneseasons'      : ['com.github.glitchfiend:SereneSeasons-forge:1.20.1-9.1.0.3',
+                            'com.github.glitchfiend:GlitchCore-forge:1.20.1-0.0.1.1'],
+    'appleskin'          : ['squeek.appleskin:appleskin-forge:mc1.20.1-2.5.1'],
+    'coldsweat'          : ['curse.maven:cold-sweat-506194:8907301'],
+    'lso'                : ['maven.modrinth:legendary-survival-overhaul:1.20.1-2.4.7'],
+    'harvestcraft'       : ['curse.maven:pams-harvestcraft-2-crops-361385:4687624',
+                            'curse.maven:pams-harvestcraft-2-trees-365460:4625518',
+                            'curse.maven:pams-harvestcraft-2-food-core-372534:5097798',
+                            'curse.maven:pams-harvestcraft-2-food-extended-402231:5147171'],
+    'dtphc2'             : ['curse.maven:dynamic-trees-pams-harvestcraft-2-839090:7275616'],
+    'ss-hc2crops'        : ['curse.maven:serene-seasons-pams-harvestcraft-2-crops-compat-549716:5075306'],
+]
+// Mandatory dependencies of the addon jars (read from their mods.toml): each inner list is one requirement,
+// met by any of its tokens. dtphc2 needs dynamictrees and pamhc2trees; ss-hc2crops needs sereneseasons and
+// pamhc2crops.
+def btwDevModNeeds = [
+    'dtphc2'     : [['dynamictrees', 'dynamictrees-latest'], ['harvestcraft']],
+    'ss-hc2crops': [['sereneseasons'], ['harvestcraft']],
+]
+def btwDevMods = ((findProperty('btwDevMods') ?: '') as String).split(',')*.trim().findAll { it } as Set
+String btwDevModValid = "Valid tokens: ${btwDevModCoords.keySet().join(', ')}"
+def btwDevModUnknown = btwDevMods - btwDevModCoords.keySet()
+if (btwDevModUnknown) {
+    throw new GradleException("Unknown -PbtwDevMods token(s) ${btwDevModUnknown}. ${btwDevModValid}")
+}
+if (btwDevMods.containsAll(['dynamictrees', 'dynamictrees-latest'])) {
+    throw new GradleException('dynamictrees and dynamictrees-latest are mutually exclusive (both jars are mod id ' +
+        'dynamictrees)')
+}
+btwDevModNeeds.each { String token, List<List<String>> needs ->
+    if (btwDevMods.contains(token)) {
+        needs.each { List<String> anyOf ->
+            if (!anyOf.any { btwDevMods.contains(it) }) {
+                throw new GradleException("-PbtwDevMods=${token} needs ${anyOf.join(' or ')}. ${btwDevModValid}")
+            }
+        }
+    }
+}
+if (btwDevMods) {
+    logger.lifecycle("btwDevMods: ${btwDevMods.join(', ')} on the dev runtime classpath")
 }
 
 dependencies {
@@ -1741,6 +1927,24 @@ dependencies {
     // Needed at runtime for the dev client to actually load JEI so we can
     // visually verify the plugin.
     runtimeOnly fg.deobf("mezz.jei:jei-1.20.1-forge:${jeiVersion}")
+
+    // FCMOD-INTEGRATION(1.20.1): mod compat: compile-time APIs only, for the optional-mod integrations, whose
+    // classes load only when the mod is installed (mods.toml declares each one mandatory=false). Every jar is
+    // SRG-named, hence fg.deobf. Never implementation, jarJar or shadow (licences, see the bundling guard).
+    // GlitchCore is explicit: the SS POM marks it runtime+optional, but SS's config classes extend
+    // glitchcore.config.Config, which javac needs. No HarvestCraft entry: Pam's licence forbids redistribution
+    // and decompiling for non-educational use, so BTW names no HarvestCraft type and identifies its content by
+    // vanilla block classes, registry ids, tags and JSON only (the harvestcraft dev token just runs the jars).
+    compileOnly fg.deobf('com.ferreusveritas.dynamictrees:DynamicTrees-1.20.1:1.4.10')
+    compileOnly fg.deobf('com.github.glitchfiend:SereneSeasons-forge:1.20.1-9.1.0.3')
+    compileOnly fg.deobf('com.github.glitchfiend:GlitchCore-forge:1.20.1-0.0.1.1')
+    compileOnly fg.deobf('squeek.appleskin:appleskin-forge:mc1.20.1-2.5.1:api')
+    compileOnly fg.deobf('curse.maven:cold-sweat-506194:8907301')
+    compileOnly fg.deobf('maven.modrinth:legendary-survival-overhaul:1.20.1-2.4.7')
+
+    // FCMOD-INTEGRATION(1.20.1): mod compat: the opt-in dev runtime (-PbtwDevMods, validated above). Empty by
+    // default, so the JEI runtimeOnly above stays the only third-party runtime mod.
+    btwDevMods.each { token -> btwDevModCoords[token].each { runtimeOnly fg.deobf(it) } }
 }
 
 // ============================================================

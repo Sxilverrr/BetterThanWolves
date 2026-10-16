@@ -1,11 +1,18 @@
 package btw.forge;
 
+import btw.forge.compat.BTWCompat;
+import btw.forge.compat.FcRefs;
+import btw.forge.compat.thermal.BtwThermalTable;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.ArmorItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -28,6 +35,9 @@ public final class BridgeSelfAudit {
     /** Run all common-side checks. Called from FMLCommonSetupEvent (registries frozen by then). */
     public static void runCommon() {
         auditBlockSpeedFactors();
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: the compat data and the thermal table name BTW content by FC field; prove at launch that they still resolve
+        auditCompatRefs();
+        auditThermalTable();
     }
 
     private static boolean tickPolicyAudited;
@@ -454,5 +464,159 @@ public final class BridgeSelfAudit {
         }
         LOGGER.info("[SELF-AUDIT/speed] checked {} blocks, {} with getSpeedFactor > 1.0 (0 expected).",
                 checked, bad);
+    }
+
+    /**
+     * The datagen-written compat manifests ({@code data/betterthanwolves/compat_refs/<name>.json}, written through
+     * {@link FcRefs#refsManifest}). Their keys were written with the default BTW ids.
+     */
+    private static final List<String> COMPAT_MANIFESTS = List.of("sereneseasons", "lso", "harvestcraft");
+
+    /** True when the mod a compat manifest belongs to is loaded (the manifest's data is live, not inert). */
+    private static boolean compatManifestOwnerLoaded(String manifest) {
+        return switch (manifest) {
+            case "sereneseasons" -> BTWCompat.isLoaded(BTWCompat.SERENE_SEASONS);
+            case "lso" -> BTWCompat.isLoaded(BTWCompat.LSO);
+            case "harvestcraft" -> BTWCompat.anyHarvestCraftLoaded();
+            default -> false;
+        };
+    }
+
+    /**
+     * Compat-reference self-audit (INTEGRATIONS #020): every BTW key a compat manifest names must still be the key
+     * this server's BTW ID config gives its FC field ({@link FcRefs#liveKey}). A moved id (BTWConfig.txt) strands data
+     * written as {@code block_<id>} / {@code item_<id>}: WARN when the manifest's mod is loaded, INFO when it is absent
+     * (the data is inert then). An absent manifest is skipped. Isolated: an exception escaping
+     * FMLCommonSetupEvent.enqueueWork would abort mod loading.
+     */
+    private static void auditCompatRefs() {
+        try {
+            int entries = 0, stale = 0, warned = 0, inert = 0;
+            List<String> read = new ArrayList<>();
+            for (String manifest : COMPAT_MANIFESTS) {
+                List<FcRefs.Expectation> expectations = FcRefs.readManifest(manifest);
+                if (expectations.isEmpty()) continue;
+                read.add(manifest);
+                boolean ownerLoaded = compatManifestOwnerLoaded(manifest);
+                for (FcRefs.Expectation e : expectations) {
+                    entries++;
+                    ResourceLocation live = FcRefs.liveKey(e);
+                    if (e.writtenKey().equals(live)) continue;
+                    stale++;
+                    Object liveText = live != null ? live : "unresolved";
+                    if (ownerLoaded) {
+                        LOGGER.warn("[SELF-AUDIT/compat-refs] {} data names {} for {}, but this server's BTW ID config "
+                                + "gives {}; that data no longer matches (INTEGRATIONS.md, Follow-up from #005)",
+                                e.usedBy(), e.writtenKey(), e.fcField(), liveText);
+                        warned++;
+                    } else {
+                        LOGGER.info("[SELF-AUDIT/compat-refs] {} data names {} for {}, but this server's BTW ID config "
+                                + "gives {}; that data no longer matches (INTEGRATIONS.md, Follow-up from #005) "
+                                + "(mod absent, data inert)", e.usedBy(), e.writtenKey(), e.fcField(), liveText);
+                        inert++;
+                    }
+                }
+            }
+            LOGGER.info("[SELF-AUDIT/compat-refs] {} manifest(s) read {}, {} entries, {} stale ({} warned, {} inert)",
+                    read.size(), read, entries, stale, warned, inert);
+        } catch (Throwable t) {
+            LOGGER.error("[SELF-AUDIT/compat-refs] audit failed", t);
+        }
+    }
+
+    /**
+     * Thermal-table self-audit ({@link BtwThermalTable}, INTEGRATIONS #020): every field resolves; every heat source is
+     * a ProxyBlock with the META property and a metadata range inside 0-15 (one INFO line per row with its live key);
+     * every clothing row is an ArmorItem of its slot's type; every textile has a 1.20.1 item; every hot meal is an FC
+     * ItemFood with a 1.20.1 item; BTW fuels exist, nethercoal among them. Expected at default ids:
+     * {@code 13 heat-source rows (12 blocks), 20 clothing, 4 textiles, 3 meals, f > 0 fuels, 0 warning(s)}. Isolated
+     * like {@link #auditCompatRefs}.
+     */
+    private static void auditThermalTable() {
+        try {
+            if (!BTWLifecycle.isFcReady()) {
+                LOGGER.warn("[SELF-AUDIT/thermal] FC is not initialised; the BTW thermal table cannot resolve");
+                return;
+            }
+            int warnings = 0;
+            for (String field : BtwThermalTable.allFields()) {
+                if (FcRefs.fcField(field) == null) {
+                    LOGGER.warn("[SELF-AUDIT/thermal] FCBetterThanWolves.{} did not resolve", field);
+                    warnings++;
+                }
+            }
+
+            Set<Block> heatBlocks = new java.util.LinkedHashSet<>();
+            for (BtwThermalTable.HeatSource h : BtwThermalTable.heatSources()) {
+                Block block = FcRefs.block(h.fcField());
+                ResourceLocation key = block != null ? ForgeRegistries.BLOCKS.getKey(block) : null;
+                if (block != null) heatBlocks.add(block);
+                if (!(block instanceof ProxyBlock) || !block.defaultBlockState().hasProperty(ProxyBlock.META)) {
+                    LOGGER.warn("[SELF-AUDIT/thermal] heat source {} {}: {} is not a ProxyBlock with the meta property",
+                            h.tier(), h.fcField(), key != null ? key : "unresolved");
+                    warnings++;
+                }
+                if (h.metaMin() < 0 || h.metaMin() > h.metaMax() || h.metaMax() > 15) {
+                    LOGGER.warn("[SELF-AUDIT/thermal] heat source {} {}: meta range {}-{} is not inside 0-15",
+                            h.tier(), h.fcField(), h.metaMin(), h.metaMax());
+                    warnings++;
+                }
+                LOGGER.info("[SELF-AUDIT/thermal] {} {} -> {} meta {}-{}", h.tier(), h.fcField(),
+                        key != null ? key : "unresolved", h.metaMin(), h.metaMax());
+            }
+
+            for (BtwThermalTable.Clothing c : BtwThermalTable.clothing()) {
+                Item item = FcRefs.item(c.fcField());
+                ArmorItem.Type expected = switch (c.slot()) {
+                    case HEAD -> ArmorItem.Type.HELMET;
+                    case CHEST -> ArmorItem.Type.CHESTPLATE;
+                    case LEGS -> ArmorItem.Type.LEGGINGS;
+                    case FEET -> ArmorItem.Type.BOOTS;
+                };
+                if (!(item instanceof ArmorItem armor) || armor.getType() != expected) {
+                    LOGGER.warn("[SELF-AUDIT/thermal] clothing {} {} {}: {} is not {} armour", c.set(), c.slot(),
+                            c.fcField(), item != null ? ForgeRegistries.ITEMS.getKey(item) : "unresolved", expected);
+                    warnings++;
+                }
+            }
+
+            for (BtwThermalTable.Textile t : BtwThermalTable.textiles()) {
+                if (FcRefs.item(t.fcField()) == null) {
+                    LOGGER.warn("[SELF-AUDIT/thermal] textile {} {}: no registered 1.20.1 item", t.kind(), t.fcField());
+                    warnings++;
+                }
+            }
+
+            for (BtwThermalTable.HotMeal m : BtwThermalTable.hotMeals()) {
+                if (!(FcRefs.fcItem(m.fcField()) instanceof btw.modern.ItemFood) || FcRefs.item(m.fcField()) == null) {
+                    LOGGER.warn("[SELF-AUDIT/thermal] meal {} {}: not an FC ItemFood with a registered 1.20.1 item",
+                            m.tier(), m.fcField());
+                    warnings++;
+                }
+            }
+
+            List<BtwThermalTable.Fuel> fuels = BtwThermalTable.fuels();
+            ResourceLocation nethercoalKey = FcRefs.itemKey("fcItemNethercoal");
+            int nethercoalBurn = -1;
+            for (BtwThermalTable.Fuel f : fuels) {
+                if (f.key().equals(nethercoalKey)) {
+                    nethercoalBurn = f.fcBurnTime();
+                    break;
+                }
+            }
+            if (nethercoalBurn < 0) {
+                LOGGER.warn("[SELF-AUDIT/thermal] nethercoal ({}) is not among the {} BTW fuels",
+                        nethercoalKey != null ? nethercoalKey : "unresolved", fuels.size());
+                warnings++;
+            }
+
+            LOGGER.info("[SELF-AUDIT/thermal] {} heat-source rows ({} blocks), {} clothing, {} textiles, {} meals, "
+                    + "{} fuels (nethercoal {} = {}); {} warning(s)", BtwThermalTable.heatSources().size(),
+                    heatBlocks.size(), BtwThermalTable.clothing().size(), BtwThermalTable.textiles().size(),
+                    BtwThermalTable.hotMeals().size(), fuels.size(), nethercoalKey != null ? nethercoalKey
+                    : "unresolved", nethercoalBurn >= 0 ? nethercoalBurn : "absent", warnings);
+        } catch (Throwable t) {
+            LOGGER.error("[SELF-AUDIT/thermal] audit failed", t);
+        }
     }
 }

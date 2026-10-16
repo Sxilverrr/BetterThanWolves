@@ -1,5 +1,6 @@
 package btw.forge;
 
+import btw.forge.farming.FcSoil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.dispenser.DefaultDispenseItemBehavior;
 import net.minecraft.server.level.ServerLevel;
@@ -35,8 +36,10 @@ import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
  *
  * <p><b>Routes</b> ({@link #route}): an FC-mapped block ({@link Route#FC_TARGET}) runs its own 4.B fertilizer rule; a
  * post-1.5.2 plant whose growth BTW governs ({@link Route#SOIL_RELAY}, {@code TickPolicy.isFcGrowthGoverned}) relays
- * the fertilizer to the soil below its lowest cell, as FCBlockPlants does; every other block keeps 1.20.1 bone meal
- * ({@link Route#VANILLA}). Bone meal on an owned route never runs 1.20.1's instant growth
+ * the fertilizer to the soil below its lowest cell, as FCBlockPlants does; so does, at its position
+ * ({@link #route(BlockGetter, BlockPos, BlockState)}), a modded crop, sapling or fc_soil_plants member standing on BTW
+ * soil that takes it ({@code btw.forge.farming.FcSoil.governsAt}, INTEGRATIONS #026); every other block keeps 1.20.1
+ * bone meal ({@link Route#VANILLA}). Bone meal on an owned route never runs 1.20.1's instant growth
  * ({@code BonemealableBlock.performBonemeal}) or {@code BoneMealItem.growWaterPlant}, and nothing happens when FC
  * declines: the item is kept.</p>
  *
@@ -51,7 +54,7 @@ import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
  *       BoneMealItemMixin and {@link #onBoneMealUseOn}.</li>
  *   <li>Other callers of {@code BoneMealItem.applyBonemeal} (mod machines, {@code growCrop}): {@link #onBonemeal}.</li>
  *   <li>Direct {@code performBonemeal} / {@code isValidBonemealTarget} callers: BonemealableGateMixin
- *       ({@link #governsGrowth}).</li>
+ *       ({@link #governsGrowth(BlockGetter, BlockPos, BlockState)}).</li>
  *   <li>The vanilla dispenser ejects bone meal ({@link Setup}); the FC block dispenser spits it out
  *       (btw.modern.Item.OnItemUsedByBlockDispenser). An ejected item fertilizes the FC soil it lands on, as in 4.B
  *       (FCBlockFarmlandBase / FCBlockPlanterBase.onEntityCollidedWithBlock, through the item bridges).</li>
@@ -60,8 +63,12 @@ import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
  * <p>Only {@code minecraft:bone_meal} is fertilizer ({@link #isFertilizer}). LegacyVariants also reads 1.20.1 white dye
  * as FC dye 15 (LegacyVariants.java:159), which 4.B never had as a separate item.</p>
  *
- * <p>Extension point: a later compat rule for modded plants on BTW soil adds its condition to {@link #route} as a
- * {@link Route#SOIL_RELAY} and reuses {@link #relayToSoil} and the {@link #onBonemeal} listener.</p>
+ * <p>Modded plants on BTW soil (INTEGRATIONS #026) use this extension point: the positional
+ * {@link #route(BlockGetter, BlockPos, BlockState)} adds {@code FcSoil.governsAt} as a {@link Route#SOIL_RELAY} and
+ * reuses {@link #relayToSoil}, {@link #onBoneMealUseOn} and the {@link #onBonemeal} listener. On accepting BTW soil,
+ * bone meal on such a plant is used up only when the soil takes it (1087 becomes 1088) and the plant does not grow;
+ * otherwise it is kept and nothing happens (a Dynamic Trees sapling on grass declines, so bone meal never grows it). No
+ * particles or sound, as FC fertilizer has none.</p>
  */
 @Mod.EventBusSubscriber(modid = BTWForgeMod.MOD_ID)
 public final class BoneMealPolicy {
@@ -96,9 +103,27 @@ public final class BoneMealPolicy {
         return Route.VANILLA;
     }
 
-    /** True when 1.20.1 bone-meal growth must never run on {@code state} (BonemealableGateMixin). */
+    /** True when 1.20.1 bone-meal growth must never run on {@code state} ({@link #route(BlockState)}). */
     public static boolean governsGrowth(BlockState state) {
         return route(state) != Route.VANILLA;
+    }
+
+    /**
+     * The route of {@code state} at {@code pos}: {@link #route(BlockState)}, and else {@link Route#SOIL_RELAY} for a
+     * modded plant on BTW soil that takes it ({@code FcSoil.governsAt}: a modded crop on FC farmland or a planter, a
+     * modded sapling or fc_soil_plants member on FC grass, dirt or a planter). On the client the soil is read on the
+     * render thread's read-only FC world, so the swing prediction agrees with the server.
+     */
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: bone meal on a modded plant on BTW soil is FC fertilizer for that soil, as on BTW's own plants
+    public static Route route(BlockGetter level, BlockPos pos, BlockState state) {
+        Route r = route(state);
+        if (r != Route.VANILLA) return r;
+        return level != null && pos != null && FcSoil.governsAt(level, pos, state) ? Route.SOIL_RELAY : Route.VANILLA;
+    }
+
+    /** True when 1.20.1 bone-meal growth must never run on {@code state} at {@code pos} (BonemealableGateMixin). */
+    public static boolean governsGrowth(BlockGetter level, BlockPos pos, BlockState state) {
+        return route(level, pos, state) != Route.VANILLA;
     }
 
     /** True for the one item that is FC fertilizer: {@code minecraft:bone_meal}, FC's (351, 15). */
@@ -202,7 +227,7 @@ public final class BoneMealPolicy {
         Level level = ctx.getLevel();
         BlockPos pos = ctx.getClickedPos();
         BlockState state = level.getBlockState(pos);
-        Route route = route(state);
+        Route route = route(level, pos, state);
         if (route == Route.VANILLA) return null;
         if (!isFertilizer(ctx.getItemInHand())) return InteractionResult.PASS;
 
@@ -240,7 +265,7 @@ public final class BoneMealPolicy {
     public static void onBonemeal(BonemealEvent event) {
         if (event.getResult() != Event.Result.DEFAULT) return;
         BlockState state = event.getBlock();
-        Route route = route(state);
+        Route route = route(event.getLevel(), event.getPos(), state);
         if (route == Route.VANILLA) return;
         if (event.getLevel() instanceof ServerLevel serverLevel && isFertilizer(event.getStack())
                 && fertilize(serverLevel, event.getPos(), state, route)) {

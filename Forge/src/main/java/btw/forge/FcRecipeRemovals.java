@@ -45,7 +45,11 @@ import java.util.TreeSet;
  *       matches only when no exact-count recipe does, and is logged. A record whose recipe an earlier record already
  *       removed (the charcoal torch) counts as matched. Results are equivalent across a 1.20.1 recipe group whose
  *       results all map to one legacy block (the 16 bed colours, all block 26); new wood species are unmapped, so
- *       planks, stairs, buttons and trapdoors never form such a class.</li>
+ *       planks, stairs, buttons and trapdoors never form such a class. A record that matches nothing by ingredients
+ *       but whose result FC's own list makes (the 6-stick fence, FCRecipes.java:5651, against FC's fences at
+ *       :4987-4996) removes every {@code minecraft:} CRAFTING recipe of that result instead, counted "result-only"
+ *       (A2): the FC workbench falls back to every RecipeManager recipe, so a surviving {@code minecraft:oak_fence}
+ *       would bypass FC's own route.</li>
  *   <li><b>Special recipes</b> (same switch): FC dropped the map-extending recipe (vanilla/server
  *       CraftingManager.java:49-51) and the two-tool repair (:283-382). Every recipe with the
  *       {@code MAP_EXTENDING} or {@code REPAIR_ITEM} serializer is removed.</li>
@@ -125,12 +129,14 @@ final class FcRecipeRemovals {
         for (ResourceLocation id : pass.removed) all.remove(id);
 
         String summary = String.format(
-                "FC vanilla-recipe removals %s: %d/%d records matched (%d count-insensitive, %d unmatched),"
+                "FC vanilla-recipe removals %s: %d/%d records matched (%d count-insensitive, %d result-only,"
+                        + " %d unmatched),"
                         + " %d crafting + %d special + %d cooking recipes removed (removed furnace inputs %s);"
                         + " stays-removed rule removed %d more (%d outside minecraft); %d recipes removed in total",
                 mirrorFcRemovals ? "on" : "OFF", pass.recordsMatched, pass.recordsTotal, pass.recordsCountInsensitive,
-                pass.recordsUnmatched, pass.craftingRemoved, pass.specialRemoved, pass.cookingRemoved,
-                pass.removedFurnaceInputs, pass.resultRuleRemoved, pass.resultRuleForeign, pass.removed.size());
+                pass.recordsResultOnly, pass.recordsUnmatched, pass.craftingRemoved, pass.specialRemoved,
+                pass.cookingRemoved, pass.removedFurnaceInputs, pass.resultRuleRemoved, pass.resultRuleForeign,
+                pass.removed.size());
         LOGGER.info(summary);
         return summary;
     }
@@ -158,10 +164,13 @@ final class FcRecipeRemovals {
         final Map<Ingredient, long[]> ingredientKeys = new IdentityHashMap<>();
         final Map<Recipe<?>, ItemStack> results = new IdentityHashMap<>();
         Map<Item, Set<Item>> equivalents;
+        /** 1.5.2 (id, metadata) keys of every result FC's own crafting list makes (A2), built on first use. */
+        Set<Long> fcOutputs;
 
         int recordsTotal;
         int recordsMatched;
         int recordsCountInsensitive;
+        int recordsResultOnly;
         int recordsUnmatched;
         int craftingRemoved;
         int specialRemoved;
@@ -205,8 +214,25 @@ final class FcRecipeRemovals {
                 }
                 List<Recipe<?>> hits = exact.isEmpty() ? otherCount : exact;
                 if (hits.isEmpty()) {
-                    recordsUnmatched++;
-                    unmatched.add(describe(record));
+                    // FCMOD-INTEGRATION(1.20.1): recipes: A2, a record with no 1.20.1 counterpart still removes the
+                    // minecraft: recipes of its result when FC's own list makes that result (the FC workbench offers
+                    // every RecipeManager recipe, so a surviving one would bypass FC's route)
+                    List<Recipe<?>> byResult = fcOwnListMakes(fcResult) ? resultOnlyHits(pool, fcResult) : List.of();
+                    if (byResult.isEmpty()) {
+                        recordsUnmatched++;
+                        unmatched.add(describe(record));
+                        continue;
+                    }
+                    recordsMatched++;
+                    recordsResultOnly++;
+                    for (Recipe<?> r : byResult) {
+                        if (removed.add(r.getId())) {
+                            craftingRemoved++;
+                            LOGGER.info("Removed {} by result only: FC removal {} has no 1.20.1 counterpart and FC's"
+                                    + " own recipes make {}:{}", r.getId(), describe(record), idOf(fcResult),
+                                    metaOf(fcResult));
+                        }
+                    }
                     continue;
                 }
                 recordsMatched++;
@@ -222,12 +248,43 @@ final class FcRecipeRemovals {
                     }
                 }
             }
-            // Expected: the 6-stick fence (1.20.1 has no such recipe) and the enchanting table (FC's record maps
-            // only '#' = obsidian, so it never matched the book-and-diamond recipe in 4.B either:
-            // vanilla/server ShapedRecipes.java:186-226 compares cell by cell).
+            // Expected: none. The one record without a 1.20.1 counterpart, the 6-stick fence (85:0 x2,
+            // FCRecipes.java:5651), is matched by result only above (FC makes fences its own way, :4987-4996).
             for (String u : unmatched) {
                 LOGGER.warn("FC removal {} matched no minecraft: crafting recipe", u);
             }
+        }
+
+        /** True if FC's own crafting list (shaped or shapeless) makes the 1.5.2 result (id, metadata). */
+        boolean fcOwnListMakes(long fcResult) {
+            if (fcOutputs == null) {
+                Set<Long> outputs = new java.util.HashSet<>();
+                try {
+                    for (Object o : btw.modern.CraftingManager.getInstance().getRecipeList()) {
+                        btw.modern.ItemStack out = null;
+                        if (o instanceof btw.modern.ShapedRecipes shaped) {
+                            out = shaped.getRecipeOutput();
+                        } else if (o instanceof btw.modern.ShapelessRecipes shapeless) {
+                            out = shapeless.getRecipeOutput();
+                        }
+                        if (out != null) outputs.add(key(out.itemID, out.getItemDamage()));
+                    }
+                } catch (Throwable t) {
+                    LOGGER.debug("Could not list FC's own crafting outputs: {}", t.toString());
+                }
+                fcOutputs = outputs;
+            }
+            return fcOutputs.contains(fcResult);
+        }
+
+        /** The minecraft: CRAFTING recipes whose result is the 1.5.2 (id, metadata), equivalents included. */
+        List<Recipe<?>> resultOnlyHits(List<Recipe<?>> pool, long fcResult) {
+            List<Recipe<?>> out = new ArrayList<>();
+            for (Recipe<?> r : pool) {
+                ItemStack result = result(r);
+                if (!result.isEmpty() && resultMatches(result.getItem(), fcResult)) out.add(r);
+            }
+            return out;
         }
 
         boolean resultMatches(Item item, long fcResult) {

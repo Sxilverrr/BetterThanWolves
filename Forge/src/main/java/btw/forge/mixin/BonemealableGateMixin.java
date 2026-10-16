@@ -59,9 +59,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <p><b>Integration pattern:</b> D (FC-extend): the 1.20.1 bonemealable blocks keep their bone-meal growth wherever BTW
  * does not govern the block; where it does, BTW's growth is the only growth.</p>
  *
- * <p><b>Rebalance:</b> none; 4.B parity. For a state on an owned route ({@link BoneMealPolicy#governsGrowth}:
- * FC-mapped, or a post-1.5.2 plant {@code TickPolicy.isFcGrowthGoverned} reports), {@code isValidBonemealTarget} is
- * false and {@code performBonemeal} does nothing. Other states are untouched.</p>
+ * <p><b>Rebalance:</b> none; 4.B parity. For a state on an owned route at its position
+ * ({@link BoneMealPolicy#governsGrowth(net.minecraft.world.level.BlockGetter, BlockPos, BlockState)}: FC-mapped, a
+ * post-1.5.2 plant {@code TickPolicy.isFcGrowthGoverned} reports, or a modded plant on BTW soil that takes it,
+ * {@code btw.forge.farming.FcSoil.governsAt}, INTEGRATIONS #026), {@code isValidBonemealTarget} is false and
+ * {@code performBonemeal} does nothing. Modded CropBlock and SaplingBlock subclasses (HarvestCraft's crops and
+ * saplings) inherit the gate from CropBlock and SaplingBlock. Other states, and modded plants on soil BTW's rule does
+ * not take (a fern crop on grass, a plant on a modern soil), are untouched.</p>
  *
  * <p><b>Injection strategy:</b> {@link Inject} at HEAD of {@code isValidBonemealTarget(LevelReader, BlockPos,
  * BlockState, boolean)} (returns false) and {@code performBonemeal(ServerLevel, RandomSource, BlockPos, BlockState)}
@@ -76,6 +80,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * grow instantly. An injection into the interface: performBonemeal is abstract in BonemealableBlock.</p>
  */
 // FCMOD-INTEGRATION(1.20.1): bone_meal: BTW governs the growth of FC-mapped and paced plants, so no 1.20.1 bone-meal growth may run on them
+// FCMOD-INTEGRATION(1.20.1): modded_plant_rules: the gate asks the positional route, so a modded plant on BTW soil that takes it is governed as BTW's own plants are
 @Mixin({AzaleaBlock.class, BambooSaplingBlock.class, BambooStalkBlock.class, BigDripleafBlock.class,
         BigDripleafStemBlock.class, CaveVinesBlock.class, CaveVinesPlantBlock.class, CocoaBlock.class, CropBlock.class,
         FungusBlock.class, GlowLichenBlock.class, GrassBlock.class, GrowingPlantBodyBlock.class,
@@ -88,7 +93,7 @@ public abstract class BonemealableGateMixin {
     @Inject(method = "isValidBonemealTarget", at = @At("HEAD"), cancellable = true)
     private void btw$notBonemealable(LevelReader level, BlockPos pos, BlockState state, boolean isClient,
                                      CallbackInfoReturnable<Boolean> cir) {
-        if (BoneMealPolicy.governsGrowth(state)) {
+        if (BoneMealPolicy.governsGrowth(level, pos, state)) {
             cir.setReturnValue(false);
         }
     }
@@ -96,7 +101,7 @@ public abstract class BonemealableGateMixin {
     @Inject(method = "performBonemeal", at = @At("HEAD"), cancellable = true)
     private void btw$noInstantGrowth(ServerLevel level, RandomSource random, BlockPos pos, BlockState state,
                                      CallbackInfo ci) {
-        if (BoneMealPolicy.governsGrowth(state)) {
+        if (BoneMealPolicy.governsGrowth(level, pos, state)) {
             ci.cancel();
         }
     }

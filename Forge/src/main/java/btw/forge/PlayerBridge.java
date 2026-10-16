@@ -210,7 +210,7 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
         this.rotationYaw = realPlayer.getYRot();
         this.rotationPitch = realPlayer.getXRot();
         this.onGround = realPlayer.onGround();
-        this.health = (int) realPlayer.getHealth();
+        this.health = fcHealth(realPlayer.getHealth());
         this.fallDistance = realPlayer.fallDistance;
         this.ticksExisted = realPlayer.tickCount;
         this.experienceLevel = realPlayer.experienceLevel;
@@ -232,10 +232,25 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
     }
 
     /**
+     * FC's integer view of a 1.20.1 float health: truncated as before, except that a living player below one point
+     * reads as 1, never as 0. FC treats health 0 as dead (the frozen EntityLiving.isEntityAlive needs health &gt; 0, and
+     * FoodStats heals only above 0), and {@link #syncToReal} would write that 0 back and kill a player at 0.4 HP.
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract: other mods' fractional damage and healing survive the FC sync
+     * (INTEGRATIONS #021).
+     */
+    private static int fcHealth(float health) {
+        return health > 0F && health < 1F ? 1 : (int) health;
+    }
+
+    /**
      * Sync state FROM FC player TO real MC player (call after FC tick).
      */
     public void syncToReal() {
-        realPlayer.setHealth((float) this.health);
+        // FCMOD-INTEGRATION(1.20.1): hunger_contract: write health back only when FC changed it, so 7.5 HP is not truncated
+        // to 7 every tick and a player at 0.4 HP (FC 1) is not killed or healed by the sync itself
+        if (this.health != fcHealth(realPlayer.getHealth())) {
+            realPlayer.setHealth((float) this.health);
+        }
         // Sync velocity if FC modified it (knockback, fling)
         if (this.motionX != realPlayer.getDeltaMovement().x ||
             this.motionY != realPlayer.getDeltaMovement().y ||
@@ -324,7 +339,7 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
     public void heal(int amount) {
         realPlayer.heal((float) amount);
         // Re-read health so syncToReal() doesn't overwrite the heal
-        this.health = (int) realPlayer.getHealth();
+        this.health = fcHealth(realPlayer.getHealth());
     }
 
     /**
@@ -348,7 +363,7 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
                 mcSource = DamageSourceMapping.withoutDifficultyScaling(mcSource);
             }
             boolean result = realPlayer.hurt(mcSource, (float) amount);
-            this.health = (int) realPlayer.getHealth();
+            this.health = fcHealth(realPlayer.getHealth());
             return result;
         }
         return false;
@@ -650,13 +665,30 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
     }
 
     /**
-     * Adds exhaustion to the FC food stats system.
-     * FC routes all exhaustion through its own FoodStats which uses
-     * a 3x resolution (0-60) hunger system.
+     * Adds exhaustion to the FC food stats under 1.5.2's own rule, Modern-Common EntityPlayer.addExhaustion
+     * (vanilla/server EntityPlayer.java:1934-1946): nothing while {@code disableDamage} (1.20.1 abilities.invulnerable,
+     * CapabilitiesBridge, refreshed by every getOrCreate), nothing on a client bridge, and multiplied by the worn-armour
+     * weight. Every hunger cost of the server player arrives here: FC's own (jump, harvest, swim-up), vanilla's
+     * Player.causeFoodExhaustion and other mods' FoodData.addExhaustion (PlayerMixin, FoodDataMixin).
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract: one FC rule for every hunger cost; it used to skip the armour weight
+     * and the invulnerable exemption (INTEGRATIONS #021).
      */
     @Override
     public void addExhaustion(float amount) {
-        this.foodStats.addExhaustion(amount);
+        if (this.worldObj == null) return;
+        super.addExhaustion(amount);
+    }
+
+    /**
+     * FoodStats.onUpdate heals only while this is true: the 1.20.1 naturalRegeneration gamerule of the player's level
+     * (WorldGamerulesHandler leaves it at its default, true), so the rule, and mods that set it, gate FC's 600-tick heal
+     * as they gate vanilla's.
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract: 1.5.2 had no such gamerule; FC's heal ignored it (INTEGRATIONS #021).
+     */
+    @Override
+    public boolean IsNaturalRegenerationEnabled() {
+        return !(realPlayer.level() instanceof ServerLevel sl)
+                || sl.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_NATURAL_REGENERATION);
     }
 
     // ================================================================

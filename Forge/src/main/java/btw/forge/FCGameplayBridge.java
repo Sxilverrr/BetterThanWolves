@@ -35,6 +35,8 @@ import java.util.List;
  *   <li>Mob scroll drops — vanilla (non-FC) mobs roll FC's per-death chance to drop
  *       a specific Arcane Scroll (FC's enchantment carrier items)</li>
  *   <li>Villager scroll trades — max-level villagers sell specific scrolls</li>
+ *   <li>FC penalties: BTW's mining penalty on non-FC blocks (Forge BreakSpeed, both sides) and the land-movement
+ *       penalty attribute</li>
  * </ul>
  */
 @Mod.EventBusSubscriber(modid = BTWForgeMod.MOD_ID)
@@ -62,17 +64,27 @@ public class FCGameplayBridge {
     // ================================================================
 
     /**
-     * Applies FC's mining speed penalty modifier.
-     * FC's GetMiningSpeedModifier() ranges from 0.25 (near death) to 1.0 (healthy).
+     * BTW's health, hunger, fat and gloom mining penalty on every block FC does not dig itself, on both sides.
+     * 1.5.2 multiplied every dig by GetMiningSpeedModifier (inside getCurrentPlayerStrVsBlock); blocks with an FC
+     * identity still get it there, through {@link FCMiningSpeed} (ProxyBlocks and FC-mapped vanilla ids, which
+     * post this event themselves with FC's strength, penalty included), so they are skipped here and the penalty
+     * applies exactly once. Every other block (post-1.5.2 blocks, the bark and stripped log forms, other mods'
+     * blocks) digs through Player.getDigSpeed, which posts this event: it gets
+     * {@link FCMiningSpeed#miningModifier(Player)}, 1.0 (healthy) down to 0.125, derived the same way on the client
+     * (the PenaltySync mirror) and the server, so the client predicts the server's progress (the server accepts a
+     * STOP at >= 0.7, ServerPlayerGameMode.java:184-185).
+     *
+     * <p>This used to read the bridge's m_fCurrentMiningSpeedModifier, which is 1.0 outside FCMiningSpeed's FC call
+     * (Modern-Common EntityPlayer.GetMiningSpeedModifier), and only for a ServerPlayer: a no-op everywhere.
      */
+    // FCMOD-INTEGRATION(1.20.1): fc_harvest_events: 1.20.1-only blocks dig through Player.getDigSpeed, so BTW's mining penalty reaches them through Forge's BreakSpeed, on both sides
     @SubscribeEvent
     public static void onBreakSpeed(net.minecraftforge.event.entity.player.PlayerEvent.BreakSpeed event) {
-        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer sp) {
-            PlayerBridge pb = PlayerBridge.getOrCreate(sp);
-            float modifier = pb.GetMiningSpeedModifier();
-            if (modifier < 1.0F) {
-                event.setNewSpeed(event.getNewSpeed() * modifier);
-            }
+        net.minecraft.world.level.block.state.BlockState state = event.getState();
+        if (state == null || ProxyRegistry.getFcBlock(state.getBlock()) != null) return; // FCMiningSpeed applied it
+        float modifier = FCMiningSpeed.miningModifier(event.getEntity());
+        if (modifier < 1.0F) {
+            event.setNewSpeed(event.getNewSpeed() * modifier);
         }
     }
 

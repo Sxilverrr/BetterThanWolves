@@ -30,25 +30,33 @@ import java.util.TreeSet;
 import java.util.function.UnaryOperator;
 
 /**
- * Lets other recipes take the BTW successor of a retired (T2) id wherever they take the retired id.
+ * Lets other recipes take the BTW successor of a removed id wherever they take the removed id.
  *
  * <p><b>Maintainer stance, "integrate, don't disable"</b> (INTEGRATIONS.md Protocol #8), applied to the
- * stays-removed ruling ("blocks that 4.B explicitly removed must stay removed"): hiding the T2 ids of
+ * stays-removed ruling ("blocks that 4.B explicitly removed must stay removed"): removing the ids of
  * {@link RemovedContent} would otherwise strand every 1.20.1 or modded recipe that consumes them (lantern needs a
- * torch, chest boats and the shulker box a chest, terracotta a clay block, red nether bricks a nether brick).
- * Each such ingredient also accepts the BTW item FC itself converts the retired id into: FC's legacy conversion
- * recipes (Server FCRecipes.java:5080-5102: workbench, chest, web, clay, ladder, snow block) and the legacy torch
- * conversion (:793-795, the nether-coal torch). The nether brick item has no FC conversion; its successor is the
- * BTW nether brick that replaced its furnace route (:3026).</p>
+ * torch, chest boats and the shulker box a chest, terracotta a clay block, red nether bricks a nether brick, the
+ * blast furnace, smoker and furnace minecart a furnace, the crossbow a tripwire hook). Each such ingredient also
+ * accepts the BTW item its table row names ({@link RemovedContent#ingredientSuccessors}, any tier since maintainer
+ * decision D-B (a)):</p>
+ * <ul>
+ *   <li>T2 retired ids: the BTW item FC itself converts the id into, FC's legacy conversion recipes (Server
+ *       FCRecipes.java:5080-5102: workbench, chest, web, clay, ladder, snow block) and the legacy torch conversion
+ *       (:793-795, the nether-coal torch). The nether brick item has no FC conversion; its successor is the BTW
+ *       nether brick that replaced its furnace route (:3026).</li>
+ *   <li>The furnace (T3): the brick oven that replaced it (FCRecipes.java:349-353).</li>
+ *   <li>The tripwire hook (T1): one FC iron nugget, FC's own value for a hook (the stoked crucible,
+ *       FCRecipes.java:4480-4485).</li>
+ * </ul>
  *
  * <p>Rules, run by {@link RecipeBridge} after {@link FcRecipeRemovals} and before {@code replaceRecipes}, so they
  * are re-applied after every {@code /reload}:</p>
  * <ul>
  *   <li>Only recipes outside the {@code betterthanwolves} namespace (FC's injected {@code fc_*} recipes included).</li>
- *   <li>An ingredient is widened when any of its items (tags resolved) is a T2 id; the successor items it does not
- *       already accept are added: {@link Ingredient#merge} for a vanilla ingredient (tags stay tags, the client
- *       sync stays vanilla), Forge {@link CompoundIngredient} for any other ingredient type (its own matching, NBT
- *       for example, is kept).</li>
+ *   <li>An ingredient is widened when any of its items (tags resolved) is a removed id with an ingredient successor;
+ *       the successor items it does not already accept are added: {@link Ingredient#merge} for a vanilla ingredient
+ *       (tags stay tags, the client sync stays vanilla), Forge {@link CompoundIngredient} for any other ingredient
+ *       type (its own matching, NBT for example, is kept).</li>
  *   <li>The recipe is rebuilt with the same id, result, group, category, pattern, notification flag, experience and
  *       cooking time. Exactly these classes are rebuilt: ShapedRecipe, ShapelessRecipe, SmeltingRecipe,
  *       BlastingRecipe, SmokingRecipe, CampfireCookingRecipe and StonecutterRecipe; a subclass or another type
@@ -58,12 +66,13 @@ import java.util.function.UnaryOperator;
  *       minecart, FCRecipes.java:2504), {@code nether_bricks} (FC: loose bricks and mortar, or two slabs, :2917)
  *       and {@code nether_brick_fence} (FC: mouldings, :4842) on FC's own recipes instead of adding a cheaper
  *       shortcut that would also collide with FC's 4-brick loose-slab recipe in the 2x2 grid.</li>
- *   <li>T1 and T3 ingredients are never widened. Recipes that still need one (blast furnace, smoker and furnace
- *       minecart need the furnace, the crossbow a tripwire hook) are reported once as stranded: a later compat
- *       task. They stay craftable from salvaged or existing items, as in 4.B.</li>
+ *   <li>A removed id without an ingredient successor (the other T1 and T3 rows) is never widened. A recipe that
+ *       still needs only such ids in one ingredient is reported as stranded: craftable only from salvaged or
+ *       existing items, as in 4.B. With the furnace and tripwire-hook successors none is stranded in 1.20.1 itself
+ *       (blast furnace, smoker, furnace minecart and crossbow are widened); the list names modded ones.</li>
  * </ul>
  */
-// FCMOD-INTEGRATION(1.20.1): stays-removed: recipes that consume a retired id also accept its BTW successor
+// FCMOD-INTEGRATION(1.20.1): stays-removed: recipes that consume a removed id also accept its BTW successor
 final class RetiredIngredientWidening {
 
     private static final Logger LOGGER = LogManager.getLogger("BTW-RecipeWidening");
@@ -144,13 +153,14 @@ final class RetiredIngredientWidening {
             }
         }
 
-        String summary = String.format("Widened %d recipes whose retired-id ingredients now also accept the BTW successor"
+        // FCMOD-INTEGRATION(1.20.1): recipes: every removed id with an ingredient successor widens (D-B (a))
+        String summary = String.format("Widened %d recipes whose removed-id ingredients now also accept the BTW successor"
                         + " (ids at DEBUG); not widened because FC makes the result its own way: %s;"
                         + " not rebuildable: %s", widened.size(), fcRouted, notRebuildable);
         LOGGER.info(summary);
         if (!stranded.isEmpty()) {
-            LOGGER.info("Stranded by a stubbed (T1) or recipe-only (T3) ingredient, craftable only from salvaged or"
-                    + " existing items (later compat task): {}", stranded);
+            LOGGER.info("Stranded by a removed ingredient that has no BTW ingredient successor, craftable only from"
+                    + " salvaged or existing items: {}", stranded);
         }
         return summary;
     }
@@ -242,7 +252,10 @@ final class RetiredIngredientWidening {
             }
         }
 
-        /** The successors of the T2 items this ingredient accepts that it does not accept yet (empty: nothing to do). */
+        /**
+         * The ingredient successors of the removed items this ingredient accepts that it does not accept yet (empty:
+         * nothing to do).
+         */
         List<Item> missingSuccessors(Ingredient ing) {
             List<Item> cached = missing.get(ing);
             if (cached != null) return cached;
@@ -267,7 +280,7 @@ final class RetiredIngredientWidening {
             return out;
         }
 
-        /** {@code ing} plus the successors it lacks; ingredients without a T2 item are returned unchanged. */
+        /** {@code ing} plus the successors it lacks; ingredients without such an item are returned unchanged. */
         Ingredient widen(Ingredient ing) {
             if (ing == null || ing.isEmpty()) return ing;
             List<Item> add = missingSuccessors(ing);

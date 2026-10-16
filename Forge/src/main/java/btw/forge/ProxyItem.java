@@ -17,6 +17,16 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.food.FoodProperties;
+import net.minecraft.world.item.Tier;
+import net.minecraft.world.item.Tiers;
+import net.minecraftforge.common.TierSortingRegistry;
+import net.minecraftforge.common.ToolAction;
+import net.minecraftforge.common.ToolActions;
+
+import javax.annotation.Nullable;
+import java.util.Set;
 
 /**
  * A Forge Item that delegates ALL interactions to its corresponding FC item.
@@ -678,6 +688,268 @@ public class ProxyItem extends Item implements LegacyProxyItem {
             }
         }
         return false;
+    }
+
+    // ================================================================
+    // FC tools are tools: ToolActions, efficiency and drops on 1.20.1-only blocks (INTEGRATIONS #022)
+    // ================================================================
+
+    /** What an FC item class is to 1.20.1: an FC tool (FCItemTool) and the DIG actions of its family. */
+    private record FcToolKind(boolean tool, Set<ToolAction> digActions) {
+        static final FcToolKind NONE = new FcToolKind(false, Set.of());
+    }
+
+    /**
+     * The FC tool classes, loaded once without initialising them (the Forge source set cannot name FC classes);
+     * null when one is missing. Mattock first: FCItemMattock extends FCItemRefinedPickAxe extends FCItemPickaxe, and
+     * FC ORs the refined shovel into it (Common FCItemMattock.java:31-58). FCItemRefinedAxe and FCItemBattleAxe extend
+     * FCItemAxe, FCItemRefinedShovel FCItemShovel, FCItemRefinedHoe FCItemHoe (javap).
+     */
+    private static final class FcToolClasses {
+        static final Class<?> TOOL = load("net.minecraft.src.btw.item.FCItemTool");
+        static final Class<?> MATTOCK = load("net.minecraft.src.btw.item.FCItemMattock");
+        static final Class<?> AXE = load("net.minecraft.src.btw.item.FCItemAxe");
+        static final Class<?> PICKAXE = load("net.minecraft.src.btw.item.FCItemPickaxe");
+        static final Class<?> SHOVEL = load("net.minecraft.src.btw.item.FCItemShovel");
+        static final Class<?> HOE = load("net.minecraft.src.btw.item.FCItemHoe");
+        static final Class<?> CHISEL = load("net.minecraft.src.btw.item.FCItemChisel");
+        /** FCItemTool.efficiencyOnProperMaterial (public float) and toolMaterial (public EnumToolMaterial). */
+        static final java.lang.reflect.Field EFFICIENCY = field("efficiencyOnProperMaterial");
+        static final java.lang.reflect.Field MATERIAL = field("toolMaterial");
+
+        private static Class<?> load(String name) {
+            try {
+                return Class.forName(name, false, ProxyItem.class.getClassLoader());
+            } catch (Throwable t) {
+                LOGGER.warn("FC tool class {} not found; its items act as plain items to 1.20.1: {}",
+                        name, t.toString());
+                return null;
+            }
+        }
+
+        private static java.lang.reflect.Field field(String name) {
+            try {
+                return TOOL != null ? TOOL.getField(name) : null;
+            } catch (Throwable t) {
+                LOGGER.warn("FCItemTool.{} not found: {}", name, t.toString());
+                return null;
+            }
+        }
+
+        private static boolean is(Class<?> family, Class<?> type) {
+            return family != null && family.isAssignableFrom(type);
+        }
+    }
+
+    /**
+     * Per FC item class, resolved once (lazily, so after FC init): DIG actions only. Never AXE_STRIP, AXE_SCRAPE,
+     * AXE_WAX_OFF, SHOVEL_FLATTEN or HOE_TILL: an FC tool's right click is FC onItemUse (tool placement), and Dynamic
+     * Trees strips only with AXE_STRIP (BranchBlock.java:207). Chisels and the club dig no 1.20.1 tag.
+     */
+    private static final ClassValue<FcToolKind> FC_TOOL_KIND = new ClassValue<>() {
+        @Override
+        protected FcToolKind computeValue(Class<?> type) {
+            if (!FcToolClasses.is(FcToolClasses.TOOL, type)) return FcToolKind.NONE;
+            Set<ToolAction> actions;
+            if (FcToolClasses.is(FcToolClasses.MATTOCK, type)) {
+                actions = Set.of(ToolActions.PICKAXE_DIG,
+                        ToolActions.SHOVEL_DIG);
+            } else if (FcToolClasses.is(FcToolClasses.AXE, type)) {
+                actions = Set.of(ToolActions.AXE_DIG);
+            } else if (FcToolClasses.is(FcToolClasses.PICKAXE, type)) {
+                actions = Set.of(ToolActions.PICKAXE_DIG);
+            } else if (FcToolClasses.is(FcToolClasses.SHOVEL, type)) {
+                actions = Set.of(ToolActions.SHOVEL_DIG);
+            } else if (FcToolClasses.is(FcToolClasses.HOE, type)) {
+                actions = Set.of(ToolActions.HOE_DIG);
+            } else {
+                actions = Set.of();
+                if (!FcToolClasses.is(FcToolClasses.CHISEL, type)) {
+                    LOGGER.info("FC tool class {} has no 1.20.1 dig family; it declares no ToolAction",
+                            type.getName());
+                }
+            }
+            return new FcToolKind(true, actions);
+        }
+    };
+
+    private FcToolKind fcToolKind() {
+        btw.modern.Item fcItem = fc();
+        return fcItem != null ? FC_TOOL_KIND.get(fcItem.getClass()) : FcToolKind.NONE;
+    }
+
+    /** FC's efficiencyOnProperMaterial, read once (FCItemHoe's constructor already divided it); NaN until read. */
+    private volatile float cachedFcEfficiency = Float.NaN;
+    /** FC's toolMaterial harvest level, read once; Integer.MIN_VALUE until read, -1 if unreadable. */
+    private volatile int cachedFcHarvestLevel = Integer.MIN_VALUE;
+
+    private float fcEfficiency(btw.modern.Item fcItem) {
+        float eff = cachedFcEfficiency;
+        if (Float.isNaN(eff)) {
+            try {
+                eff = FcToolClasses.EFFICIENCY != null ? FcToolClasses.EFFICIENCY.getFloat(fcItem) : 0F;
+            } catch (Throwable t) {
+                logFcFailureOnce("efficiencyOnProperMaterial", legacyId, t);
+                eff = 0F;
+            }
+            cachedFcEfficiency = eff;
+        }
+        return eff;
+    }
+
+    private int fcHarvestLevel(btw.modern.Item fcItem) {
+        int level = cachedFcHarvestLevel;
+        if (level == Integer.MIN_VALUE) {
+            try {
+                Object material = FcToolClasses.MATERIAL != null ? FcToolClasses.MATERIAL.get(fcItem) : null;
+                level = material instanceof btw.modern.EnumToolMaterial m ? m.getHarvestLevel() : -1;
+            } catch (Throwable t) {
+                logFcFailureOnce("toolMaterial", legacyId, t);
+                level = -1;
+            }
+            cachedFcHarvestLevel = level;
+        }
+        return level;
+    }
+
+    /**
+     * The FC tool's DIG actions: FCItemAxe (refined, battle) AXE_DIG; FCItemMattock PICKAXE_DIG and SHOVEL_DIG;
+     * FCItemPickaxe PICKAXE_DIG; FCItemShovel SHOVEL_DIG; FCItemHoe HOE_DIG. Dynamic Trees' damageAxe needs AXE_DIG
+     * (ItemUtils.java:63), and every ToolAction consumer now sees FC tools as tools.
+     */
+    // FCMOD-INTEGRATION(1.20.1): fc_tool_actions: FC tools predate ToolActions, so 1.20.1 and other mods saw them as plain items; they declare their family's DIG action
+    @Override
+    public boolean canPerformAction(ItemStack stack, ToolAction toolAction) {
+        if (fcToolKind().digActions().contains(toolAction)) return true;
+        return super.canPerformAction(stack, toolAction);
+    }
+
+    /**
+     * FC's efficiency on 1.20.1-only blocks. Blocks with an FC identity dig through FC's own formula
+     * (FCMiningSpeed), so only unmapped states are decided here, through FC's own flags on the stand-in FC block of
+     * each mineable tag: a tag counts when the tool's family digs it, or FC's IsToolTypeEfficientVsBlockType
+     * (Modern-Common Item.java:667) is true for the stand-in. #mineable/axe ~ FC log 17 (axes and chisels, Client
+     * FCBlockLog.java:31-32; FCItemAxe also takes material GetAxesEfficientOn, Common FCItemAxe.java:157-160),
+     * #mineable/pickaxe ~ FC stone 1 (picks and chisels, Client FCBlockStone.java:34-35), #mineable/shovel ~ FC
+     * dirt 3 (shovels and hoes, Common FCBlockDirt.java:30-31). #mineable/hoe has no FC stand-in (FC hoes only
+     * convert; FCItemHoe.canHarvestBlock is false), so the family alone decides it. FCItemTool has no 2-argument
+     * getStrVsBlock override (javap), so the speed is the FC field efficiencyOnProperMaterial, never below the bare
+     * hand's: FC's low-tier values (wood chisel 0.25, stone chisel 0.5, stone shovel 0.34) are balanced against FC's
+     * divisor (an effective tool /30, a hand /200), while 1.20.1's divides a bare hand on a block that needs no tool by
+     * 30 as well (BlockBehaviour.getDestroyProgress :369), so the raw value would dig slower than a hand.
+     */
+    // FCMOD-INTEGRATION(1.20.1): fc_tool_actions: FC tools dig post-1.5.2 blocks at FC's efficiency instead of a bare hand's
+    @Override
+    public float getDestroySpeed(ItemStack stack, BlockState state) {
+        float base = super.getDestroySpeed(stack, state);
+        btw.modern.Item fcItem = fc();
+        if (fcItem != null && ProxyRegistry.getFcBlock(state.getBlock()) == null) {
+            FcToolKind kind = FC_TOOL_KIND.get(fcItem.getClass());
+            if (kind.tool() && fcToolEfficientOn(fcItem, kind, state)) {
+                return Math.max(fcEfficiency(fcItem), base);
+            }
+        }
+        return base;
+    }
+
+    /** FC stand-in blocks of the mineable tags: 1.5.2 log 17, stone 1, dirt 3. */
+    private static final int FC_LOG_ID = 17, FC_STONE_ID = 1, FC_DIRT_ID = 3;
+
+    private static boolean fcToolEfficientOn(btw.modern.Item fcItem, FcToolKind kind, BlockState state) {
+        Set<ToolAction> dig = kind.digActions();
+        if (state.is(BlockTags.MINEABLE_WITH_AXE)
+                && (dig.contains(ToolActions.AXE_DIG) || fcToolTypeEfficientVs(fcItem, FC_LOG_ID))) {
+            return true;
+        }
+        if (state.is(BlockTags.MINEABLE_WITH_PICKAXE)
+                && (dig.contains(ToolActions.PICKAXE_DIG) || fcToolTypeEfficientVs(fcItem, FC_STONE_ID))) {
+            return true;
+        }
+        if (state.is(BlockTags.MINEABLE_WITH_SHOVEL)
+                && (dig.contains(ToolActions.SHOVEL_DIG) || fcToolTypeEfficientVs(fcItem, FC_DIRT_ID))) {
+            return true;
+        }
+        return state.is(BlockTags.MINEABLE_WITH_HOE)
+                && dig.contains(ToolActions.HOE_DIG);
+    }
+
+    /** FC's own tool-type flag for the FC stand-in block {@code legacyBlockId}; false without that block. */
+    private static boolean fcToolTypeEfficientVs(btw.modern.Item fcItem, int legacyBlockId) {
+        return isFcBlockId(legacyBlockId)
+                && fcItem.IsToolTypeEfficientVsBlockType(btw.modern.Block.blocksList[legacyBlockId]);
+    }
+
+    /**
+     * Drops of 1.20.1-only blocks that need a tool tier (deepslate and its ores, copper, tuff, calcite, amethyst):
+     * an FC tool qualifies when its family digs one of the state's mineable tags and FC's harvest level reaches the
+     * block's tier, as DiggerItem.isCorrectToolForDrops (DiggerItem.java:80-82). Without it destroyBlock skipped
+     * playerDestroy (ServerPlayerGameMode.java:249) and the steel pickaxe got nothing from deepslate diamond ore.
+     * Blocks with an FC identity are FC's harvest (ServerPlayerGameModeMixin), so they are never decided here.
+     */
+    // FCMOD-INTEGRATION(1.20.1): fc_tool_actions: post-1.5.2 blocks gate their drops on Forge's tool query, which FC tools never answered
+    @Override
+    public boolean isCorrectToolForDrops(ItemStack stack, BlockState state) {
+        btw.modern.Item fcItem = fc();
+        if (fcItem != null && ProxyRegistry.getFcBlock(state.getBlock()) == null) {
+            FcToolKind kind = FC_TOOL_KIND.get(fcItem.getClass());
+            if (kind.tool() && fcFamilyDigs(kind, state)) {
+                Tier tier = tierFor(fcHarvestLevel(fcItem));
+                if (tier != null && TierSortingRegistry.isCorrectTierForDrops(tier, state)) {
+                    return true;
+                }
+            }
+        }
+        return super.isCorrectToolForDrops(stack, state);
+    }
+
+    private static boolean fcFamilyDigs(FcToolKind kind, BlockState state) {
+        Set<ToolAction> dig = kind.digActions();
+        return (dig.contains(ToolActions.AXE_DIG)
+                        && state.is(BlockTags.MINEABLE_WITH_AXE))
+                || (dig.contains(ToolActions.PICKAXE_DIG)
+                        && state.is(BlockTags.MINEABLE_WITH_PICKAXE))
+                || (dig.contains(ToolActions.SHOVEL_DIG)
+                        && state.is(BlockTags.MINEABLE_WITH_SHOVEL))
+                || (dig.contains(ToolActions.HOE_DIG)
+                        && state.is(BlockTags.MINEABLE_WITH_HOE));
+    }
+
+    /**
+     * The vanilla tier of an FC harvest level (EnumToolMaterial: wood and gold 0, stone 1, iron 2, diamond 3,
+     * soulforged steel 4); null when unreadable.
+     */
+    private static Tier tierFor(int harvestLevel) {
+        if (harvestLevel < 0) return null;
+        return switch (harvestLevel) {
+            case 0 -> Tiers.WOOD;
+            case 1 -> Tiers.STONE;
+            case 2 -> Tiers.IRON;
+            case 3 -> Tiers.DIAMOND;
+            default -> Tiers.NETHERITE;
+        };
+    }
+
+    // ================================================================
+    // Stack-sensitive food query → FC food values (INTEGRATIONS #024)
+    // ================================================================
+
+    /**
+     * FC's food values for FC-only foods (the donut, FC meats, ...), for mods that ask Forge's stack-sensitive food
+     * query (AppleSkin #029, whose isFood is {@code getFoodProperties(stack, player) != null}; LSO #031).
+     * Item.Properties keeps no food, so {@link #isEdible()} stays false and every vanilla eat path stays closed:
+     * Item.use :141-142, getUseDuration :263-264, LivingEntity.eat :3274 and addEatEffect :3289-3290, FoodData.eat
+     * :33-34, Wolf.isFood :407 (which also gates mobInteract :327), Cat :367-368. FC's onEaten (finishUsingItem)
+     * stays the only eater.
+     * One vanilla read has no isEdible guard, LivingEntity.shouldTriggerItemUseEffects :2911, which only looks at
+     * isFastFood: FcFoodValues.toFoodProperties never sets fast() (FC has no fast foods), so the use particles and
+     * sounds are unchanged.
+     */
+    // FCMOD-INTEGRATION(1.20.1): fc_food_values: FC foods are not 1.20.1 foods, so Forge's food query answered null and food mods could not see them
+    @Override
+    public FoodProperties getFoodProperties(ItemStack stack, @Nullable LivingEntity entity) {
+        var food = btw.forge.food.FcFoodValues.of(stack, entity);
+        FoodProperties props = food != null ? btw.forge.food.FcFoodValues.toFoodProperties(food) : null;
+        return props != null ? props : super.getFoodProperties(stack, entity);
     }
 
     // ================================================================

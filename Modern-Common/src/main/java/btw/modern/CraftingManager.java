@@ -214,9 +214,84 @@ public class CraftingManager {
         REMOVED_VANILLA_RECIPES.add(removal);
     }
 
+    // FCMOD-INTEGRATION(1.20.1): recipes: FC's crafting grids (workbench, work stump, soulforge) fall back to the
+    // 1.20.1 RecipeManager once FC's own list finds nothing (INTEGRATIONS #025, btw.forge.recipes.WorkbenchFallback).
+
+    /**
+     * A recipe source outside FC's list, asked by {@link #findMatchingRecipe} only when FC's own list found nothing.
+     * Port types only: the Forge bridge implements it over the 1.20.1 RecipeManager.
+     */
+    public interface ExternalResolver {
+        /** The craft for this grid, or null for no match. Never called for a grid FC's own list answers. */
+        ExternalCraft resolve(InventoryCrafting inv, World world);
+    }
+
+    /**
+     * One external match, remembered per grid until the result is taken ({@link SlotCrafting#onPickupFromSlot}) or
+     * the grid changes (the next {@link #findMatchingRecipe} call for it replaces or drops it).
+     */
+    public interface ExternalCraft {
+        /** The result shown in the result slot; {@link #findMatchingRecipe} hands out a copy. */
+        ItemStack result();
+
+        /**
+         * What each grid slot leaves behind once one of each ingredient is consumed (the recipe's own remainders, a
+         * bucket for a milk bucket, ...), indexed like the grid; null entries leave nothing. Computed when the
+         * result is taken, with the taking player known, as 1.20.1 ResultSlot.onTake does.
+         */
+        ItemStack[] remainders(InventoryCrafting inv, EntityPlayer player);
+
+        /** The crafted hooks of the recipe's own system (crafted event, advancements, recipe book). */
+        void onTaken(InventoryCrafting inv, EntityPlayer player, ItemStack taken);
+    }
+
+    private static volatile ExternalResolver externalResolver;
+
+    /** The external craft behind each grid's current result (weak keys: a closed container's grid is dropped). */
+    private static final Map<IInventory, ExternalCraft> PENDING =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    private static volatile boolean externalFailureLogged;
+
+    /** Installs (or, with null, removes) the external recipe source; the Forge bridge sets it per recipe load. */
+    public static void setExternalResolver(ExternalResolver r) {
+        externalResolver = r;
+        externalFailureLogged = false;
+        if (r == null) PENDING.clear();
+    }
+
+    /** Removes and returns the external craft behind {@code inv}'s current result, or null (an FC recipe or none). */
+    public static ExternalCraft takeExternalCraft(IInventory inv) {
+        return inv == null ? null : PENDING.remove(inv);
+    }
+
+    /**
+     * FC's own list first, exactly as 1.5.2. Only when it finds nothing is the external resolver asked; its craft is
+     * remembered for {@code inv} so the result slot can consume the grid by the external recipe's rules.
+     */
     public ItemStack findMatchingRecipe(InventoryCrafting inv, World world) {
+        if (inv != null) PENDING.remove(inv);
         IRecipe recipe = FindMatchingRecipe(inv, world);
-        return recipe != null ? recipe.getCraftingResult(inv) : null;
+        if (recipe != null) return recipe.getCraftingResult(inv);
+
+        ExternalResolver resolver = externalResolver;
+        if (resolver == null || inv == null) return null;
+        ExternalCraft craft;
+        ItemStack result;
+        try {
+            craft = resolver.resolve(inv, world);
+            result = craft != null ? craft.result() : null;
+        } catch (Throwable t) {
+            if (!externalFailureLogged) {
+                externalFailureLogged = true;
+                org.apache.logging.log4j.LogManager.getLogger("BTW-Crafting").error(
+                        "[CRAFTING] External recipe resolver failed; the grid shows no result (logged once)", t);
+            }
+            return null;
+        }
+        if (result == null) return null;
+        PENDING.put(inv, craft);
+        return result.copy();
     }
 
     public IRecipe FindMatchingRecipe(InventoryCrafting inv, World world) {

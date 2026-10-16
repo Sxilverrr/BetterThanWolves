@@ -12,6 +12,11 @@ public class InventoryCrafting implements IInventory {
     }
 
     public int getSizeInventory() { return stackList.length; }
+
+    // FCMOD-INTEGRATION(1.20.1): recipes: the Forge workbench fallback rebuilds this grid as a 1.20.1 crafting
+    // container (btw.forge.recipes.WorkbenchFallback) and needs its shape; 1.5.2 has no accessor for it.
+    /** Grid width in slots: 3 for the FC workbench and work stump, 4 for the soulforge. Slot index = x + y * width. */
+    public int getInventoryWidth() { return inventoryWidth; }
     public ItemStack getStackInSlot(int slot) { return slot >= 0 && slot < stackList.length ? stackList[slot] : null; }
     public ItemStack getStackInRowAndColumn(int row, int col) {
         if (row >= 0 && row < inventoryWidth) {

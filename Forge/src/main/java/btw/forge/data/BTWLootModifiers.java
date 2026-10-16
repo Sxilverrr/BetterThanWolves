@@ -33,5 +33,9 @@ public final class BTWLootModifiers {
     public static final RegistryObject<Codec<FCRemovedContentLootModifier>> REMOVED_CONTENT =
             LOOT_MODIFIERS.register("removed_content", FCRemovedContentLootModifier.CODEC);
 
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: unripe crops on BTW soil drop nothing (4.B's crop rule for modded and twin crops)
+    public static final RegistryObject<Codec<FCImmatureCropLootModifier>> IMMATURE_CROP =
+            LOOT_MODIFIERS.register("immature_crop", FCImmatureCropLootModifier.CODEC);
+
     private BTWLootModifiers() {}
 }

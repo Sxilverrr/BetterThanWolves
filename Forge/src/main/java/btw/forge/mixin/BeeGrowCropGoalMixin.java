@@ -1,6 +1,7 @@
 package btw.forge.mixin;
 
 import btw.forge.TickPolicy;
+import btw.forge.farming.FcSoil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
@@ -35,8 +36,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *
  * <p><b>Rebalance:</b> S17: each visit to an FC-governed plant ({@link TickPolicy#isFcGrowthGoverned}) is one FC
  * growth roll of that plant: its own random tick (FC's body for FC-owned and twin plants, the paced 1.20.1 body
- * for paced plants), the roll bone meal on a stem already gets in the port. Bees still help a farm (extra rolls
- * where they fly), but every growth follows FC's rule. The visit counts toward the bee's ten crops exactly where
+ * for paced plants), the roll bone meal on a stem already gets in the port. A modded crop on BTW soil that takes it
+ * ({@link FcSoil#governsAt}, INTEGRATIONS #026) is governed too: its own random tick fires CropGrowEvent.Pre, where
+ * btw.forge.farming.ModdedPlantRules rolls FC's crop rule once. Bees still help a farm (extra rolls where they fly),
+ * but every growth follows FC's rule. The visit counts toward the bee's ten crops exactly where
  * vanilla counts it (a crop, stem or berry bush that is not fully grown), and the bone-meal particles show when the
  * plant changed. Plants FC does not govern keep the vanilla visit.</p>
  *
@@ -50,6 +53,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * the next-age state is already computed by then).</p>
  */
 // FCMOD-INTEGRATION(1.20.1): modern_plant_growth: a bee visit to an FC-governed plant is one FC growth roll instead of an instant stage (S17)
+// FCMOD-INTEGRATION(1.20.1): modded_plant_rules: a bee visit to a modded crop on BTW soil is one FC crop roll too, not a free stage
 @Mixin(targets = "net.minecraft.world.entity.animal.Bee$BeeGrowCropGoal")
 public abstract class BeeGrowCropGoalMixin {
 
@@ -68,7 +72,7 @@ public abstract class BeeGrowCropGoalMixin {
     private BlockState btw$fcPollinationRoll(Level level, BlockPos pos) {
         BlockState state = level.getBlockState(pos);
         if (!(level instanceof ServerLevel serverLevel) || !state.is(BlockTags.BEE_GROWABLES)
-                || !TickPolicy.isFcGrowthGoverned(state)) {
+                || !(TickPolicy.isFcGrowthGoverned(state) || FcSoil.governsAt(serverLevel, pos, state))) {
             return state;
         }
         Block block = state.getBlock();

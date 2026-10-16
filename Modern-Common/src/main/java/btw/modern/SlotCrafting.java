@@ -76,6 +76,16 @@ public class SlotCrafting extends Slot {
     // consume/damage hooks) — fired by Container.slotClick and FCContainerMenu$ContainerMappedSlot.onTake.
     @Override
     public void onPickupFromSlot(EntityPlayer player, ItemStack resultStack) {
+        // FCMOD-INTEGRATION(1.20.1): recipes: a result from the 1.20.1 RecipeManager fallback (CraftingManager
+        // ExternalResolver) consumes the grid by its own recipe's rules. Taken before the first decrStackSize, which
+        // re-enters onCraftMatrixChanged and would replace it with the next match.
+        CraftingManager.ExternalCraft ext = this.craftMatrix instanceof InventoryCrafting ic
+                ? CraftingManager.takeExternalCraft(ic) : null;
+        if (ext != null) {
+            this.onPickupExternal((InventoryCrafting) this.craftMatrix, player, resultStack, ext);
+            return;
+        }
+
         if (resultStack != null) {
             this.onCrafting(resultStack);
         }
@@ -143,5 +153,66 @@ public class SlotCrafting extends Slot {
         // FCMOD: Code added
         player.m_iTimesCraftedThisTick++;
         // END FCMOD
+    }
+
+    private static boolean externalTakeFailureLogged;
+
+    /**
+     * Take of an external (1.20.1 RecipeManager) result, in the order of 1.20.1 ResultSlot.onTake (:54-80): the
+     * crafted hooks first (checkTakeAchievements, so ItemCraftedEvent listeners see the full grid), then the
+     * recipe's remainders, then one of each ingredient is consumed and its remainder placed. FC's per-item crafting
+     * rules (OnUsedInCrafting, IsConsumedInCrafting, damage-in-crafting, container items) belong to FC's own recipes
+     * and do not run: an external recipe's remainders are its own, as in the 2x2 grid.
+     */
+    private void onPickupExternal(InventoryCrafting grid, EntityPlayer player, ItemStack resultStack,
+                                  CraftingManager.ExternalCraft ext) {
+        EntityPlayer taker = player != null ? player : this.thePlayer;
+        if (resultStack != null) {
+            this.onCrafting(resultStack);
+        }
+        try {
+            ext.onTaken(grid, taker, resultStack);
+        } catch (Throwable t) {
+            logExternalTakeFailure("crafted hooks", t);
+        }
+
+        ItemStack[] remainders;
+        try {
+            remainders = ext.remainders(grid, taker);
+        } catch (Throwable t) {
+            logExternalTakeFailure("remainders", t);
+            remainders = null;
+        }
+
+        for (int i = 0; i < grid.getSizeInventory(); i++) {
+            ItemStack current = grid.getStackInSlot(i);
+            ItemStack remainder = remainders != null && i < remainders.length ? remainders[i] : null;
+            if (current != null) {
+                grid.decrStackSize(i, 1);
+                current = grid.getStackInSlot(i);
+            }
+            if (remainder == null || remainder.stackSize <= 0) continue;
+
+            if (current == null) {
+                grid.setInventorySlotContents(i, remainder);
+            } else if (current.itemID == remainder.itemID && current.getItemDamage() == remainder.getItemDamage()
+                    && ItemStack.areItemStackTagsEqual(current, remainder)
+                    && current.stackSize + remainder.stackSize
+                            <= Math.min(current.getMaxStackSize(), grid.getInventoryStackLimit())) {
+                remainder.stackSize += current.stackSize;
+                grid.setInventorySlotContents(i, remainder);
+            } else if (taker == null || !taker.inventory.addItemStackToInventory(remainder)) {
+                if (taker != null && remainder.stackSize > 0) taker.dropPlayerItem(remainder);
+            }
+        }
+
+        if (taker != null) taker.m_iTimesCraftedThisTick++;
+    }
+
+    private static void logExternalTakeFailure(String what, Throwable t) {
+        if (externalTakeFailureLogged) return;
+        externalTakeFailureLogged = true;
+        org.apache.logging.log4j.LogManager.getLogger("BTW-Crafting").error(
+                "[CRAFTING] External recipe {} failed when the result was taken (logged once)", what, t);
     }
 }

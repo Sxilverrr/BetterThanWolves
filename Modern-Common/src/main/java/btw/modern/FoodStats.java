@@ -1,6 +1,22 @@
 package btw.modern;
 
 public class FoodStats {
+    // FCMOD-INTEGRATION(1.20.1): hunger_contract: FC's burn and heal thresholds as named constants, so the HUD, the
+    // eat preview (btw.forge.food.FcFoodValues.preview) and other mods' hunger rules read the very values onUpdate uses
+    // (INTEGRATIONS #021). Values unchanged from 4.B.
+
+    /** Exhaustion that burns one FC hunger unit (one sixth of a pip). */
+    public static final float HUNGER_BURN_THRESHOLD = 1.33F;
+
+    /** Exhaustion that burns {@link #FAT_PER_BURN} fat while fat is burned before hunger. */
+    public static final float FAT_BURN_THRESHOLD = 0.5F;
+
+    /** Fat (saturation) burned per {@link #FAT_BURN_THRESHOLD} of exhaustion. */
+    public static final float FAT_PER_BURN = 0.125F;
+
+    /** FC heals one point every 600 ticks only while the food level is above this (4 of 10 pips). */
+    public static final int REGEN_FOOD_THRESHOLD = 24;
+
     // FC: 3x resolution — 60 = full (not 20)
     private int foodLevel = 60;
 
@@ -50,23 +66,26 @@ public class FoodStats {
 
         if (iDifficulty > 0) {
             // burn hunger
-            while (foodLevel > 0 && foodExhaustionLevel >= 1.33F && !shouldBurnFatBeforeHunger()) {
-                foodExhaustionLevel -= 1.33F;
+            while (foodLevel > 0 && foodExhaustionLevel >= HUNGER_BURN_THRESHOLD && !shouldBurnFatBeforeHunger()) {
+                foodExhaustionLevel -= HUNGER_BURN_THRESHOLD;
 
                 foodLevel = Math.max(foodLevel - 1, 0);
             }
 
             // burn fat
-            while (foodExhaustionLevel >= 0.5F && shouldBurnFatBeforeHunger()) {
-                foodExhaustionLevel -= 0.5F;
+            while (foodExhaustionLevel >= FAT_BURN_THRESHOLD && shouldBurnFatBeforeHunger()) {
+                foodExhaustionLevel -= FAT_BURN_THRESHOLD;
 
-                foodSaturationLevel = Math.max(foodSaturationLevel - 0.125F, 0F);
+                foodSaturationLevel = Math.max(foodSaturationLevel - FAT_PER_BURN, 0F);
             }
         } else {
             foodExhaustionLevel = 0F;
         }
 
-        if (foodLevel > 24 && player.getHealth() > 0 && player.getHealth() < player.getMaxHealth()) {
+        // FCMOD-INTEGRATION(1.20.1): hunger_contract: the 1.20.1 naturalRegeneration gamerule gates FC's heal as it gates
+        // vanilla's (EntityPlayer.IsNaturalRegenerationEnabled; 1.5.2 had no such rule, so the base answers true)
+        if (foodLevel > REGEN_FOOD_THRESHOLD && player.IsNaturalRegenerationEnabled()
+                && player.getHealth() > 0 && player.getHealth() < player.getMaxHealth()) {
             ++foodTimer;
 
             if (foodTimer >= 600) // once every 30 seconds
@@ -173,9 +192,26 @@ public class FoodStats {
     }
 
     /**
+     * The exhaustion accumulated towards the next hunger or fat burn (0-40). Read-only view for the client sync
+     * (BTWNetwork.PenaltySync) and food-bar mods.
+     */
+    public float getFoodExhaustionLevel() {
+        return this.foodExhaustionLevel;
+    }
+
+    /**
      * FC: Only burn fat when the corresponding hunger pip is completely depleted.
      */
     private boolean shouldBurnFatBeforeHunger() {
-        return foodSaturationLevel > (float) ((foodLevel + 5) / 6) * 2F;
+        return shouldBurnFatBeforeHunger(foodLevel, foodSaturationLevel);
+    }
+
+    /**
+     * FC's fat-before-hunger rule for any food level (0-60) and fat (0-20): fat burns first while it exceeds two fat
+     * per remaining hunger pip (rounded up). The instance rule above delegates here, so a client that only knows the
+     * synced food and fat (HUD, food-bar mods) predicts exactly what the server burns next.
+     */
+    public static boolean shouldBurnFatBeforeHunger(int food, float fat) {
+        return fat > (float) ((food + 5) / 6) * 2F;
     }
 }

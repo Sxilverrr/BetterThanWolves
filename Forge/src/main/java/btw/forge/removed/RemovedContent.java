@@ -55,10 +55,15 @@ import java.util.function.UnaryOperator;
  *       a 4.B block, string cannot place tripwire, generated TNT/hopper minecarts become plain minecarts.</li>
  *   <li><b>T2 retired</b>: recipes removed, hidden from creative, loot substitutes the BTW successor (filtered when
  *       it does not resolve). Generated T2 blocks stay legacy blocks: FC's legacy drop rules convert them when
- *       broken, which is 4.B behaviour. A non-FC recipe ingredient that accepts a T2 id also accepts FC's legacy
- *       conversion target for it ({@code btw.forge.RetiredIngredientWidening}, "integrate, don't disable").</li>
+ *       broken, which is 4.B behaviour.</li>
  *   <li><b>T3 recipe-only</b>: recipes removed, loot filtered, still listed in creative (4.B listed them).</li>
  * </ul>
+ *
+ * <p>Ingredient successors, any tier ("integrate, don't disable"; maintainer decision D-B (a)): a non-FC recipe
+ * ingredient that accepts a removed id also accepts the BTW items its row names
+ * ({@code btw.forge.RetiredIngredientWidening}). T2 rows name FC's legacy conversion target; the furnace (T3) names
+ * the brick oven that replaced it, and the tripwire hook (T1) the FC iron nugget FC's stoked crucible values it at.
+ * Only the ingredient role is substituted: every removed id stays removed as a result.</p>
  *
  * <p>Consumers: {@code btw.forge.FcRecipeRemovals} (recipes), {@code FCRemovedContentLootModifier} (loot),
  * {@link RemovedCreativeTabs} (tabs), {@link RemovedContentEvents} (placement, minecarts, trades),
@@ -105,9 +110,11 @@ public final class RemovedContent {
         /** T2: the FCBetterThanWolves field of the BTW successor handed out by loot and trades, else null. */
         final String successorField;
         /**
-         * T2: the FCBetterThanWolves fields of the BTW items a non-FC recipe ingredient that accepts this id must also
-         * accept (RetiredIngredientWidening). FC's own legacy conversion target (FCRecipes.AddLegacyConversionRecipes,
-         * Server FCRecipes.java:5080-5102; the torch at AddTorchRecipes :793-795), else empty.
+         * Any tier: the FCBetterThanWolves fields of the BTW items a non-FC recipe ingredient that accepts this id must
+         * also accept (RetiredIngredientWidening). T2: FC's own legacy conversion target
+         * (FCRecipes.AddLegacyConversionRecipes, Server FCRecipes.java:5080-5102; the torch at AddTorchRecipes
+         * :793-795). T1/T3: the BTW item that took the id's place, cited in the row (tripwire hook, furnace). Else
+         * empty.
          */
         final List<String> ingredientSuccessorFields;
         /** T1: structure substitution, else null. */
@@ -181,10 +188,14 @@ public final class RemovedContent {
             t1("hopper_minecart", Items.HOPPER_MINECART, List.of(), new int[0], 408, EntityType.HOPPER_MINECART,
                     null,
                     "FCItemStub(152) = item 408 (vanilla/server Item.java:405); recipe removed FCRecipes.java:5330"),
+            // FCMOD-INTEGRATION(1.20.1): recipes: the crossbow (and any modded recipe) takes an FC iron nugget for it
             t1("tripwire_hook", Items.TRIPWIRE_HOOK, List.of(Blocks.TRIPWIRE_HOOK), new int[]{131}, 0, null,
-                    toAir(),
+                    toAir(), List.of("fcItemNuggetIron"),
                     "FCBlockTripWireSource(131): null tab (Server FCBlockTripWireSource.java:23-30); recipe removed"
-                            + " FCRecipes.java:5450; FC stripped the pyramid traps (ComponentScatteredFeatureJunglePyramid)"),
+                            + " FCRecipes.java:5450; FC stripped the pyramid traps"
+                            + " (ComponentScatteredFeatureJunglePyramid); ingredient successor: one FC iron nugget, FC's"
+                            + " own value for a hook (the stoked crucible renders a tripwire hook into exactly one,"
+                            + " FCRecipes.java:4480-4485)"),
             t1("tripwire", null, List.of(Blocks.TRIPWIRE), new int[]{132}, 0, null,
                     toAir(),
                     "string no longer places it: 1.5.2 ItemReed(31, Block.tripWire) became a plain Item"
@@ -244,9 +255,12 @@ public final class RemovedContent {
             t3("snow", Items.SNOW, List.of(Blocks.SNOW), new int[]{78}, 0,
                     "snow-layer recipe removed FCRecipes.java:5246; FCBlockSnowCover drops snowballs; in the 4.B"
                             + " Decorations tab (FCBlockGroundCover.java:38)"),
+            // FCMOD-INTEGRATION(1.20.1): recipes: blast furnace, smoker and furnace minecart take the brick oven for it
             t3("furnace", Items.FURNACE, List.of(Blocks.FURNACE), new int[]{61}, 0,
+                    List.of("fcBlockFurnaceBrickIdle"),
                     "recipe removed FCRecipes.java:5688; silk-touch salvage only (FCBlockFurnace.java:47-75, 137-139);"
-                            + " in the 4.B Decorations tab (FCBlockFurnace.java:34-37); successor: brick oven 1023")
+                            + " in the 4.B Decorations tab (FCBlockFurnace.java:34-37); successor: brick oven 1023"
+                            + " (FCRecipes.java:349-353), also as an ingredient")
     );
 
     // ------------------------------------------------------------------------------------------------
@@ -351,13 +365,14 @@ public final class RemovedContent {
     }
 
     /**
-     * The BTW items a non-FC recipe ingredient that accepts the T2 {@code item} must also accept (FC's legacy
-     * conversion targets, {@link Entry#ingredientSuccessorFields}); empty for T1/T3 ids, items not in the table and
-     * successors that do not resolve.
+     * The BTW items a non-FC recipe ingredient that accepts the removed {@code item} must also accept
+     * ({@link Entry#ingredientSuccessorFields}, any tier); empty for items not in the table, rows without an
+     * ingredient successor and successors that do not resolve.
      */
+    // FCMOD-INTEGRATION(1.20.1): recipes: ingredient successors apply to every tier (D-B (a)), not only to T2
     public static List<Item> ingredientSuccessors(Item item) {
         Entry e = forItem(item);
-        if (e == null || e.tier != Tier.T2_RETIRED || e.ingredientSuccessorFields.isEmpty()) return List.of();
+        if (e == null || e.ingredientSuccessorFields.isEmpty()) return List.of();
         List<Item> out = new ArrayList<>(e.ingredientSuccessorFields.size());
         for (String field : e.ingredientSuccessorFields) {
             Item successor = successorForField(field);
@@ -550,8 +565,15 @@ public final class RemovedContent {
 
     private static Entry t1(String id, Item item, List<Block> blocks, int[] legacyBlocks, int legacyItem,
                             EntityType<?> entity, StructureRule structure, String citation) {
-        return new Entry(id, Tier.T1_STUBBED, item, blocks, legacyBlocks, legacyItem, entity, null, List.of(),
-                structure, citation);
+        return t1(id, item, blocks, legacyBlocks, legacyItem, entity, structure, List.of(), citation);
+    }
+
+    /** A T1 row whose ingredient role passes to the BTW items {@code ingredientSuccessorFields}. */
+    private static Entry t1(String id, Item item, List<Block> blocks, int[] legacyBlocks, int legacyItem,
+                            EntityType<?> entity, StructureRule structure, List<String> ingredientSuccessorFields,
+                            String citation) {
+        return new Entry(id, Tier.T1_STUBBED, item, blocks, legacyBlocks, legacyItem, entity, null,
+                ingredientSuccessorFields, structure, citation);
     }
 
     /** A T2 row whose ingredient successor is its loot successor (FC's legacy conversion target). */
@@ -568,8 +590,14 @@ public final class RemovedContent {
 
     private static Entry t3(String id, Item item, List<Block> blocks, int[] legacyBlocks, int legacyItem,
                             String citation) {
-        return new Entry(id, Tier.T3_RECIPE_ONLY, item, blocks, legacyBlocks, legacyItem, null, null, List.of(), null,
-                citation);
+        return t3(id, item, blocks, legacyBlocks, legacyItem, List.of(), citation);
+    }
+
+    /** A T3 row whose ingredient role passes to the BTW items {@code ingredientSuccessorFields}. */
+    private static Entry t3(String id, Item item, List<Block> blocks, int[] legacyBlocks, int legacyItem,
+                            List<String> ingredientSuccessorFields, String citation) {
+        return new Entry(id, Tier.T3_RECIPE_ONLY, item, blocks, legacyBlocks, legacyItem, null, null,
+                ingredientSuccessorFields, null, citation);
     }
 
     private static StructureRule toAir() {

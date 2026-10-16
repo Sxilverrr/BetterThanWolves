@@ -88,6 +88,15 @@ public abstract class EntityPlayer extends EntityLiving {
         return (alwaysEdible || this.foodStats.needFood()) && !this.capabilities.disableDamage;
     }
 
+    /**
+     * Whether FoodStats.onUpdate may heal this player. 1.5.2 had no naturalRegeneration gamerule (vanilla/server
+     * GameRules.java:26-32), so FC always healed; the server bridge (btw.forge.PlayerBridge) answers the 1.20.1 rule.
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract: the gamerule and regen-gate mods reach FC's heal (INTEGRATIONS #021).
+     */
+    public boolean IsNaturalRegenerationEnabled() {
+        return true;
+    }
+
     public void displayGUIChest(IInventory inventory) {}
     public void displayGUIFurnace(TileEntity tileEntity) {}
     public void displayGUIDispenser(TileEntity tileEntity) {}
@@ -769,22 +778,30 @@ public abstract class EntityPlayer extends EntityLiving {
      * Thresholds: >24 -> 0, >18 -> 1, >12 -> 2, >6 -> 3, >0 or sat>0 -> 4, else -> 5
      */
     public void UpdateHungerPenaltyLevel() {
-        int iHunger = foodStats.getFoodLevel();
+        SetHungerPenaltyLevel(hungerPenaltyLevelFor(foodStats.getFoodLevel(), foodStats.getSaturationLevel()));
+    }
+
+    /**
+     * The hunger penalty level (0-5) for an FC food level (0-60) and fat, as {@link #UpdateHungerPenaltyLevel} sets it.
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract: static, so the eat preview and food-bar mods compute FC's penalty
+     * levels without a player (INTEGRATIONS #021).
+     */
+    public static int hungerPenaltyLevelFor(int foodLevel, float fat) {
         int iPenaltyLevel = 5;
 
-        if (iHunger > 24) {
+        if (foodLevel > 24) {
             iPenaltyLevel = 0;
-        } else if (iHunger > 18) {
+        } else if (foodLevel > 18) {
             iPenaltyLevel = 1;
-        } else if (iHunger > 12) {
+        } else if (foodLevel > 12) {
             iPenaltyLevel = 2;
-        } else if (iHunger > 6) {
+        } else if (foodLevel > 6) {
             iPenaltyLevel = 3;
-        } else if (iHunger > 0 || foodStats.getSaturationLevel() > 0F) {
+        } else if (foodLevel > 0 || fat > 0F) {
             iPenaltyLevel = 4;
         }
 
-        SetHungerPenaltyLevel(iPenaltyLevel);
+        return iPenaltyLevel;
     }
 
     /**
@@ -792,7 +809,15 @@ public abstract class EntityPlayer extends EntityLiving {
      * Thresholds: <12 -> 0, <14 -> 1, <16 -> 2, <18 -> 3, >=18 -> 4
      */
     public void UpdateFatPenaltyLevel() {
-        int iFat = (int) foodStats.getSaturationLevel();
+        SetFatPenaltyLevel(fatPenaltyLevelFor(foodStats.getSaturationLevel()));
+    }
+
+    /**
+     * The fat penalty level (0-4) for an FC fat (saturation) value, as {@link #UpdateFatPenaltyLevel} sets it.
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract: static, for the eat preview and food-bar mods (INTEGRATIONS #021).
+     */
+    public static int fatPenaltyLevelFor(float fat) {
+        int iFat = (int) fat;
         int iFatLevel = 4;
 
         if (iFat < 12) {
@@ -805,7 +830,7 @@ public abstract class EntityPlayer extends EntityLiving {
             iFatLevel = 3;
         }
 
-        SetFatPenaltyLevel(iFatLevel);
+        return iFatLevel;
     }
 
     /**
@@ -885,6 +910,49 @@ public abstract class EntityPlayer extends EntityLiving {
      */
     public void AddExhaustionWithoutVisualFeedback(float fAmount) {
         addExhaustion(fAmount);
+    }
+
+    /**
+     * 1.5.2 EntityPlayer.addMovementStat's exhaustion (vanilla/server EntityPlayer.java:1707-1780) for one move of
+     * (dx, dy, dz): under water 0.015 per metre of the 3D distance, swimming at the surface 0.015 per horizontal metre,
+     * nothing on a ladder, on the ground 0.1 per metre sprinting and 0.01 per metre walking (sneaking included, as in
+     * 1.5.2). The water and walking costs carry no visual feedback, as FC changed them. Without the stats and without
+     * the 0.025 swim-up charge at its head, which the swim gate charges per tick (LivingEntityMixin.btw$gateSwimming).
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract: 1.20.1 Player.checkMovementStatistics charges walking 0 and water
+     * 0.01 per metre; PlayerMixin drops those amounts and charges this 1.5.2 rule instead (decision D-A).
+     */
+    public void AddMovementExhaustion(double dx, double dy, double dz) {
+        if (this.ridingEntity != null) {
+            return;
+        }
+
+        int iDistance;
+
+        if (this.isInsideOfMaterial(Material.water)) {
+            iDistance = Math.round((float) Math.sqrt(dx * dx + dy * dy + dz * dz) * 100.0F);
+
+            if (iDistance > 0) {
+                AddExhaustionWithoutVisualFeedback(0.015F * (float) iDistance * 0.01F);
+            }
+        } else if (this.isInWater()) {
+            iDistance = Math.round((float) Math.sqrt(dx * dx + dz * dz) * 100.0F);
+
+            if (iDistance > 0) {
+                AddExhaustionWithoutVisualFeedback(0.015F * (float) iDistance * 0.01F);
+            }
+        } else if (this.isOnLadder()) {
+            // climbing costs nothing beyond the jump and the harvest charges
+        } else if (this.onGround) {
+            iDistance = Math.round((float) Math.sqrt(dx * dx + dz * dz) * 100.0F);
+
+            if (iDistance > 0) {
+                if (this.isSprinting()) {
+                    addExhaustion(0.099999994F * (float) iDistance * 0.01F);
+                } else {
+                    AddExhaustionWithoutVisualFeedback(0.01F * (float) iDistance * 0.01F);
+                }
+            }
+        }
     }
 
     /**

@@ -1,13 +1,11 @@
 {
   "type": "betterthanwolves:add_item",
+  "chance": 0.2,
   "conditions": [
     {
       "condition": "forge:loot_table_id",
       "loot_table_id": "minecraft:chests/jungle_temple"
     }
   ],
-  "item": "betterthanwolves:block_1067",
-  "min_count": 1,
-  "max_count": 1,
-  "chance": 0.2
+  "item": "betterthanwolves:block_1067"
 }

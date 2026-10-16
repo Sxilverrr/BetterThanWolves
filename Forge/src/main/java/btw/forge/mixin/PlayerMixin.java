@@ -19,6 +19,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -31,8 +32,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *   <li>Dig speed / tool effectiveness (mining)</li>
  *   <li>Bed sleeping disabled</li>
  *   <li>Mid-air block placement restriction</li>
- *   <li>Eating restriction (hunger potion)</li>
- *   <li>Armor exhaustion modifier</li>
+ *   <li>Eating restriction (hunger potion; the FC food meter decides "needs food" on the server)</li>
+ *   <li>Every causeFoodExhaustion goes to FC under FC's rule: armour weight, invulnerable exemption (#021)</li>
+ *   <li>1.5.2 exhaustion amounts at Player's own sites: jump once, walking and swimming per metre, melee hit and
+ *       hurt 0.3 (jumpFromGround, checkMovementStatistics, attack, actuallyHurt)</li>
  *   <li>Blasting oil detonation on damage (combat #18)</li>
  *   <li>Melee damage modifier from penalties (combat #20)</li>
  *   <li>FC block movement modifier on ground (getSpeed) and FC penalty while airborne (getFlyingSpeed)</li>
@@ -137,29 +140,258 @@ public abstract class PlayerMixin implements PlayerBridge.Holder {
     // FC eating restriction — block when Hunger potion active
     // ================================================================
 
+    /**
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract
+     *
+     * <p><b>Feature:</b> 1.20.1 {@code Player.canEat(boolean)}: whether a food may be started (Item.use and every
+     * modded food's use), {@code abilities.invulnerable || alwaysEat || foodData.needsFood()}.</p>
+     *
+     * <p><b>Conflict with FC:</b> 1.5.2 refuses food while the hunger effect is active (Modern-Common
+     * EntityPlayer.canEat), and FC's 60-unit FoodStats, not vanilla's FoodData, is the hunger meter. The FoodData copy
+     * is refreshed once per tick (FoodDataMixin.btw$tick), so it lags any change FC made in the same tick, and a player
+     * whose FoodData is never ticked (a fake player) is judged on a stale 20.</p>
+     *
+     * <p><b>Integration pattern:</b> D (FC-extend): the hunger effect refuses every food; on the server the FC meter
+     * decides "needs food".</p>
+     *
+     * <p><b>Rebalance:</b> none; 4.B parity. A server player can start a food unless the FC food level is full (60),
+     * as FC's own foods already decide (FoodStats.needFood); alwaysEat foods and invulnerable players keep 1.20.1's
+     * answer. The client keeps vanilla's test on its synced copy (FC food / 3 &lt; 20, the same condition).</p>
+     *
+     * <p><b>Injection strategy:</b> {@link Inject} at HEAD of {@code canEat(boolean)}, cancellable: false with the
+     * hunger effect; for a ServerPlayer without alwaysEat or invulnerability, the FC meter's {@code needFood()}.</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> refreshing the FoodData copy after every FC change instead: every
+     * FC write site (FC items, mods' exhaustion, the tick) would need the copy, and a missed one re-opens the lag.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): hunger_contract: the FC food meter, not vanilla's per-tick copy, decides whether a server player may start eating
     @Inject(method = "canEat", at = @At("HEAD"), cancellable = true)
     private void btw$restrictEating(boolean canAlwaysEat, CallbackInfoReturnable<Boolean> cir) {
         Player self = (Player) (Object) this;
         if (self.hasEffect(net.minecraft.world.effect.MobEffects.HUNGER)) {
             cir.setReturnValue(false);
+            return;
+        }
+        if (self instanceof ServerPlayer sp && !canAlwaysEat && !sp.getAbilities().invulnerable) {
+            cir.setReturnValue(PlayerBridge.getOrCreate(sp).foodStats.needFood());
         }
     }
 
     // ================================================================
-    // FC armor exhaustion modifier
+    // FC hunger contract: every Player.causeFoodExhaustion goes to FC
     // ================================================================
 
+    /**
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract (INTEGRATIONS #021)
+     *
+     * <p><b>Feature:</b> 1.20.1 {@code Player.causeFoodExhaustion(float)}: vanilla's own hunger costs (movement, jump,
+     * attack, damage, the hunger effect, block breaking) and the call other mods use for theirs (shivering, thirst,
+     * abilities).</p>
+     *
+     * <p><b>Conflict with FC:</b> FC's FoodStats is the server player's hunger. The former hook applied the armour weight
+     * but ran before vanilla's invulnerable check (Player.java:1666-1672), so creative and invulnerable players paid,
+     * and FC's own costs (PlayerBridge.addExhaustion) skipped the armour weight.</p>
+     *
+     * <p><b>Integration pattern:</b> D (FC-extend): every cost goes through PlayerBridge.addExhaustion, FC's 1.5.2 rule
+     * (Modern-Common EntityPlayer.addExhaustion, vanilla/server EntityPlayer.java:1934-1946).</p>
+     *
+     * <p><b>Rebalance:</b> none; 4.B parity: x armour weight, nothing while invulnerable (disableDamage). A zero cost
+     * (1.20.1 walking, a dropped vanilla charge, see below) is a no-op without touching the bridge.</p>
+     *
+     * <p><b>Injection strategy:</b> {@link Inject} at HEAD of {@code causeFoodExhaustion(float)}, cancelled for a
+     * ServerPlayer, so FoodData.addExhaustion is never reached from here (FoodDataMixin routes only other callers).</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> applying the armour weight here and calling FoodStats directly (the
+     * former hook): FC's own costs, which call EntityPlayer.addExhaustion, then followed a different rule.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): hunger_contract: vanilla's and other mods' hunger costs follow FC's 1.5.2 rule (armour weight, invulnerable exemption)
     @Inject(method = "causeFoodExhaustion", at = @At("HEAD"), cancellable = true)
     private void btw$armorExhaustion(float amount, CallbackInfo ci) {
         Player self = (Player) (Object) this;
         if (self instanceof ServerPlayer sp) {
-            PlayerBridge pb = PlayerBridge.getOrCreate(sp);
-            // Apply FC armor weight exhaustion modifier
-            float modified = amount * pb.GetArmorExhaustionModifier();
-            // Route to FC food stats instead of vanilla
-            pb.foodStats.addExhaustion(modified);
+            if (amount != 0F) {
+                PlayerBridge.getOrCreate(sp).addExhaustion(amount);
+            }
             ci.cancel();
         }
+    }
+
+    // ================================================================
+    // FC exhaustion parity: vanilla Player's own exhaustion sites charge 1.5.2 amounts (decision D-A)
+    // ================================================================
+    //
+    // 1.20.1 charges a jump twice (FC's AddExhaustionForJump in LivingEntityMixin.btw$jumpExhaustion plus vanilla's
+    // 0.05 / 0.2), walking 0, swimming 0.01 per metre, a melee hit and a hurt 0.1. 1.5.2 charges a jump once (0.2 /
+    // 1.0 sprinting), walking 0.01 and water 0.015 per metre, a hit 0.3 and a hurt 0.3 (0 for armour-bypassing damage).
+    // Only these four methods of Player itself change; other mods' direct causeFoodExhaustion and
+    // FoodData.addExhaustion calls keep their amounts. Server players only (FC's hunger; the client's calls are no-ops).
+
+    @Unique
+    private static volatile boolean btw$movementExhaustionFailureLogged;
+
+    /**
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract
+     *
+     * <p><b>Feature:</b> 1.20.1 {@code Player.jumpFromGround} charges 0.2 sprinting, else 0.05 (Player.java:1391-1399).</p>
+     *
+     * <p><b>Conflict with FC:</b> FC charges its own 1.5.2 jump cost (EntityPlayer.AddExhaustionForJump: 0.2, 1.0
+     * sprinting; vanilla/server EntityPlayer.java:1658-1676) from LivingEntityMixin.btw$jumpExhaustion, inside the
+     * super call; vanilla's charge came on top: 0.25 and 1.2 per jump.</p>
+     *
+     * <p><b>Integration pattern:</b> C (rebalance): vanilla's charge is dropped; FC's remains the one jump cost.</p>
+     *
+     * <p><b>Rebalance:</b> a jump costs 0.2, a sprint jump 1.0 (x armour weight), as in 4.B.</p>
+     *
+     * <p><b>Injection strategy:</b> {@link ModifyArg} on both {@code causeFoodExhaustion} calls (SRG m_36399_) in
+     * {@code jumpFromGround} (m_6135_): the amount becomes 0 for a ServerPlayer, which btw$armorExhaustion skips.</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> {@code @Redirect} of the calls (the briefed form): two mods
+     * redirecting one call fail at load, while ModifyArg handlers chain. Cancelling LivingEntityMixin's FC charge
+     * instead: FC's amount and its jump gate belong together.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): hunger_contract: a jump costs FC's 1.5.2 amount once; vanilla's second charge is dropped
+    @ModifyArg(method = "jumpFromGround",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/entity/player/Player;causeFoodExhaustion(F)V"))
+    private float btw$dropVanillaJumpExhaustion(float vanillaAmount) {
+        return (Object) this instanceof ServerPlayer ? 0F : vanillaAmount;
+    }
+
+    /**
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract
+     *
+     * <p><b>Feature:</b> 1.20.1 {@code Player.checkMovementStatistics(dx, dy, dz)}, run for every move of a server
+     * player (ServerGamePacketListenerImpl.handleMovePlayer): walking stats and hunger, 0 per metre walking and
+     * sneaking, 0.01 swimming, 0.1 sprinting (Player.java:1446-1494).</p>
+     *
+     * <p><b>Conflict with FC:</b> 1.5.2 addMovementStat charges 0.01 per metre walking and 0.015 in water
+     * (vanilla/server EntityPlayer.java:1707-1780); walking hunger, a core 4.B pressure, cost nothing.</p>
+     *
+     * <p><b>Integration pattern:</b> C (rebalance): the 1.5.2 rule, ported to Modern-Common
+     * EntityPlayer.AddMovementExhaustion, replaces vanilla's amounts.</p>
+     *
+     * <p><b>Rebalance:</b> 100 m walked cost 1.0, swum 1.5, sprinted 10 (x armour weight); climbing and riding cost
+     * nothing, as in 4.B.</p>
+     *
+     * <p><b>Injection strategy:</b> {@link Inject} at HEAD of {@code checkMovementStatistics} (m_36378_) charges the
+     * 1.5.2 amount through the player's bridge (not while a passenger, vanilla's own guard); {@link #btw$dropVanillaMovementExhaustion}
+     * zeroes vanilla's six charges. Never throws into the movement packet handler. The method runs for every movement
+     * packet and every server tick (Player.travel), mostly with no movement, and the bridge lookup re-syncs the whole
+     * FC inventory (plus the ladder gate's own sync), so two exact early-outs skip it: a move whose 3D length rounds
+     * to 0 cm (no branch of the 1.5.2 rule can charge it, the horizontal length being no longer), and an invulnerable
+     * player (disableDamage: EntityPlayer.addExhaustion charges nothing).</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> rewriting each vanilla charge by ordinal: walking's charge is
+     * {@code 0 x distance}, so the distance cannot be recovered from the argument, and 1.20.1's branches (sprint
+     * swimming, walking under water) do not match 1.5.2's.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): hunger_contract: moving costs 1.5.2's per-metre hunger (walking 0.01, water 0.015, sprinting 0.1)
+    @Inject(method = "checkMovementStatistics", at = @At("HEAD"))
+    private void btw$fcMovementExhaustion(double dx, double dy, double dz, CallbackInfo ci) {
+        if ((Object) this instanceof ServerPlayer sp && !sp.isPassenger() && !sp.getAbilities().invulnerable
+                && Math.round((float) Math.sqrt(dx * dx + dy * dy + dz * dz) * 100.0F) > 0) {
+            try {
+                PlayerBridge.getOrCreate(sp).AddMovementExhaustion(dx, dy, dz);
+            } catch (Throwable t) {
+                if (!btw$movementExhaustionFailureLogged) {
+                    btw$movementExhaustionFailureLogged = true;
+                    BTW$LOGGER.warn("FC movement exhaustion failed; moving costs no FC hunger (logged once): {}",
+                            t.toString(), t);
+                }
+            }
+        }
+    }
+
+    /**
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract
+     *
+     * <p><b>Feature:</b> the six {@code causeFoodExhaustion} calls of 1.20.1 {@code checkMovementStatistics} (swimming,
+     * walking under and on water, sprinting, sneaking, walking).</p>
+     *
+     * <p><b>Conflict with FC:</b> {@link #btw$fcMovementExhaustion} charges 1.5.2's movement cost for the same move;
+     * vanilla's amounts on top would charge water and sprinting twice.</p>
+     *
+     * <p><b>Integration pattern:</b> C (rebalance): vanilla's amounts give way to the 1.5.2 charge.</p>
+     *
+     * <p><b>Rebalance:</b> see {@link #btw$fcMovementExhaustion}; vanilla's movement charges cost a server player
+     * nothing.</p>
+     *
+     * <p><b>Injection strategy:</b> {@link ModifyArg} on every {@code causeFoodExhaustion} call (SRG m_36399_) in
+     * {@code checkMovementStatistics} (m_36378_): the amount becomes 0 for a ServerPlayer, which btw$armorExhaustion
+     * skips. The stats calls are untouched.</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> cancelling {@code checkMovementStatistics} and porting it whole: the
+     * movement stats (and other mods' injections there) would be lost.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): hunger_contract: vanilla's movement charges give way to the 1.5.2 charge above
+    @ModifyArg(method = "checkMovementStatistics",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/entity/player/Player;causeFoodExhaustion(F)V"))
+    private float btw$dropVanillaMovementExhaustion(float vanillaAmount) {
+        return (Object) this instanceof ServerPlayer ? 0F : vanillaAmount;
+    }
+
+    /**
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract
+     *
+     * <p><b>Feature:</b> 1.20.1 {@code Player.attack} charges 0.1 per hit that lands (Player.java:1224).</p>
+     *
+     * <p><b>Conflict with FC:</b> 1.5.2 charges 0.3 per landed hit (vanilla/server EntityPlayer.java:1330); fighting
+     * cost a third of its 4.B hunger.</p>
+     *
+     * <p><b>Integration pattern:</b> C (rebalance).</p>
+     *
+     * <p><b>Rebalance:</b> a landed melee hit costs 0.3 (x armour weight), as in 4.B.</p>
+     *
+     * <p><b>Injection strategy:</b> {@link ModifyArg} on the one {@code causeFoodExhaustion} call in {@code attack}
+     * (m_5706_), for a ServerPlayer.</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> {@code @Redirect}: conflicts with another mod's redirect of the
+     * same call, where ModifyArg chains.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): hunger_contract: a landed melee hit costs 1.5.2's 0.3
+    @ModifyArg(method = "attack",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/entity/player/Player;causeFoodExhaustion(F)V"))
+    private float btw$fcAttackExhaustion(float vanillaAmount) {
+        return (Object) this instanceof ServerPlayer ? 0.3F : vanillaAmount;
+    }
+
+    /**
+     * FCMOD-INTEGRATION(1.20.1): hunger_contract
+     *
+     * <p><b>Feature:</b> 1.20.1 {@code Player.actuallyHurt} charges the damage type's exhaustion (data: 0.1, or 0 for
+     * the types tagged {@code minecraft:bypasses_armor}) when damage gets through (Player.java:919).</p>
+     *
+     * <p><b>Conflict with FC:</b> 1.5.2 charges {@code DamageSource.hungerDamage}: 0.3, and 0 for armour-bypassing
+     * sources (vanilla/server DamageSource.java:19-36, EntityPlayer.java:1094); taking a hit cost a third.</p>
+     *
+     * <p><b>Integration pattern:</b> C (rebalance): minecraft damage types follow 1.5.2's rule; other namespaces keep
+     * their own data value.</p>
+     *
+     * <p><b>Rebalance:</b> a minecraft-type hit costs 0 when it bypasses armour, else 0.3 (x armour weight), as in 4.B.
+     * A modded damage type keeps its exhaustion.</p>
+     *
+     * <p><b>Injection strategy:</b> {@link Redirect} of the {@code DamageSource.getFoodExhaustion()} call (m_19377_)
+     * in {@code actuallyHurt} (m_6475_), which hands the source to the handler; the charge itself stays vanilla's
+     * {@code causeFoodExhaustion}, so other mods' ModifyArgs on it still apply.</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> {@code @ModifyArg} on {@code causeFoodExhaustion}: its handler
+     * cannot see the damage source (Mixin 0.8.5 ModifyArg captures no target arguments). Multiplying the data value by
+     * 3: equal for vanilla's data, but a datapack's 0.1 on an armour-bypassing type would cost 0.3.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): hunger_contract: a hurt costs 1.5.2's 0.3, 0 for armour-bypassing minecraft damage types
+    @Redirect(method = "actuallyHurt",
+            at = @At(value = "INVOKE",
+                    target = "Lnet/minecraft/world/damagesource/DamageSource;getFoodExhaustion()F"))
+    private float btw$fcHurtExhaustion(DamageSource source) {
+        float vanillaAmount = source.getFoodExhaustion();
+        if (!((Object) this instanceof ServerPlayer)) return vanillaAmount;
+        boolean minecraftType = source.typeHolder().unwrapKey()
+                .map(key -> "minecraft".equals(key.location().getNamespace()))
+                .orElse(false);
+        if (!minecraftType) return vanillaAmount;
+        return source.is(net.minecraft.tags.DamageTypeTags.BYPASSES_ARMOR) ? 0F : 0.3F;
     }
 
     // ================================================================
