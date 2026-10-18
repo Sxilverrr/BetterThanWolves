@@ -1,0 +1,32 @@
+{
+  "_comment": "HarvestCraft crops: settled decision #12 tiers by 1.20.1 nutrition (hunger in 1.5.2 units, FC feeds x3), and FC herbivore food for grains (#forge:grain, defined by the Crops jar alone)",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2crops"
+    }
+  ],
+  "entries": {
+    "#forge:grain": {
+      "fodder": {
+        "herbivore": "basic"
+      }
+    }
+  },
+  "tiers": [
+    {
+      "bands": [
+        {
+          "fat": 0.0,
+          "hunger": 1,
+          "max_nutrition": 4
+        },
+        {
+          "fat": 0.0,
+          "hunger": 2
+        }
+      ],
+      "namespace": "pamhc2crops"
+    }
+  ]
+}

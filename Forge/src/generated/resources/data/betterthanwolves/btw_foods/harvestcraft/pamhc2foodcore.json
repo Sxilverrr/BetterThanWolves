@@ -1,0 +1,96 @@
+{
+  "_comment": "HarvestCraft Food Core: settled decision #12 meal tiers (the cap is FC's hearty stew, 10); raw ground meats as their FC raw meat with FC food poisoning, cooked ground meats as their FC cooked meat (nearest-FC-relative ruling). The per-meat subtags are used because #forge:groundmeats also holds firm tofu.",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2foodcore"
+    }
+  ],
+  "entries": {
+    "#forge:groundmeats/groundbeef": {
+      "fat": 0.25,
+      "hunger": 4,
+      "poison": true
+    },
+    "#forge:groundmeats/groundchicken": {
+      "fat": 0.25,
+      "hunger": 3,
+      "poison": true
+    },
+    "#forge:groundmeats/groundfish": {
+      "fat": 0.25,
+      "hunger": 3,
+      "poison": true
+    },
+    "#forge:groundmeats/groundmutton": {
+      "fat": 0.25,
+      "hunger": 3,
+      "poison": true
+    },
+    "#forge:groundmeats/groundpork": {
+      "fat": 0.25,
+      "hunger": 4,
+      "poison": true
+    },
+    "#forge:groundmeats/groundrabbit": {
+      "fat": 0.25,
+      "hunger": 3,
+      "poison": true
+    },
+    "pamhc2foodcore:cookedgroundbeefitem": {
+      "fat": 0.25,
+      "hunger": 5
+    },
+    "pamhc2foodcore:cookedgroundchickenitem": {
+      "fat": 0.25,
+      "hunger": 4
+    },
+    "pamhc2foodcore:cookedgroundfishitem": {
+      "fat": 0.25,
+      "hunger": 4
+    },
+    "pamhc2foodcore:cookedgroundmuttonitem": {
+      "fat": 0.25,
+      "hunger": 4
+    },
+    "pamhc2foodcore:cookedgroundporkitem": {
+      "fat": 0.25,
+      "hunger": 5
+    },
+    "pamhc2foodcore:cookedgroundrabbititem": {
+      "fat": 0.25,
+      "hunger": 4
+    }
+  },
+  "tiers": [
+    {
+      "bands": [
+        {
+          "fat": 0.0,
+          "hunger": 2,
+          "max_nutrition": 4
+        },
+        {
+          "fat": 0.25,
+          "hunger": 3,
+          "max_nutrition": 8
+        },
+        {
+          "fat": 0.25,
+          "hunger": 5,
+          "max_nutrition": 16
+        },
+        {
+          "fat": 0.25,
+          "hunger": 8,
+          "max_nutrition": 25
+        },
+        {
+          "fat": 0.25,
+          "hunger": 10
+        }
+      ],
+      "namespace": "pamhc2foodcore"
+    }
+  ]
+}

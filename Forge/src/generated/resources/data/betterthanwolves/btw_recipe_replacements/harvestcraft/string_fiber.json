@@ -1,0 +1,11 @@
+{
+  "action": "remove",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2crops"
+    }
+  ],
+  "reason": "fibre crops are milled: #forge:fiber -> BTW hemp fibres in the millstone (settled decision #13)",
+  "replaces": "pamhc2crops:string_fiber"
+}

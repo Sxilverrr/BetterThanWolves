@@ -582,6 +582,82 @@ public class ProxyItem extends Item implements LegacyProxyItem {
     }
 
     // ================================================================
+    // Held use, every tick → FC UpdateUsingItem (knitting, bone carving, wicker weaving)
+    // ================================================================
+
+    /**
+     * Per FC item class: does it override 1.5.2 Item.UpdateUsingItem? Only FCItemCraftingProgressive does
+     * (FCItemCraftingProgressive.java:57-87; knitting, bone carving and wicker weaving inherit it). Modern-Common
+     * Item.UpdateUsingItem is empty (Item.java:472), so foods, drinks, bows and block-action tools return at once.
+     */
+    private static final ClassValue<Boolean> USE_TICK_OVERRIDDEN = new ClassValue<>() {
+        @Override
+        protected Boolean computeValue(Class<?> type) {
+            try {
+                return type.getMethod("UpdateUsingItem", btw.modern.ItemStack.class, btw.modern.World.class,
+                        btw.modern.EntityPlayer.class).getDeclaringClass() != btw.modern.Item.class;
+            } catch (Throwable t) {
+                return true;   // cannot tell: call it (the base implementation is empty)
+            }
+        }
+    };
+
+    /**
+     * 1.5.2 EntityPlayer.onUpdate ran the held item's UpdateUsingItem every tick of a use, before the countdown, on both
+     * sides (vanilla/server EntityPlayer.java:229 then :232; vanilla/client :252 then :255). 1.20.1 calls onUseTick at
+     * the same point (LivingEntity.updateUsingItem :2898, decrement :2903), on both sides. After the warm-up the FC
+     * server step takes 1 off the damage every 4 ticks and at 0 calls SetItemInUseCount(1), which PlayerBridge writes to
+     * the real counter, so this tick's decrement completes the use (completeUsingItem -> finishUsingItem -> FC onEaten).
+     * Main hand only, as use(). Server: the live main-hand snapshot, damage written back onto the same MC stack
+     * (InventoryBridge.writeBackSlot), which completeUsingItem's identity test needs (:3016). Client: a detached copy on
+     * the render thread's ClientFcWorld for FC's client-only effects (FCItemCarvingBone particles); FC edits stack and
+     * counter only when !world.isRemote, and the client bridge's null-player sound is silent
+     * (ClientLevel.playSeededSound :472), so the server broadcast stays the one sound.
+     */
+    // FCMOD-INTEGRATION(1.20.1): held_use: FC's per-tick held-use step runs, so knitting, bone carving and wicker weaving progress and finish as in 4.B
+    @Override
+    public void onUseTick(Level level, LivingEntity entity, ItemStack stack, int remainingUseDuration) {
+        btw.modern.Item fcItem = fc();
+        if (fcItem == null || !USE_TICK_OVERRIDDEN.get(fcItem.getClass())) return;
+        if (!(entity instanceof Player player) || player.getUsedItemHand() != InteractionHand.MAIN_HAND
+                || stack != player.getMainHandItem()) return;
+        try {
+            if (level instanceof ServerLevel sl) {
+                PlayerBridge pb = PlayerBridge.getOrCreate(player);   // syncs the inventory snapshot
+                btw.modern.ItemStack fcStack = pb.getCurrentEquippedItem();
+                if (fcStack == null || fcStack.itemID != legacyId) return;
+                fcItem.UpdateUsingItem(fcStack, WorldBridge.getOrCreate(sl), pb);
+                pb.syncInventoryToReal();
+            } else if (level.isClientSide()) {
+                btw.modern.World fcWorld = btw.forge.farming.FcSoil.fcWorld(level);
+                btw.modern.ItemStack fcStack = ItemStackHelper.toFcStack(stack);
+                if (fcWorld == null || fcStack == null) return;
+                fcItem.UpdateUsingItem(fcStack, fcWorld, PlayerBridge.getOrCreate(player));
+            }
+        } catch (Throwable t) {
+            // Runs inside LivingEntity.tick: a throw would crash the entity tick.
+            logFcFailureOnce("UpdateUsingItem", legacyId, t);
+        }
+    }
+
+    /**
+     * 1.5.2 FC kept the held item from re-equipping when only its damage changed, for items whose
+     * IgnoreDamageWhenComparingDuringUse is true (vanilla/client ItemRenderer.java:720-729). 1.20.1's default re-equips on
+     * any new stack object (IForgeItem.shouldCauseReequipAnimation via ItemInHandRenderer.tick), so the hand would dip on
+     * every progress step the server sends.
+     */
+    // FCMOD-INTEGRATION(1.20.1): held_use: a hold-to-craft item's progress steps do not re-equip the hand, as in 1.5.2
+    @Override
+    public boolean shouldCauseReequipAnimation(ItemStack oldStack, ItemStack newStack, boolean slotChanged) {
+        btw.modern.Item fcItem = fc();
+        if (fcItem != null && !slotChanged && oldStack.getItem() == newStack.getItem()
+                && fcItem.IgnoreDamageWhenComparingDuringUse()) {
+            return false;
+        }
+        return super.shouldCauseReequipAnimation(oldStack, newStack, slotChanged);
+    }
+
+    // ================================================================
     // Per-tick inventory update → FC onUpdate
     // ================================================================
 

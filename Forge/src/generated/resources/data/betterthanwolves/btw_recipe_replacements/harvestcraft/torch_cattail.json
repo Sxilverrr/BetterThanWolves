@@ -1,0 +1,29 @@
+{
+  "action": "replace",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2crops"
+    },
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2foodcore"
+    }
+  ],
+  "reason": "the cattail torch is a BTW finite torch: 4.B keeps the vanilla torch uncraftable, so cooking oil and a cattail make an unlit finite torch instead of a vanilla torch",
+  "recipe": {
+    "type": "minecraft:crafting_shapeless",
+    "ingredients": [
+      {
+        "item": "pamhc2foodcore:cookingoilitem"
+      },
+      {
+        "item": "pamhc2crops:cattailitem"
+      }
+    ],
+    "result": {
+      "item": "btw:fcBlockTorchFiniteUnlit"
+    }
+  },
+  "replaces": "pamhc2crops:torch_cattail"
+}

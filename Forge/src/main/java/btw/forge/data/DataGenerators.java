@@ -35,6 +35,12 @@ public final class DataGenerators {
         if (event.includeServer()) {
             generator.addProvider(true, new FCLootOverrides(packOutput));
             generator.addProvider(true, new FCRecipeOverrides(packOutput));
+            // FCMOD-INTEGRATION(1.20.1): serene_seasons: SS season tags for BTW seeds and the lit bulb as greenhouse glass, keys resolved through FcRefs (INTEGRATIONS #028)
+            generator.addProvider(true, new SereneSeasonsTagProvider(packOutput));
+            // FCMOD-INTEGRATION(1.20.1): lso: BTW heat, clothing, limb, meal, hydration and fuel data for Legendary Survival Overhaul, keys resolved through FcRefs (INTEGRATIONS #031)
+            generator.addProvider(true, new LsoClimateDataProvider(packOutput));
+            // FCMOD-INTEGRATION(1.20.1): harvestcraft: HarvestCraft food tiers, tags, millstone and reroute data and the modded-fruit pace tag; inert without the mods it names (INTEGRATIONS #032)
+            generator.addProvider(true, new HarvestCraftDataProvider(packOutput));
         }
 
         // Client-side providers (none yet). Advancements datapack

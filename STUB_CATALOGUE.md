@@ -3015,8 +3015,8 @@ Caveats:
 - ClientNotificationOfMetadataChange fires after the state is applied and only on a real META
   change; only ProxyBlocks are hooked.
 - One packet per splash particle; one PlayerBridge sync per server footstep; in water the 1.20.1
-  swim and muffled steps stay with soulforged boots on. Hold-to-craft PlayCraftingFX is still not
-  bridged (UpdateUsingItem).
+  swim and muffled steps stay with soulforged boots on. Hold-to-craft PlayCraftingFX is bridged since
+  2026-10-18 with UpdateUsingItem (ProxyItem.onUseTick; PlayerBridge mirrors the real use counter).
 - The 508 SoundEvent registry entries and network protocol 4 refuse mismatched client and server
   builds.
 

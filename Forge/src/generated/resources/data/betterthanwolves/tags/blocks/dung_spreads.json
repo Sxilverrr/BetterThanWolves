@@ -1,0 +1,29 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "pamhc2crops:aridgarden",
+      "required": false
+    },
+    {
+      "id": "pamhc2crops:frostgarden",
+      "required": false
+    },
+    {
+      "id": "pamhc2crops:shadedgarden",
+      "required": false
+    },
+    {
+      "id": "pamhc2crops:soggygarden",
+      "required": false
+    },
+    {
+      "id": "pamhc2crops:tropicalgarden",
+      "required": false
+    },
+    {
+      "id": "pamhc2crops:windygarden",
+      "required": false
+    }
+  ]
+}

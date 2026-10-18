@@ -121,7 +121,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *       from shape updates. The FC body is the twin's: FCBlockSapling, FCBlockCarrot, FCBlockWheatLegacy,
  *       FCBlockMushroom.</li>
  *   <li>Paced states (bamboo shoot and bamboo, kelp, cave / weeping / twisting vines, sweet berry bush, the hanging
- *       mangrove propagule, chorus flower): random owner {@link #PACED}, gate null (1.20.1's flag), with a pace: the
+ *       mangrove propagule, chorus flower, and modded plants in #betterthanwolves:paced_like_sweet_berries): random owner {@link #PACED}, gate null (1.20.1's flag), with a pace: the
  *       1.20.1 body runs on that fraction of the random ticks, and never in the End unless the plant is exempt
  *       (chorus). The mean growth is FC's relative's.</li>
  * </ul>
@@ -133,7 +133,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * LevelChunkSection counts ticking states with the cached flag (from worldgen threads too), so the gate must never
  * read gamerules, config or world state, and BlockStateBaseTickMixin writes the flag once per bake, with its final
  * value (no interim 1.20.1 value a section could count). doFireTick ({@link #HONOUR_DO_FIRE_TICK}) is applied at
- * dispatch time.</p>
+ * dispatch time. Two inputs beyond FC's static table are fixed before any bake that matters: modded saplings an
+ * integration registered during mod construction (TwinRegistry.registerModdedSapling, Dynamic Trees #027), and one
+ * block tag, {@link TwinRegistry#PACED_LIKE_SWEET_BERRIES}: Holder.is answers false before tags bind, and
+ * Blocks.rebuildCache re-runs decide after every tag bind (server start, /reload), so the cached owner always follows
+ * the tags in force (INTEGRATIONS #032).</p>
  *
  * <p>FC failures inside a tick are logged once per throw site and never crash the server tick.</p>
  */

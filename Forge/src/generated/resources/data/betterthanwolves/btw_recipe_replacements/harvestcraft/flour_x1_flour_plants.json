@@ -1,0 +1,25 @@
+{
+  "action": "replace",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2foodcore"
+    }
+  ],
+  "reason": "flour plants are milled: #forge:flour_plants -> BTW flour in the millstone, and HarvestCraft flour is made from BTW flour, not ground from flour plants in the grid",
+  "recipe": {
+    "type": "minecraft:crafting_shapeless",
+    "ingredients": [
+      {
+        "tag": "forge:tool_grinder"
+      },
+      {
+        "item": "btw:fcItemFlour"
+      }
+    ],
+    "result": {
+      "item": "pamhc2foodcore:flouritem"
+    }
+  },
+  "replaces": "pamhc2foodcore:flour_x1_flour_plants"
+}

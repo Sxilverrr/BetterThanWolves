@@ -1,0 +1,9 @@
+{
+  "blocks": {
+    "fcLightBulbOn": "betterthanwolves:block_223"
+  },
+  "items": {
+    "fcItemHempSeeds": "betterthanwolves:item_482",
+    "fcItemWheatSeeds": "betterthanwolves:item_22591"
+  }
+}

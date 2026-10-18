@@ -471,8 +471,10 @@ public class Item {
 
     public void UpdateUsingItem(ItemStack stack, World world, EntityPlayer player) {}
 
+    // 1.5.2 Item.GetItemUseWarmupDuration (vanilla/server Item.java:888-891, vanilla/client Item.java:987-990): ticks a
+    // held use runs before FCItemCraftingProgressive.UpdateUsingItem starts its effects and progress (:62).
     public int GetItemUseWarmupDuration() {
-        return 0;
+        return 7;
     }
 
     public boolean IgnoreDamageWhenComparingDuringUse() {

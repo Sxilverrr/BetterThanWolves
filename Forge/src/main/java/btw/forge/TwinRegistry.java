@@ -5,7 +5,10 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.data.worldgen.features.TreeFeatures;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.TagKey;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.AzaleaBlock;
@@ -27,9 +30,12 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Post-1.5.2 plants at 4.B speeds (maintainer ruling: each modern plant takes the 4.B rule of its nearest 1.5.2 / FC
@@ -56,7 +62,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *       twin of species 0, by #018's lore line "a sapling is a sapling: the species only chooses the tree": FC's
  *       survival (with the sapling's own soils through {@link #liveSoilAccepts}), light 9, four stages at 1/64 and the
  *       End ban, then the mod's own tree through SaplingBlock.advanceTree. A modded sapling that overrides its random
- *       tick (a Nether or End sapling) follows FC's rule instead of its own conditions.</li>
+ *       tick (a Nether or End sapling) follows FC's rule instead of its own conditions. Saplings of other mods that are
+ *       not SaplingBlocks join through their integration ({@link ModdedSapling}, {@link #registerModdedSapling}: Dynamic
+ *       Trees, INTEGRATIONS #027); a registered Nether fungus takes {@link Family#FUNGUS} instead.</li>
  *   <li>{@link Family#AZALEA}: azalea and flowering azalea on their own FCBlockSapling (S1, the bush is the sapling
  *       of the azalea tree; 1.20.1 grows it only by bone meal), with 1.20.1's fire odds for FC fire.</li>
  *   <li>{@link Family#BEETROOT}: beetroots on an FCBlockCarrot, the 4.B root crop: 0.1 per tick, seven levels, light
@@ -81,6 +89,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>hanging mangrove propagule: cocoa pace 1/20 per age step, 1.20.1 every tick: 0.05 (S12);</li>
  *   <li>chorus flower: cactus pace, 16 ticks per step (Server FCBlockCactus.java:40-48), 1.20.1 every tick: 1/16,
  *       exempt from the End ban: chorus is the End's own plant (S10).</li>
+ *   <li>modded plants in {@link #PACED_LIKE_SWEET_BERRIES} (HarvestCraft, Dynamic Trees and dtphc2 fruit and pods, whose
+ *       own random tick grows a stage at 1/5): the sweet-berry pace 0.25 with the End ban (INTEGRATIONS #032).</li>
  * </ul>
  *
  * <p><b>Kept on 1.20.1</b>: modern leaves and nylium decay (already 4.B pacing, S13, S14), and every plant that only
@@ -151,6 +161,16 @@ public final class TwinRegistry {
     private static final Map<Block, Pace> PACES = new IdentityHashMap<>();
     /** The hanging mangrove propagule: paced, while the planted one (same block, HANGING false) is a sapling twin. */
     private static final Pace HANGING_PROPAGULE = new Pace("hanging-propagule", 1F / 20F, true);
+
+    /**
+     * Modded plants whose own random tick grows a stage at 1/5 (HarvestCraft fruit, Dynamic Trees and dtphc2 fruit and
+     * pods): the sweet-berry pace, FC cocoa's 1/20 per stage (INTEGRATIONS #032; maintainer decision #7, one rule for
+     * all modded fruit). Data written by BTW's datagen (HarvestCraftDataProvider), every entry required:false.
+     */
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: tagged modded fruit grows at FC cocoa's pace, and not in the End
+    public static final TagKey<Block> PACED_LIKE_SWEET_BERRIES =
+            BlockTags.create(new ResourceLocation(BTWForgeMod.MOD_ID, "paced_like_sweet_berries"));
+    private static final Pace TAGGED_BERRY_PACE = new Pace("sweet-berry-like", (1F / 20F) / (1F / 5F), true);
 
     static {
         family(Family.SAPLING, Blocks.ACACIA_SAPLING, Blocks.CHERRY_SAPLING, Blocks.MANGROVE_PROPAGULE,
@@ -272,22 +292,98 @@ public final class TwinRegistry {
     }
 
     /**
-     * True for a modded sapling the {@link Family#SAPLING} twin runs (maintainer decision D2 (b)): a SaplingBlock with
-     * STAGE that the table above does not name and that has no legacy id (FC's own oak, spruce, birch and jungle
-     * saplings are id 6). A pure function of the block and FC's static id table.
+     * True for a modded sapling a twin runs (maintainer decision D2 (b)): a SaplingBlock with STAGE that the table above
+     * does not name and that has no legacy id (FC's own oak, spruce, birch and jungle saplings are id 6), or a sapling
+     * block of another mod that is not a SaplingBlock and that its integration registered ({@link #registerModdedSapling};
+     * Dynamic Trees, INTEGRATIONS #027). A pure function of the block, FC's static id table and the registrations made
+     * during mod construction.
      */
-    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: every unmapped SaplingBlock with STAGE grows by FC's sapling rule through the sapling twin, into its own tree
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: every unmapped SaplingBlock with STAGE, and every registered non-SaplingBlock sapling, grows by FC's rule through a twin, into its own tree
     public static boolean isFallbackSapling(Block block) {
-        return block instanceof SaplingBlock && !FAMILY.containsKey(block)
-                && ProxyRegistry.getBlockId(block) == 0
-                && block.defaultBlockState().hasProperty(SaplingBlock.STAGE);
+        if (block instanceof SaplingBlock) {
+            return !FAMILY.containsKey(block) && ProxyRegistry.getBlockId(block) == 0
+                    && block.defaultBlockState().hasProperty(SaplingBlock.STAGE);
+        }
+        return moddedKind(block) != null && !FAMILY.containsKey(block) && ProxyRegistry.getBlockId(block) == 0;
     }
 
-    /** The family of {@code block}: the table's, or SAPLING for a modded sapling ({@link #isFallbackSapling}). */
+    /**
+     * The family of {@code block}: the table's; for a modded sapling ({@link #isFallbackSapling}) SAPLING, or FUNGUS for
+     * a registered Nether fungus ({@link ModdedSapling#isFungus}), whose nearest FC relative is the mushroom, as for
+     * vanilla crimson and warped fungi.
+     */
     private static Family familyFor(Block block) {
         Family family = FAMILY.get(block);
         if (family != null) return family;
-        return isFallbackSapling(block) ? Family.SAPLING : null;
+        if (!isFallbackSapling(block)) return null;
+        ModdedKind modded = block instanceof SaplingBlock ? null : moddedKind(block);
+        return modded != null && modded.fungus() ? Family.FUNGUS : Family.SAPLING;
+    }
+
+    /**
+     * A sapling of another mod that is not a 1.20.1 SaplingBlock (Dynamic Trees' DynamicSaplingBlock, INTEGRATIONS #027).
+     * Its integration registers it during mod construction, before any registry bake. FC's rule then runs it as a twin:
+     * {@link Family#SAPLING} (FC's survival with its own soils through {@link #liveSoilAccepts}, the End ban, light 9
+     * above, four stages at 1/64, then {@link #growTree}), or {@link Family#FUNGUS} for a Nether fungus
+     * ({@link #fungusTick}: not in the End, 1 in 50 random ticks, then {@link #growTree}).
+     */
+    public interface ModdedSapling {
+        /** True for a sapling block of this kind. Pure (reads only the block); runs during registry bakes, any thread. */
+        boolean isSapling(Block block);
+
+        /** True for a sapling of this kind that is a Nether fungus (FC's mushroom rule). Pure, like {@link #isSapling}. */
+        default boolean isFungus(Block block) {
+            return false;
+        }
+
+        /**
+         * The twin's growTree once FC's rule decided: grow the live sapling at {@code pos} into the mod's own tree, or
+         * leave it (a sapling twin keeps stage 3 and retries on its next 1/64 success; a fungus twin rolls again).
+         */
+        void growTree(ServerLevel level, BlockPos pos, BlockState state, RandomSource random);
+    }
+
+    /** A registered kind, and whether the block is one of its Nether fungi. */
+    private record ModdedKind(ModdedSapling sapling, boolean fungus) {}
+
+    private static final CopyOnWriteArrayList<ModdedSapling> MODDED_SAPLINGS = new CopyOnWriteArrayList<>();
+    /** The answer per block (blocks never change after the registries freeze); an empty Optional means none. */
+    private static final Map<Block, Optional<ModdedKind>> MODDED_SAPLING_OF = new ConcurrentHashMap<>();
+
+    /** Registers a modded sapling kind. Call during mod construction (an integration's init). */
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: an integration can put a non-SaplingBlock sapling on FC's sapling or mushroom rule (Dynamic Trees, #027)
+    public static void registerModdedSapling(ModdedSapling sapling) {
+        MODDED_SAPLINGS.add(Objects.requireNonNull(sapling, "sapling"));
+        MODDED_SAPLING_OF.clear();
+        LOGGER.info("[TWIN] modded sapling kind registered: {}", sapling);
+    }
+
+    /** The registered kind of {@code block}, or null. A kind whose predicate throws is skipped (logged once). */
+    private static ModdedKind moddedKind(Block block) {
+        if (MODDED_SAPLINGS.isEmpty()) return null;
+        Optional<ModdedKind> known = MODDED_SAPLING_OF.get(block);
+        if (known == null) {
+            ModdedKind found = null;
+            for (ModdedSapling kind : MODDED_SAPLINGS) {
+                try {
+                    if (kind.isSapling(block)) {
+                        found = new ModdedKind(kind, kind.isFungus(block));
+                        break;
+                    }
+                } catch (RuntimeException | LinkageError e) {
+                    warnOnce("MODDED-SAPLING", BlockPos.ZERO, e);
+                }
+            }
+            known = Optional.ofNullable(found);
+            MODDED_SAPLING_OF.put(block, known);
+        }
+        return known.orElse(null);
+    }
+
+    /** The registered kind's grower for {@code block}, or null. */
+    private static ModdedSapling moddedSapling(Block block) {
+        ModdedKind kind = moddedKind(block);
+        return kind == null ? null : kind.sapling();
     }
 
     /** The twin family {@code s} belongs to, or null (not a twin plant, a paced / upper-half state, or no twin built). */
@@ -319,7 +415,17 @@ public final class TwinRegistry {
         if (block == Blocks.MANGROVE_PROPAGULE) {
             return s.getValue(BlockStateProperties.HANGING) ? HANGING_PROPAGULE : null;
         }
-        return PACES.get(block);
+        Pace pace = PACES.get(block);
+        if (pace != null) return pace;
+        // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: a modded plant in #betterthanwolves:paced_like_sweet_berries runs its own random tick at the sweet-berry pace (FC cocoa), not in the End
+        return isTaggedBerryLike(s) ? TAGGED_BERRY_PACE : null;
+    }
+
+    /** True for an unmapped, untwinned modded plant in {@link #PACED_LIKE_SWEET_BERRIES}; false before tags bind. */
+    private static boolean isTaggedBerryLike(BlockState s) {
+        Block block = s.getBlock();
+        return !(block instanceof ProxyBlock) && ProxyRegistry.getBlockId(block) == 0 && !FAMILY.containsKey(block)
+                && s.is(PACED_LIKE_SWEET_BERRIES);
     }
 
     /**
@@ -337,7 +443,7 @@ public final class TwinRegistry {
     public static boolean governsBlock(Block block) {
         Family family = familyFor(block);
         return (family != null && KIND_ID[family.kind.ordinal()] > 0) || PACES.containsKey(block)
-                || block == Blocks.MANGROVE_PROPAGULE;
+                || block == Blocks.MANGROVE_PROPAGULE || isTaggedBerryLike(block.defaultBlockState());
     }
 
     /** True when a state of {@code block} can be a twin state (the 1.20.1 block of a twin family whose twin was built). */
@@ -466,7 +572,10 @@ public final class TwinRegistry {
             } else if (state.getBlock() instanceof AzaleaBlock) {
                 AZALEA_TREE.growTree(level, level.getChunkSource().getGenerator(), pos, state, rs);
             } else {
-                return;
+                // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: a registered non-SaplingBlock sapling grows its own tree once FC's rule decided (Dynamic Trees, #027)
+                ModdedSapling modded = moddedSapling(state.getBlock());
+                if (modded == null) return;
+                modded.growTree(level, pos, state, rs);
             }
             for (int x = x0; x <= x1; x++) {
                 for (int z = z0; z <= z1; z++) {
@@ -503,6 +612,11 @@ public final class TwinRegistry {
                 nylium = Blocks.WARPED_NYLIUM;
                 feature = TreeFeatures.WARPED_FUNGUS_PLANTED;
             } else {
+                // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: a registered modded Nether fungus (Dynamic Trees' crimson and warped, #027) takes the same 1-in-50 roll; its integration then grows its own tree where its soil allows
+                ModdedSapling modded = moddedSapling(state.getBlock());
+                if (modded != null && rand.nextInt(50) == 0) {
+                    modded.growTree(level, pos, state, RandomSource.create(rand.nextLong()));
+                }
                 return;
             }
             if (level.getBlockState(pos.below()).is(nylium) && rand.nextInt(50) == 0) {

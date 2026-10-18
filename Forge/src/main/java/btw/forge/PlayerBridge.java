@@ -778,6 +778,32 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
     }
 
     /**
+     * 1.5.2 kept a use's countdown on the player (EntityPlayer.itemInUseCount, vanilla/server EntityPlayer.java:158-161);
+     * 1.20.1 keeps it in LivingEntity.useItemRemaining (:219, :3038). FC's UpdateUsingItem gates its warm-up and its
+     * every-4-ticks step on it (FCItemCraftingProgressive.java:60-69), so it reads the real counter: Modern-Common's copy
+     * (EntityPlayer.java:62) only ever held setItemInUse's 72000.
+     */
+    // FCMOD-INTEGRATION(1.20.1): held_use: FC's use countdown is the real player's
+    @Override
+    public int getItemInUseCount() {
+        return realPlayer.isUsingItem() ? realPlayer.getUseItemRemainingTicks() : 0;
+    }
+
+    /**
+     * FC ends a hold-to-craft use with SetItemInUseCount(1) (FCItemCraftingProgressive.java:83; vanilla/server
+     * EntityPlayer.java:3222-3225), so the decrement after UpdateUsingItem finishes the use that tick (:229-235). Written
+     * to the real counter: ProxyItem.onUseTick runs before updateUsingItem's decrement (LivingEntity.java:2898, :2903).
+     */
+    // FCMOD-INTEGRATION(1.20.1): held_use: FC's use countdown is the real player's, so a hold-to-craft use can end itself
+    @Override
+    public void SetItemInUseCount(int count) {
+        super.SetItemInUseCount(count);
+        if (realPlayer.isUsingItem()) {
+            ((btw.forge.mixin.LivingEntityUseAccessor) realPlayer).btw$setUseItemRemaining(count);
+        }
+    }
+
+    /**
      * FC calls this to play a sound at the player's position.
      * Maps FC sound names to MC SoundEvents via {@link SoundMapping}.
      */
