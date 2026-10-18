@@ -1,0 +1,50 @@
+[
+  {
+    "properties": {
+      "meta": "4"
+    },
+    "temperature": 1.0
+  },
+  {
+    "properties": {
+      "meta": "5"
+    },
+    "temperature": 1.0
+  },
+  {
+    "properties": {
+      "meta": "6"
+    },
+    "temperature": 1.0
+  },
+  {
+    "properties": {
+      "meta": "7"
+    },
+    "temperature": 1.0
+  },
+  {
+    "properties": {
+      "meta": "12"
+    },
+    "temperature": 1.0
+  },
+  {
+    "properties": {
+      "meta": "13"
+    },
+    "temperature": 1.0
+  },
+  {
+    "properties": {
+      "meta": "14"
+    },
+    "temperature": 1.0
+  },
+  {
+    "properties": {
+      "meta": "15"
+    },
+    "temperature": 1.0
+  }
+]

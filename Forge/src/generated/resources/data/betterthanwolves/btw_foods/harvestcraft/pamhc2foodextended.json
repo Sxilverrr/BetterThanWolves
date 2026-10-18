@@ -1,0 +1,40 @@
+{
+  "_comment": "HarvestCraft Food Extended: settled decision #12 meal tiers (the cap is FC's hearty stew, 10)",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2foodextended"
+    }
+  ],
+  "tiers": [
+    {
+      "bands": [
+        {
+          "fat": 0.0,
+          "hunger": 2,
+          "max_nutrition": 4
+        },
+        {
+          "fat": 0.25,
+          "hunger": 3,
+          "max_nutrition": 8
+        },
+        {
+          "fat": 0.25,
+          "hunger": 5,
+          "max_nutrition": 16
+        },
+        {
+          "fat": 0.25,
+          "hunger": 8,
+          "max_nutrition": 25
+        },
+        {
+          "fat": 0.25,
+          "hunger": 10
+        }
+      ],
+      "namespace": "pamhc2foodextended"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "action": "replace",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2foodcore"
+    }
+  ],
+  "reason": "HarvestCraft dough costs FC's flour ratio, three flour per dough as FC's own dough (FCRecipes.java:1426-1430), so everything made from it, BTW bread included, costs 4.B flour (decision D2 (b))",
+  "recipe": {
+    "type": "minecraft:crafting_shapeless",
+    "ingredients": [
+      {
+        "tag": "forge:tool_mixingbowl"
+      },
+      {
+        "tag": "forge:flour"
+      },
+      {
+        "tag": "forge:flour"
+      },
+      {
+        "tag": "forge:flour"
+      },
+      {
+        "tag": "forge:water"
+      },
+      {
+        "tag": "forge:salt"
+      }
+    ],
+    "result": {
+      "item": "pamhc2foodcore:doughitem"
+    }
+  },
+  "replaces": "pamhc2foodcore:doughitem_x2"
+}

@@ -436,7 +436,9 @@ public class FCBakedModel implements BakedModel {
          * server-side shape and collision use: a 1.20.1 double slab reads as 43/125, a colliding
          * modern-only state (deepslate, tuff, ...) as a ModernBlockStandIn and a water-filled unmapped
          * plant as water, not air. Safe on the mesh thread: getWorldBlockId never throws, takes any
-         * BlockGetter and only reads it (collision/occlusion shape of the snapshot state); the stand-in
+         * BlockGetter and only reads it (collision/occlusion shape of the snapshot state, and for a
+         * non-dynamic block whose cached collision shape is empty its live shape at that position in the
+         * read-only region, e.g. a Dynamic Trees trunk shell asking for its core); the stand-in
          * ids are allocated once, under ModernBlockStandIn's class lock and published through a volatile
          * flag; the stand-in's live-level overrides need a WorldBridge and take their no-level fallback
          * through this access (no ServerLevel is touched). state() has set probe; outside the snapshot

@@ -1,0 +1,31 @@
+{
+  "action": "replace",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2crops"
+    }
+  ],
+  "reason": "HarvestCraft grain bakes through BTW dough: three milled flour and water, FC's own dough recipe (FCRecipes.java:1426-1430), instead of three grain straight to bread",
+  "recipe": {
+    "type": "minecraft:crafting_shapeless",
+    "ingredients": [
+      {
+        "tag": "forge:flour/flour"
+      },
+      {
+        "tag": "forge:flour/flour"
+      },
+      {
+        "tag": "forge:flour/flour"
+      },
+      {
+        "item": "minecraft:water_bucket"
+      }
+    ],
+    "result": {
+      "item": "btw:fcItemBreadDough"
+    }
+  },
+  "replaces": "pamhc2crops:bread_grain"
+}

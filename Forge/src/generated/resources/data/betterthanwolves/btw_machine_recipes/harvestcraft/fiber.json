@@ -1,0 +1,8 @@
+{
+  "input_tag": "forge:fiber",
+  "machine": "millstone",
+  "output": {
+    "count": 2,
+    "fc_item": "fcItemHempFibers"
+  }
+}

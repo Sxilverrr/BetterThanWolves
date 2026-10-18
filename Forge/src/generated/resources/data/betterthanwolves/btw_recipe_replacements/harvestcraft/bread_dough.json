@@ -1,0 +1,25 @@
+{
+  "action": "replace",
+  "conditions": [
+    {
+      "type": "forge:mod_loaded",
+      "modid": "pamhc2foodcore"
+    }
+  ],
+  "reason": "HarvestCraft dough becomes BTW bread dough, which bakes in the BTW oven (settled decision 12 (a)), instead of bread from the crafting grid",
+  "recipe": {
+    "type": "minecraft:crafting_shapeless",
+    "ingredients": [
+      {
+        "tag": "forge:tool_bakeware"
+      },
+      {
+        "tag": "forge:dough"
+      }
+    ],
+    "result": {
+      "item": "btw:fcItemBreadDough"
+    }
+  },
+  "replaces": "pamhc2foodcore:bread_dough"
+}

@@ -19,9 +19,9 @@ import java.util.Set;
  * content by {@code FCBetterThanWolves} field (resolve with {@link btw.forge.compat.FcRefs}) and carries no number of
  * any temperature mod; each temperature integration maps the tiers to its own scale.
  *
- * <p>Only BTW's own content is listed. Vanilla fire, the vanilla torch, the furnace and the jack o'lantern keep their
- * vanilla ids, which the temperature mods already cover (RemovedContent keeps the torch T2 and the furnace T3 as
- * vanilla ids).</p>
+ * <p>Only BTW's own content is listed. FC content on a fixed vanilla id (the legacy torch 50, mushroom stew 282) and
+ * post-1.5.2 flames by their nearest FC relative (candles, candle cakes, the lantern) are listed by vanilla key in
+ * vanillaHeatSources / vanillaHotMeals; vanilla fire and the lit furnace keep the temperature mods' own entries.</p>
  *
  * <p>Heat-source metadata, from the FC sources (Server and Client agree); every default id is 175 or higher, so each
  * block is a ProxyBlock carrying {@code ProxyBlock.META} 0-15:</p>
@@ -30,6 +30,7 @@ import java.util.Set;
  *       ({@code m_iCampfireFuelStateSmouldering}), so the embers are meta 8-11.</li>
  *   <li>Hibachi: lit while {@code meta & 4} (FCBlockBBQ.IsLit), so meta 4-7 and 12-15.</li>
  *   <li>Candle: always lit; its metadata is the colour.</li>
+ *   <li>Loose cobblestone and loose stone brick: lava in the cracks while {@code meta & 1} (FCBlockLavaReceiver.GetHasLavaInCracks), so every odd meta.</li>
  *   <li>The other rows are lit in every metadata.</li>
  * </ul>
  *
@@ -41,7 +42,7 @@ public final class BtwThermalTable {
     /** How hot a BTW heat source is, coldest first. Integrations map these to their own scales. */
     public enum HeatTier {
         EMBERS, SMALL_FIRE, MEDIUM_FIRE, LARGE_FIRE, STOKED_FIRE, HIBACHI_BODY, BRICK_OVEN, TORCH, CANDLE,
-        SMOULDERING_LOG, BURNING_LADDER
+        SMOULDERING_LOG, BURNING_LADDER, LAVA_CRACKS
     }
 
     /** A BTW block field that gives off heat while its metadata lies in {@code metaMin..metaMax} (inclusive). */
@@ -70,20 +71,29 @@ public final class BtwThermalTable {
     /** FC's burn time of one coal (1600 ticks), the unit fuel integrations scale BTW burn times against. */
     public static final int FC_COAL_BURN_TIME = btw.modern.FCEnumFurnaceBurnTime.COAL.m_iBurnTime;
 
-    private static final List<HeatSource> HEAT_SOURCES = List.of(
-            new HeatSource("fcBlockCampfireUnlit", 8, 11, HeatTier.EMBERS),
-            new HeatSource("fcBlockCampfireSmall", 0, 15, HeatTier.SMALL_FIRE),
-            new HeatSource("fcBlockCampfireMedium", 0, 15, HeatTier.MEDIUM_FIRE),
-            new HeatSource("fcBlockCampfireLarge", 0, 15, HeatTier.LARGE_FIRE),
-            new HeatSource("fcBlockFireStoked", 0, 15, HeatTier.STOKED_FIRE),
-            new HeatSource("fcBBQ", 4, 7, HeatTier.HIBACHI_BODY),
-            new HeatSource("fcBBQ", 12, 15, HeatTier.HIBACHI_BODY),
-            new HeatSource("fcBlockFurnaceBrickBurning", 0, 15, HeatTier.BRICK_OVEN),
-            new HeatSource("fcBlockTorchFiniteBurning", 0, 15, HeatTier.TORCH),
-            new HeatSource("fcBlockTorchNetherBurning", 0, 15, HeatTier.TORCH),
-            new HeatSource("fcBlockCandle", 0, 15, HeatTier.CANDLE),
-            new HeatSource("fcBlockLogSmouldering", 0, 15, HeatTier.SMOULDERING_LOG),
-            new HeatSource("fcBlockLadderOnFire", 0, 15, HeatTier.BURNING_LADDER));
+    private static final List<HeatSource> HEAT_SOURCES = heatRows();
+
+    private static List<HeatSource> heatRows() {
+        List<HeatSource> rows = new ArrayList<>(List.of(
+                new HeatSource("fcBlockCampfireUnlit", 8, 11, HeatTier.EMBERS),
+                new HeatSource("fcBlockCampfireSmall", 0, 15, HeatTier.SMALL_FIRE),
+                new HeatSource("fcBlockCampfireMedium", 0, 15, HeatTier.MEDIUM_FIRE),
+                new HeatSource("fcBlockCampfireLarge", 0, 15, HeatTier.LARGE_FIRE),
+                new HeatSource("fcBlockFireStoked", 0, 15, HeatTier.STOKED_FIRE),
+                new HeatSource("fcBBQ", 4, 7, HeatTier.HIBACHI_BODY),
+                new HeatSource("fcBBQ", 12, 15, HeatTier.HIBACHI_BODY),
+                new HeatSource("fcBlockFurnaceBrickBurning", 0, 15, HeatTier.BRICK_OVEN),
+                new HeatSource("fcBlockTorchFiniteBurning", 0, 15, HeatTier.TORCH),
+                new HeatSource("fcBlockTorchNetherBurning", 0, 15, HeatTier.TORCH),
+                new HeatSource("fcBlockCandle", 0, 15, HeatTier.CANDLE),
+                new HeatSource("fcBlockLogSmouldering", 0, 15, HeatTier.SMOULDERING_LOG),
+                new HeatSource("fcBlockLadderOnFire", 0, 15, HeatTier.BURNING_LADDER)));
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: FC's own warm-block rule, FCBlockLavaReceiver.GetIsBlockWarm (Server FCBlockLavaReceiver.java:99-109): loose cobblestone and loose stone brick are warm while lava sits in their cracks (metadata bit 0), so every odd meta, one row each because rows are contiguous ranges
+        for (String field : List.of("fcBlockCobblestoneLoose", "fcBlockStoneBrickLoose")) {
+            for (int meta = 1; meta < 16; meta += 2) rows.add(new HeatSource(field, meta, meta, HeatTier.LAVA_CRACKS));
+        }
+        return List.copyOf(rows);
+    }
 
     private static final List<Clothing> CLOTHING = List.of(
             new Clothing("fcItemArmorWoolHelm", ClothingSet.WOOL, Slot.HEAD),
@@ -118,11 +128,28 @@ public final class BtwThermalTable {
             new HotMeal("fcItemFishSoup", MealTier.WARM),
             new HotMeal("fcItemHeartyStew", MealTier.HOT));
 
+    /** A 1.5.2 or post-1.5.2 vanilla-id block that gives off heat by BTW's lore. Vanilla ids never move with the BTW ID config, so the selector (a block id or a #tag) is written directly; requiresLit means only states with lit=true count. Each temperature integration skips selectors its mod already ships data for. */
+    public record VanillaHeatSource(String selector, boolean requiresLit, HeatTier tier, String fcIdentity) {}
+
+    /** A bowl food FC cooks in the cauldron that 4.B keeps on its fixed vanilla id. */
+    public record VanillaHotMeal(ResourceLocation item, MealTier tier, String fcIdentity) {}
+
+    // FCMOD-INTEGRATION(1.20.1): mod-compat: FC content on a fixed vanilla id, and post-1.5.2 flames by their nearest FC relative (maintainer ruling), warm the player like BTW's own
+    private static final List<VanillaHeatSource> VANILLA_HEAT_SOURCES = List.of(
+            new VanillaHeatSource("minecraft:torch", false, HeatTier.TORCH, "legacy torch, FC id 50: FCBlockTorchLegacy extends FCBlockTorchBaseBurning like the TORCH rows"),
+            new VanillaHeatSource("minecraft:wall_torch", false, HeatTier.TORCH, "legacy torch, FC id 50 (wall form)"),
+            new VanillaHeatSource("#minecraft:candles", true, HeatTier.CANDLE, "post-1.5.2 candle: nearest FC relative fcBlockCandle"),
+            new VanillaHeatSource("#minecraft:candle_cakes", true, HeatTier.CANDLE, "post-1.5.2 candle cake: its lit candle"),
+            new VanillaHeatSource("minecraft:lantern", false, HeatTier.TORCH, "post-1.5.2 lantern: nearest FC relative the burning torch"));
+
+    private static final List<VanillaHotMeal> VANILLA_HOT_MEALS = List.of(
+            new VanillaHotMeal(new ResourceLocation("minecraft", "mushroom_stew"), MealTier.WARM, "Item.bowlSoup: FC removes its crafting recipe and cooks it in the cauldron from milk and 3 brown mushrooms (FCRecipes.java:3664-3673, :5167)"));
+
     private static final List<String> ALL_FIELDS = collectFields();
 
     private BtwThermalTable() {}
 
-    /** The 13 heat-source rows (12 blocks; the hibachi has two metadata ranges). */
+    /** The 29 heat-source rows (14 blocks; the hibachi has two metadata ranges, each lava-receiving block one row per odd meta). */
     public static List<HeatSource> heatSources() {
         return HEAT_SOURCES;
     }
@@ -141,6 +168,12 @@ public final class BtwThermalTable {
     public static List<HotMeal> hotMeals() {
         return HOT_MEALS;
     }
+
+    /** The vanilla-key heat rows (5). Soul torches and soul lanterns are not listed: they keep each mod's soul-fire meaning. */
+    public static List<VanillaHeatSource> vanillaHeatSources() { return VANILLA_HEAT_SOURCES; }
+
+    /** The vanilla-key hot meals (1). */
+    public static List<VanillaHotMeal> vanillaHotMeals() { return VANILLA_HOT_MEALS; }
 
     /**
      * Every BTW-namespace item FC burns as fuel, computed live (so it follows the BTW ID config): each FC item in
@@ -172,7 +205,7 @@ public final class BtwThermalTable {
         return List.copyOf(out);
     }
 
-    /** The distinct FC fields of every row except fuels, in table order (39 names). */
+    /** The distinct FC fields of every row except fuels, in table order (41 names). */
     public static List<String> allFields() {
         return ALL_FIELDS;
     }

@@ -68,7 +68,9 @@ import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
  * reuses {@link #relayToSoil}, {@link #onBoneMealUseOn} and the {@link #onBonemeal} listener. On accepting BTW soil,
  * bone meal on such a plant is used up only when the soil takes it (1087 becomes 1088) and the plant does not grow;
  * otherwise it is kept and nothing happens (a Dynamic Trees sapling on grass declines, so bone meal never grows it). No
- * particles or sound, as FC fertilizer has none.</p>
+ * particles or sound, as FC fertilizer has none. A governed modded plant on FC ground that does not take it (grass,
+ * sand) relays too, and the ground declines: the item is kept. A block an integration registered FC machine hooks for is
+ * an FC target (ModernBlockHooks).</p>
  */
 @Mod.EventBusSubscriber(modid = BTWForgeMod.MOD_ID)
 public final class BoneMealPolicy {
@@ -94,12 +96,18 @@ public final class BoneMealPolicy {
     /**
      * The route of {@code state}. FC-mapped blocks (vanilla ids and ProxyBlocks, {@link ProxyRegistry#getBlockId}) are
      * {@link Route#FC_TARGET} whatever they are, so the grass block, netherrack, sand and cocoa get 4.B's "nothing"
-     * instead of 1.20.1's spread, grass, seagrass or growth. Pure: reads only the state and FC's static tables.
+     * instead of 1.20.1's spread, grass, seagrass or growth. A modern block an integration registered FC machine hooks for
+     * ({@link ModernBlockHooks}: Dynamic Trees branches, roots, rooty soil, trunk shells, pods and fruit, INTEGRATIONS
+     * #027) is {@link Route#FC_TARGET} too: FCItemDye's attemptFertilizer reaches it as a ModernBlockStandIn, whose
+     * AttemptToApplyFertilizerTo asks the hook. Pure: reads only the state, FC's static tables and the hooks registered
+     * during mod construction.
      */
     public static Route route(BlockState state) {
         if (!BTWLifecycle.isFcReady()) return Route.VANILLA;
         if (ProxyRegistry.getBlockId(state.getBlock()) != 0) return Route.FC_TARGET;
         if (TickPolicy.isFcGrowthGoverned(state)) return Route.SOIL_RELAY;
+        // FCMOD-INTEGRATION(1.20.1): fc_machine_hooks: a modern block an integration took over with FC machine hooks (Dynamic Trees, #027) takes bone meal only as 4.B fertilizer, through its stand-in's AttemptToApplyFertilizerTo, never 1.20.1 growth
+        if (ModernBlockHooks.find(state) != null) return Route.FC_TARGET;
         return Route.VANILLA;
     }
 
@@ -109,16 +117,35 @@ public final class BoneMealPolicy {
     }
 
     /**
-     * The route of {@code state} at {@code pos}: {@link #route(BlockState)}, and else {@link Route#SOIL_RELAY} for a
-     * modded plant on BTW soil that takes it ({@code FcSoil.governsAt}: a modded crop on FC farmland or a planter, a
-     * modded sapling or fc_soil_plants member on FC grass, dirt or a planter). On the client the soil is read on the
-     * render thread's read-only FC world, so the swing prediction agrees with the server.
+     * The route of {@code state} at {@code pos}: {@link #route(BlockState)}; else {@link Route#SOIL_RELAY} for a modded
+     * plant BTW's soil rule names ({@code FcSoil.governedKind}: a CropBlock, a sapling or an fc_soil_plants member) that
+     * stands on BTW soil that takes it ({@code FcSoil.governsAt}) or on any other FC-mapped ground. 4.B's FCBlockPlants
+     * relays the fertilizer to the block below, which takes it only as FC farmland or a planter, so an LSO fern crop on
+     * grass or a HarvestCraft garden on sand keeps the item and does not grow (INTEGRATIONS #026, #031, #032). A plant on
+     * a modern or modded soil stays {@link Route#VANILLA} (SR4). On the client the soil is read on the render thread's
+     * read-only FC world, so the swing prediction agrees with the server.
      */
-    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: bone meal on a modded plant on BTW soil is FC fertilizer for that soil, as on BTW's own plants
+    // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: bone meal on a modded plant on BTW ground is FC fertilizer for that ground, as on BTW's own plants
     public static Route route(BlockGetter level, BlockPos pos, BlockState state) {
         Route r = route(state);
         if (r != Route.VANILLA) return r;
-        return level != null && pos != null && FcSoil.governsAt(level, pos, state) ? Route.SOIL_RELAY : Route.VANILLA;
+        if (level == null || pos == null) return Route.VANILLA;
+        if (FcSoil.governsAt(level, pos, state)) return Route.SOIL_RELAY;
+        return FcSoil.governedKind(state) != null && standsOnFcGround(level, pos, state)
+                ? Route.SOIL_RELAY : Route.VANILLA;
+    }
+
+    /**
+     * True when the block under the plant's lowest cell (found as {@link #relayToSoil} finds it) has an FC identity id:
+     * FC grass, dirt, sand, farmland, planters. Modern and modded soils have none.
+     */
+    private static boolean standsOnFcGround(BlockGetter level, BlockPos pos, BlockState state) {
+        Block plant = state.getBlock();
+        BlockPos base = pos;
+        while (base.getY() > level.getMinBuildHeight() && level.getBlockState(base.below()).is(plant)) {
+            base = base.below();
+        }
+        return ProxyRegistry.getBlockId(level.getBlockState(base.below()).getBlock()) != 0;
     }
 
     /** True when 1.20.1 bone-meal growth must never run on {@code state} at {@code pos} (BonemealableGateMixin). */

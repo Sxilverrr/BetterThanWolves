@@ -106,6 +106,18 @@ Reported on CurseForge:
   processes that have no recipe list, and BTW's join messages are back (see Added). The CurseForge
   page no longer promises a "field manual". The wiki link is still to be added (CTX-3 to CTX-6).
 
+Reported by a player (2026-10-18):
+
+- **Knitting, bone carving and wicker weaving never finished.** Holding right-click on knitting, a
+  carving bone or wicker weaving made no progress, so wool knit, the bone fish hook (and with it the
+  4.B fishing rod) and wicker could not be made. BTW's per-tick hold-to-craft step
+  (`FCItemCraftingProgressive.UpdateUsingItem`) was never called, and BTW read a copy of the use timer
+  that never moved. Both are bridged now: the progress bar fills and the item finishes on 4.B's timing
+  (2 minutes for knitting and carving, 1 minute for wicker, after 4.B's short warm-up). Letting go
+  keeps the progress. BTW's crafting sounds and particles run through the same step again (checked by
+  code review only). Eating, drinking and bows are unchanged. Checked in game with a real client
+  holding right-click on knitting and a carving bone, and on a dedicated server for all three.
+
 Found by the maintainer (2026-10-11):
 
 Each of these was traced to a shared part of the port that did not do what BTW's own 1.5.2 code
@@ -338,7 +350,7 @@ Other fixes:
       from splitting stone with the iron chisel, string from breaking a bow, the axe chop sound.
   - FC's code-driven crafting recipes (log chopping with an axe, knitting, baiting a fishing rod) now
     work in the 2x2 inventory grid. Before, they only worked at a crafting table. The knitting recipe
-    only starts the knitting; the knitting itself still cannot be finished (see Known issues).
+    starts the knitting, which you then finish by holding right-click (see the player report above).
   - Ingredients that accept any variant now accept every variant in every grid, at the soulforge, in
     the recipe book and in JEI. Before:
     - "any planks" meant jungle planks only in the 2x2 grid, and never matched at the crafting table;
@@ -574,10 +586,6 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
 - **Re-entering a world.** No cause was found. It has not been tested whether a world now always
   shuts down cleanly and releases its `session.lock`. If a world will not open again, please report
   it with `logs/latest.log` and any crash report.
-- **Knitting, wicker weaving and bone carving never finish.** Holding right-click makes no progress,
-  because BTW's hold-to-craft progress (`FCItemCraftingProgressive.UpdateUsingItem`) is not bridged.
-  So you cannot weave wicker, knit wool or carve a bone fishing hook, and the crafting sounds BTW
-  plays while you hold right-click are missing too. 1.3.0-alpha.3 has the same problem.
 - **BTW villagers and witches make no idle, hurt or death sounds** (witches still idle with BTW's
   quiet ghast scream). This is expected: it is how 4.B sounds, because Minecraft 1.5.2 had no
   villager or witch sound files. 1.3.0-alpha.3 played 1.20.1's witch hurt and death sounds.

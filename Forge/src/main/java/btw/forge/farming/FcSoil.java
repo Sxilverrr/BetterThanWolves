@@ -44,7 +44,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@code CanDomesticatedCropsGrowOnBlock} (crops), {@code CanSaplingsGrowOnBlock} (saplings),
  * {@code CanWildVegetationGrowOnBlock} (wild plants). FC grass and dirt accept saplings and wild plants but not crops;
  * modern soils answer through their stand-in tags and never take crops. A fern crop of a survival mod on grass or a
- * water plant on sand is therefore left to 1.20.1.</p>
+ * water plant on sand therefore grows and drops by 1.20.1's rules; bone meal on it still follows 4.B
+ * (BoneMealPolicy.route: it relays to that FC ground, which declines, so the item is kept).</p>
  *
  * <p>Reads only: no world writes. Every FC call is wrapped: a throw is logged once and answers false. Server: the
  * WorldBridge; client: the render thread's ClientFcWorld (btw.forge.client.FcSoilClient); any other reader (world

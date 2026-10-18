@@ -1,0 +1,30 @@
+{
+  "_comment": "FC animal food for HarvestCraft seeds (chickens) and vegetables (pigs), at FC's base values; grains (herbivores) are in pamhc2crops.json",
+  "conditions": [
+    {
+      "type": "forge:or",
+      "values": [
+        {
+          "type": "forge:mod_loaded",
+          "modid": "pamhc2crops"
+        },
+        {
+          "type": "forge:mod_loaded",
+          "modid": "pamhc2trees"
+        }
+      ]
+    }
+  ],
+  "entries": {
+    "#forge:seeds": {
+      "fodder": {
+        "chicken": "basic"
+      }
+    },
+    "#forge:vegetables": {
+      "fodder": {
+        "pig": "basic"
+      }
+    }
+  }
+}

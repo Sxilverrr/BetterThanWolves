@@ -11,6 +11,7 @@ import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.pathfinder.PathComputationType;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -128,6 +129,10 @@ final class ModernBlockStandIn extends btw.modern.Block {
                 return plantId;
             }
             VoxelShape shape = state.getCollisionShape(level, pos);      // MC-cached for non-dynamic shapes
+            // FCMOD-INTEGRATION(1.20.1): fc_machine_hooks: MC builds that cache at BlockPos.ZERO in an empty world (BlockBehaviour.BlockStateBase.Cache); a block whose shape follows its neighbours without dynamicShape (Dynamic Trees' TrunkShellBlock follows its core) caches empty there, though 1.20.1 entities collide with it at its live position, so ask again at the live position
+            if (shape.isEmpty() && !state.getBlock().hasDynamicShape()) {
+                shape = state.getCollisionShape(level, pos, CollisionContext.empty());
+            }
             if (shape.isEmpty()) return 0;
             boolean full = net.minecraft.world.level.block.Block.isShapeFullBlock(shape);
             int id = full && state.is(BlockTags.WITHER_IMMUNE) ? BEDROCK_ID

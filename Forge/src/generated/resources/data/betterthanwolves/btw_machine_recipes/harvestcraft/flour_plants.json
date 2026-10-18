@@ -1,0 +1,8 @@
+{
+  "input_tag": "forge:flour_plants",
+  "machine": "millstone",
+  "output": {
+    "count": 1,
+    "fc_item": "fcItemFlour"
+  }
+}

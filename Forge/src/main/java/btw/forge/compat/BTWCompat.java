@@ -102,20 +102,61 @@ public final class BTWCompat {
                     + "health overhaul keep working).");
         }
 
-        // ---- Per-mod dispatch (INSERTION POINT) ----
-        // The six guarded blocks go here, in this order, in the same change that adds their entry-point classes
-        // (they are a compile dependency). Shape, one per mod (SR1: direct invokestatic only):
-        //   if (isLoaded(DYNAMIC_TREES)) {
-        //       try { btw.forge.compat.dynamictrees.DynamicTreesCompat.init(modBus); enabled(DYNAMIC_TREES, "#027"); }
-        //       catch (Throwable t) { failed(DYNAMIC_TREES, t); }
-        //   }
-        //   SERENE_SEASONS -> btw.forge.compat.sereneseasons.SereneSeasonsCompat.init(modBus), "#028"
-        //   APPLESKIN, only when net.minecraftforge.fml.loading.FMLEnvironment.dist.isClient()
-        //             -> btw.forge.compat.appleskin.AppleSkinCompat.initClient(modBus), "#029"
-        //   COLD_SWEAT -> btw.forge.compat.coldsweat.ColdSweatCompat.init(modBus), "#030"
-        //   LSO -> btw.forge.compat.lso.LsoCompat.init(modBus), "#031"
-        //   anyHarvestCraftLoaded() -> btw.forge.compat.harvestcraft.HarvestCraftCompat.init(modBus),
-        //             enabled(HARVESTCRAFT, "#032"); failed("harvestcraft", t)
+        // ---- Per-mod dispatch (SR1: one direct invokestatic per integration, each inside its own try/catch) ----
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: Dynamic Trees (#027): BTW's log, stump, saw, sapling and fertilizer rules on living DT trees
+        if (isLoaded(DYNAMIC_TREES)) {
+            try {
+                btw.forge.compat.dynamictrees.DynamicTreesCompat.init(modBus);
+                enabled(DYNAMIC_TREES, "#027");
+            } catch (Throwable t) {
+                failed(DYNAMIC_TREES, t);
+            }
+        }
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: Serene Seasons (#028): seasons for BTW crops, SS's climate for BTW snow, ice and farmland
+        if (isLoaded(SERENE_SEASONS)) {
+            try {
+                btw.forge.compat.sereneseasons.SereneSeasonsCompat.init(modBus);
+                enabled(SERENE_SEASONS, "#028");
+            } catch (Throwable t) {
+                failed(SERENE_SEASONS, t);
+            }
+        }
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: AppleSkin (#029) is a client display mod; its server half needs nothing from BTW
+        if (isLoaded(APPLESKIN) && net.minecraftforge.fml.loading.FMLEnvironment.dist.isClient()) {
+            try {
+                btw.forge.compat.appleskin.AppleSkinCompat.initClient(modBus);
+                enabled(APPLESKIN, "#029");
+            } catch (Throwable t) {
+                failed(APPLESKIN, t);
+            }
+        }
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: Cold Sweat (#030): BTW heat sources, clothing, meals and fuels as Cold Sweat data; shivering costs FC exhaustion
+        if (isLoaded(COLD_SWEAT)) {
+            try {
+                btw.forge.compat.coldsweat.ColdSweatCompat.init(modBus);
+                enabled(COLD_SWEAT, "#030");
+            } catch (Throwable t) {
+                failed(COLD_SWEAT, t);
+            }
+        }
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: Legendary Survival Overhaul (#031): the BTW data audit, fat insulation, the food-row HUD and the regeneration gate
+        if (isLoaded(LSO)) {
+            try {
+                btw.forge.compat.lso.LsoCompat.init(modBus);
+                enabled(LSO, "#031");
+            } catch (Throwable t) {
+                failed(LSO, t);
+            }
+        }
+        // FCMOD-INTEGRATION(1.20.1): mod-compat: Pam's HarvestCraft 2 (#032): the in-game notice and the start-up summary; the rest is BTW data and general rules
+        if (anyHarvestCraftLoaded()) {
+            try {
+                btw.forge.compat.harvestcraft.HarvestCraftCompat.init(modBus);
+                enabled(HARVESTCRAFT, "#032");
+            } catch (Throwable t) {
+                failed("harvestcraft", t);
+            }
+        }
         // ---- end of per-mod dispatch ----
     }
 
