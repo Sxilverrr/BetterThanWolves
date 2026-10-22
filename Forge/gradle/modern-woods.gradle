@@ -1,0 +1,115 @@
+// ============================================================
+// FCMOD-INTEGRATION(1.20.1): modern_woods: the work-stump side textures of FC wood types 5-8 (acacia, dark oak,
+// mangrove, cherry; btw.forge.ModernWoods), derived and checked in. Applied from Forge/build.gradle; owned by the
+// modern-woods workstream.
+//
+// FC draws a work stump's side as its trunk side plus a fixed overlay (the rim in rows 0-1, the V-notch in rows 2-5,
+// the slot in columns 7-8 below it: 80 pixels for spruce, birch and jungle, 84 for oak, whose slot runs to row 14).
+// No art is invented: for species X and its nearest FC relative R (acacia -> jungle, dark oak -> oak, mangrove ->
+// jungle, cherry -> birch),
+//     mask = the pixels where FC's fcBlockWorkStump<R> differs from FC's fcBlockTrunk<R>,
+//     out  = the 1.20.1 <x>_log side, with out[mask] = fcBlockWorkStump<R>[mask],
+// written as textures/block/fcblockworkstump<x>.png (the lower-cased icon names FCBlockWorkStumpWoodMixin registers).
+// The lower rows keep the plain 1.20.1 bark: FC has no root flare for these species, so none is made up.
+//
+// Inputs, read only: FC's textures in the release zip (MINECRAFT-JAR/textures/blocks/) and the 1.20.1 log textures in
+// ForgeGradle's client-extra jar (-PbtwClientExtraJar=<path> overrides). A missing input WARNs and skips: the outputs
+// are checked in, so builds without the zip or the cache keep working. Each output is rewritten only when its pixels
+// and its bytes differ, so a build with unchanged inputs writes nothing (the dev-run rule: no file a running server
+// reads is rewritten needlessly).
+// ============================================================
+
+tasks.register('deriveModernWoodTextures') {
+    description = "Derives the modern woods' work-stump side textures from FC's work-stump overlay and the 1.20.1 logs"
+    group = 'btw'
+
+    def modZip = project.file("${project.rootProject.projectDir}/BTWMod4-B0000003.zip")
+    def clientExtra = project.hasProperty('btwClientExtraJar')
+            ? project.file(project.property('btwClientExtraJar'))
+            : new File(project.gradle.gradleUserHomeDir,
+                    "caches/forge_gradle/minecraft_repo/versions/${project.property('portMcVersion')}/client-extra.jar")
+    def blockDst = project.file('src/main/resources/assets/betterthanwolves/textures/block')
+    // output name -> [1.20.1 log texture, FC relative]
+    def species = [
+            'fcblockworkstumpacacia'  : ['acacia_log', 'Jungle'],
+            'fcblockworkstumpdarkoak' : ['dark_oak_log', 'Oak'],
+            'fcblockworkstumpmangrove': ['mangrove_log', 'Jungle'],
+            'fcblockworkstumpcherry'  : ['cherry_log', 'Birch'],
+    ]
+
+    inputs.property('species', species.toString())
+    // Always run: cheap, and each PNG is only rewritten when it changes
+    outputs.upToDateWhen { false }
+
+    doLast {
+        if (!modZip.isFile()) {
+            logger.warn("deriveModernWoodTextures: BTW mod zip not found at ${modZip}; the checked-in work-stump textures are kept")
+            return
+        }
+        if (!clientExtra.isFile()) {
+            logger.warn("deriveModernWoodTextures: 1.20.1 client-extra jar not found at ${clientExtra} (run :Forge:runClient " +
+                    "once, or pass -PbtwClientExtraJar=<path>); the checked-in work-stump textures are kept")
+            return
+        }
+        javax.imageio.ImageIO.setUseCache(false)
+        def readPng = { java.util.zip.ZipFile zip, String entry ->
+            def ze = zip.getEntry(entry)
+            if (ze == null) throw new GradleException("deriveModernWoodTextures: ${entry} is missing from ${zip.name}")
+            java.awt.image.BufferedImage img = zip.getInputStream(ze).withCloseable { javax.imageio.ImageIO.read(it) }
+            if (img == null) throw new GradleException("deriveModernWoodTextures: ${entry} in ${zip.name} is not a readable PNG")
+            if (img.width != 16 || img.height != 16) {
+                throw new GradleException("deriveModernWoodTextures: ${entry} is ${img.width}x${img.height}, expected 16x16")
+            }
+            return img
+        }
+        int written = 0
+        new java.util.zip.ZipFile(modZip).withCloseable { fc ->
+            new java.util.zip.ZipFile(clientExtra).withCloseable { mc ->
+                species.each { String outName, List<String> spec ->
+                    String log = spec[0]
+                    String relative = spec[1]
+                    def trunk = readPng(fc, "MINECRAFT-JAR/textures/blocks/fcBlockTrunk${relative}.png")
+                    def stump = readPng(fc, "MINECRAFT-JAR/textures/blocks/fcBlockWorkStump${relative}.png")
+                    def side = readPng(mc, "assets/minecraft/textures/block/${log}.png")
+                    def out = new java.awt.image.BufferedImage(16, 16, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+                    int overlay = 0
+                    for (int y = 0; y < 16; y++) {
+                        for (int x = 0; x < 16; x++) {
+                            int s = stump.getRGB(x, y)
+                            boolean mask = s != trunk.getRGB(x, y)
+                            int argb = mask ? s : side.getRGB(x, y)
+                            if ((argb >>> 24) != 0xFF) {
+                                throw new GradleException("deriveModernWoodTextures: ${outName} pixel ${x},${y} is not opaque")
+                            }
+                            out.setRGB(x, y, argb)
+                            if (mask) overlay++
+                        }
+                    }
+                    File dest = new File(blockDst, "${outName}.png")
+                    boolean samePixels = false
+                    if (dest.isFile()) {
+                        def old = javax.imageio.ImageIO.read(dest)
+                        samePixels = old != null && old.width == 16 && old.height == 16 &&
+                                (0..<16).every { int y -> (0..<16).every { int x -> old.getRGB(x, y) == out.getRGB(x, y) } }
+                    }
+                    if (!samePixels) {
+                        def bytes = new ByteArrayOutputStream()
+                        javax.imageio.ImageIO.write(out, 'png', bytes)
+                        byte[] png = bytes.toByteArray()
+                        if (!dest.isFile() || !Arrays.equals(dest.bytes, png)) {
+                            blockDst.mkdirs()
+                            dest.bytes = png
+                            written++
+                        }
+                    }
+                    logger.info("deriveModernWoodTextures: ${outName}: ${overlay} FC overlay pixels (fcBlockWorkStump${relative}) over ${log}")
+                }
+            }
+        }
+        logger.lifecycle("deriveModernWoodTextures: ${species.size()} work-stump textures checked (${written} written)")
+    }
+}
+
+tasks.named('processResources').configure {
+    dependsOn 'deriveModernWoodTextures'
+}

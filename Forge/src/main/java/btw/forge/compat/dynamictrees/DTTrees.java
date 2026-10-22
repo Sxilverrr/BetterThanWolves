@@ -1,8 +1,6 @@
 package btw.forge.compat.dynamictrees;
 
-import btw.forge.BTWLifecycle;
 import btw.forge.FCLogRules;
-import btw.forge.compat.FcRefs;
 import com.ferreusveritas.dynamictrees.api.TreeHelper;
 import com.ferreusveritas.dynamictrees.api.event.TransitionSaplingToTreeEvent;
 import com.ferreusveritas.dynamictrees.block.DynamicSaplingBlock;
@@ -20,6 +18,7 @@ import com.ferreusveritas.dynamictrees.tree.species.Species;
 import com.ferreusveritas.dynamictrees.util.BranchDestructionData;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
@@ -42,18 +41,12 @@ import java.util.Optional;
 
 /**
  * The tree facts the Dynamic Trees integration (INTEGRATIONS #027) decides by: which DT blocks are logs, stumps and
- * dead stumps, which trunk a trunk shell belongs to, FC's wood species of a DT family, the item each FC chew stage
- * pops, and the dig factor of a chewed log. Also the init-time API probe. Package-private static helpers; every DT
- * type stays inside this package.
+ * dead stumps, which trunk a trunk shell belongs to, FC's wood type of a DT family and the bark, work stump and saw
+ * planks the shared log rule (FCLogRules) gives it, the item each FC chew stage pops, and the dig factor of a chewed
+ * log. Also the init-time API probe. Package-private static helpers; every DT type stays inside this package.
  */
 // FCMOD-INTEGRATION(1.20.1): dynamic_trees: one place that names Dynamic Trees' trunks, stumps and shells in BTW's log terms
 final class DTTrees {
-
-    /** 1.5.2 Block.wood, FC's log (FCBlockLog replaces it in blocksList). */
-    private static final int LEGACY_LOG_ID = 17;
-
-    /** FCBlockLog / FCBlockLogDamaged hardness (1.25 / 2.0); NaN until resolved after FC init. */
-    private static volatile float damagedLogFactor = Float.NaN;
 
     private DTTrees() {}
 
@@ -203,11 +196,41 @@ final class DTTrees {
     }
 
     /**
-     * FC's wood species (0-3) of a DT branch, from its family's unstripped primitive log
-     * ({@link FCLogRules#fcWoodMeta}), so a stripped branch still names its species; -1 for a species FC never had.
+     * FC's wood type of a DT branch, from its family's unstripped primitive log ({@link FCLogRules#fcWoodMeta}), so a
+     * stripped branch still names its wood: 0-3 for FC's oak, spruce, birch and jungle, 5-8 for acacia, dark oak,
+     * mangrove and cherry (ModernWoods; the DT dark oak family is wood type 6), -1 for a wood FC has no type for
+     * (the fungus families, modded families).
      */
+    // FCMOD-INTEGRATION(1.20.1): dynamic_trees: DT families of acacia, dark oak, mangrove and cherry are FC wood types 5-8 (ModernWoods), as their vanilla logs
     static int fcWoodMeta(BranchBlock b) {
         return b.getFamily().getPrimitiveLog().map(FCLogRules::fcWoodMeta).orElse(-1);
+    }
+
+    /**
+     * The bark a DT branch of this family pays, by the shared log rule ({@link FCLogRules#barkSpecies} of its
+     * family's primitive log): FC's wood type, else its {@code betterthanwolves:bark/*} tag, -1 for {@code bark/none}
+     * (the crimson and warped fungi, maintainer ruling 2), else oak (logs design decision 6 (a)). Oak for a family
+     * with no primitive log.
+     */
+    // FCMOD-INTEGRATION(1.20.1): dynamic_trees: a DT tree pays the same bark as its family's vanilla or modded log (the log rule, logs design decision 7 (a))
+    static int barkSpecies(BranchBlock b) {
+        return b.getFamily().getPrimitiveLog().map(log -> FCLogRules.barkSpecies(log.defaultBlockState()))
+                .orElse(FCLogRules.UNTAGGED_BARK);
+    }
+
+    /** The wood type of the work stump a dead DT stump of this family makes, or -1 when it makes none. */
+    static int workStumpSpecies(BranchBlock b) {
+        int wood = barkSpecies(b);
+        return FCLogRules.isWorkStumpWood(wood) ? wood : -1;
+    }
+
+    /**
+     * One plank of the family's own wood for the saw, for a wood FC has no planks subtype for (the fungi, modded
+     * families): {@link FCLogRules#sawPlanks} of its primitive log; EMPTY when it has none.
+     */
+    static ItemStack sawPlanks(ServerLevel level, BranchBlock b) {
+        return b.getFamily().getPrimitiveLog().map(log -> FCLogRules.sawPlanks(level, log.defaultBlockState()))
+                .orElse(ItemStack.EMPTY);
     }
 
     /**
@@ -234,30 +257,10 @@ final class DTTrees {
 
     /**
      * The dig factor of a chewed (stripped) branch: FCBlockLog's hardness over FCBlockLogDamaged's (1.25 / 2.0 =
-     * 0.625 with FC's values, Server FCBlockLog.java:26, FCBlockLogDamaged.java:25). Read from FC's blocks once FC is
-     * ready and cached; 1.0 before FC init and on failure (logged once).
+     * 0.625 with FC's values), the log rule's own factor for a barkless log ({@link FCLogRules#damagedLogFactor}).
      */
     static float damagedLogFactor() {
-        float f = damagedLogFactor;
-        if (!Float.isNaN(f)) return f;
-        if (!BTWLifecycle.isFcReady()) return 1F;
-        f = 1F;
-        try {
-            btw.modern.Block log = LEGACY_LOG_ID < btw.modern.Block.blocksList.length
-                    ? btw.modern.Block.blocksList[LEGACY_LOG_ID] : null;
-            btw.modern.Block damaged = FcRefs.fcBlock("fcBlockLogDamaged");
-            if (log != null && damaged != null && log.blockHardness > 0F && damaged.blockHardness > 0F) {
-                f = log.blockHardness / damaged.blockHardness;
-            } else {
-                DynamicTreesCompat.LOGGER.warn("[BTW-Compat] dynamictrees: FC's chewed-log hardness could not be "
-                        + "read; a chewed branch digs at the fresh log's rate");
-            }
-        } catch (RuntimeException | LinkageError t) {
-            DynamicTreesCompat.LOGGER.warn("[BTW-Compat] dynamictrees: FC's chewed-log hardness could not be read; "
-                    + "a chewed branch digs at the fresh log's rate", t);
-        }
-        damagedLogFactor = f;
-        return f;
+        return FCLogRules.damagedLogFactor();
     }
 
     /**

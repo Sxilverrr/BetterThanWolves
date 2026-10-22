@@ -210,6 +210,11 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
         this.rotationYaw = realPlayer.getYRot();
         this.rotationPitch = realPlayer.getXRot();
         this.onGround = realPlayer.onGround();
+        // FCMOD-INTEGRATION(1.20.1): placement_validity: the inWater FIELD, which FC reads directly: 4.B's mid-air
+        // rule (Modern-Common EntityPlayer.canPlayerEdit; vanilla/server EntityPlayer.java:2037) lets a swimming player
+        // place, and FCEntitySquid targets a player by it (Common FCEntitySquid.java:424, :837). 1.5.2 set it every
+        // tick in Entity.handleWaterMovement, which never runs for the bridge; isInWater() already answers from 1.20.1.
+        this.inWater = realPlayer.isInWater();
         this.health = fcHealth(realPlayer.getHealth());
         this.fallDistance = realPlayer.fallDistance;
         this.ticksExisted = realPlayer.tickCount;
@@ -229,6 +234,15 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
      */
     public void syncInventoryToReal() {
         invBridge.writeBackAll();
+    }
+
+    /**
+     * INV-RESYNC: drops the FC inventory edits not yet written to the real inventory
+     * ({@link InventoryBridge#discardPendingEdits()}). For an FC call that threw before its write-back: the next sync
+     * dropped such edits before INV-RESYNC, and would now write them.
+     */
+    public void discardInventoryEdits() {
+        invBridge.discardPendingEdits();
     }
 
     /**
@@ -257,6 +271,151 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
             this.motionZ != realPlayer.getDeltaMovement().z) {
             realPlayer.setDeltaMovement(this.motionX, this.motionY, this.motionZ);
         }
+    }
+
+    // ================================================================
+    // Per-click frame: one ServerPlayerGameMode.useItemOn (fc_item_use_order)
+    // ================================================================
+
+    /**
+     * FCMOD-INTEGRATION(1.20.1): fc_item_use_order
+     *
+     * <p>What the hooks of one right-click on a block share. 1.5.2 ran the click as one call,
+     * ItemInWorldManager.activateBlockOrUseItem (vanilla/server ItemInWorldManager.java:376-407): the block's
+     * onBlockActivated, else the held item's tryPlaceItemIntoWorld. In 1.20.1 the same click is spread over
+     * ServerPlayerGameMode.useItemOn (ServerPlayerGameMode.java:317-370): the RightClickBlock event (:323), block use
+     * (:343, where ProxyBlock.use and BlockBehaviorMixin.btw$use run FC Stage 1 and Stage 2) and the item step
+     * (ItemStack.useOn, :355/:358, where ServerPlayerGameModeMixin.btw$fcItemStep runs FC for blocks without Stage 2).
+     * The frame carries, per click:</p>
+     * <ul>
+     *   <li>{@code fcUseDenied}: the event's final {@code useItem == DENY} (FcItemUseOrder, LOWEST), which Stage 2 cannot
+     *       read itself. 1.20.1 stops the item step on it (:351); ProxyBlock.tryPlaceHeldItem stops FC on it.</li>
+     *   <li>{@code fcUseRanAt}: the position whose FC onItemUse already ran in this click (Stage 2), so the item step
+     *       never runs it a second time there. Keyed by position, so a foreign {@code blockstate.use} nested in the
+     *       click cannot suppress the item step at another one.</li>
+     *   <li>{@code stage2} (placement_validity): what FC's placement did in this click when the main-hand item is a
+     *       1.20.1 BlockItem whose FC item is of the 4.B ItemBlock family (ProxyBlock.tryPlaceHeldItem): PLACED, with
+     *       the cell it placed the held block in ({@code stage2At}), or REFUSED (only for a player who may build; an
+     *       adventure-mode refusal is left to 1.20.1's CanPlaceOn rule). FC's refusal is 4.B's final verdict there, so
+     *       the item step refuses 1.20.1's BlockItem fallback on a REFUSED recorded at the clicked block
+     *       ({@code fcUseRanAt}; 4.B's client never sent a placement FC refused, vanilla/client
+     *       PlayerControllerMP.java:425-433), and the RETURN inject finishes a PLACED block (facing guard, redstone
+     *       state). NONE otherwise, and outside any useItemOn.</li>
+     * </ul>
+     *
+     * <p>ServerPlayerGameModeMixin pushes a frame as the first statement of useItemOn and pops it in its RETURN inject,
+     * and also before each of its own cancels (a RETURN inject does not run after an injector cancels). Nested useItemOn
+     * calls in one tick stack. A frame leaked by another mod's cancel or by a throw is dropped by the next
+     * {@link #beginUseClick} of a later server tick. Outside any useItemOn (a third-party caller that posts
+     * RightClickBlock and calls {@code blockstate.use} itself, as deployer-style fake players do), the denial is kept
+     * loose on the bridge and every post overwrites it; nothing else is recorded. Server thread only.</p>
+     */
+    private static final class UseClick {
+        /** {@code MinecraftServer.getTickCount()} when the click began. */
+        final long tick;
+        boolean fcUseDenied;
+        net.minecraft.core.BlockPos fcUseRanAt;
+        Stage2 stage2 = Stage2.NONE;
+        /** PLACED only: the cell FC placed the held block in; null when it could not be told. */
+        net.minecraft.core.BlockPos stage2At;
+
+        UseClick(long tick) {
+            this.tick = tick;
+        }
+    }
+
+    /**
+     * FCMOD-INTEGRATION(1.20.1): placement_validity: the outcome of FC's placement in one click, for a main-hand 1.20.1
+     * BlockItem whose FC item is of the 4.B ItemBlock family (see {@link UseClick}).
+     */
+    public enum Stage2 {
+        /** No FC ItemBlock-family placement ran in this click (or no click is open). */
+        NONE,
+        /** FC placed the held block (4.B onItemUse returned true). */
+        PLACED,
+        /** FC refused it (false, or a throw) for a player who may build: final, 1.20.1's BlockItem must not place it instead. */
+        REFUSED
+    }
+
+    /** The open clicks, innermost last. */
+    private final java.util.ArrayDeque<UseClick> useClicks = new java.util.ArrayDeque<>();
+
+    /** The RightClickBlock denial posted outside any useItemOn (see {@link UseClick}). */
+    private boolean looseFcUseDenied;
+
+    /** The innermost open click, or null outside useItemOn. */
+    private UseClick currentUseClick() {
+        return useClicks.peekLast();
+    }
+
+    /**
+     * Opens the frame of one useItemOn call made in server tick {@code tick}. Frames of any other tick are leaks (a
+     * foreign cancel or a throw skipped their pop) and are dropped first.
+     */
+    public void beginUseClick(long tick) {
+        useClicks.removeIf(c -> c.tick != tick);
+        useClicks.addLast(new UseClick(tick));
+    }
+
+    /** Closes the innermost click frame; nothing when none is open. */
+    public void endUseClick() {
+        useClicks.pollLast();
+    }
+
+    /** True when this click's RightClickBlock denied the item ({@code useItem == DENY}). */
+    public boolean isFcUseDenied() {
+        UseClick c = currentUseClick();
+        return c != null ? c.fcUseDenied : looseFcUseDenied;
+    }
+
+    /** Records the RightClickBlock {@code useItem} verdict of this click (every post overwrites it). */
+    public void setFcUseDenied(boolean denied) {
+        UseClick c = currentUseClick();
+        if (c != null) {
+            c.fcUseDenied = denied;
+        } else {
+            looseFcUseDenied = denied;
+        }
+    }
+
+    /** Records that FC onItemUse ran at {@code pos} in this click; nothing outside useItemOn. */
+    public void markFcItemUse(net.minecraft.core.BlockPos pos) {
+        UseClick c = currentUseClick();
+        if (c != null) {
+            c.fcUseRanAt = pos.immutable();
+        }
+    }
+
+    /** True when FC onItemUse already ran at {@code pos} in this click. */
+    public boolean fcItemUseRanAt(net.minecraft.core.BlockPos pos) {
+        UseClick c = currentUseClick();
+        return c != null && pos.equals(c.fcUseRanAt);
+    }
+
+    /** This click's FC placement outcome; NONE outside useItemOn. */
+    public Stage2 stage2() {
+        UseClick c = currentUseClick();
+        return c != null ? c.stage2 : Stage2.NONE;
+    }
+
+    /** Records this click's FC placement outcome, with no cell; nothing outside useItemOn. */
+    public void setStage2(Stage2 stage2) {
+        setStage2(stage2, null);
+    }
+
+    /** Records this click's FC placement outcome and, for PLACED, the cell FC placed in; nothing outside useItemOn. */
+    public void setStage2(Stage2 stage2, net.minecraft.core.BlockPos at) {
+        UseClick c = currentUseClick();
+        if (c != null) {
+            c.stage2 = stage2 != null ? stage2 : Stage2.NONE;
+            c.stage2At = c.stage2 == Stage2.PLACED && at != null ? at.immutable() : null;
+        }
+    }
+
+    /** PLACED only: the cell this click's FC placement put the held block in; null otherwise or when unknown. */
+    public net.minecraft.core.BlockPos stage2At() {
+        UseClick c = currentUseClick();
+        return c != null && c.stage2 == Stage2.PLACED ? c.stage2At : null;
     }
 
     // ================================================================
@@ -510,9 +669,10 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
     }
 
     /**
-     * Returns whether the player is currently sleeping.
-     * FC disables beds, so this should always return false on the server,
-     * but we delegate to the real player state for correctness.
+     * Returns whether the player is currently sleeping: the real player's 1.20.1 state. Beds sleep (maintainer ruling 3,
+     * 2026-10-19: 1.20.1's sleep, messages and night skip, while a bed never sets the spawn, BedSpawnPolicy), so this is
+     * true while the player lies in a bed, as 1.5.2 EntityPlayer.isPlayerSleeping was. 4.B removed sleeping (its
+     * FCBlockBed swallowed the click), so FC itself never put a player to sleep.
      */
     @Override
     public boolean isPlayerSleeping() {
@@ -662,6 +822,24 @@ public class PlayerBridge extends btw.modern.EntityPlayerMP {
     @Override
     public boolean isOnLadder() {
         return realPlayer.onClimbable();
+    }
+
+    /**
+     * 4.B's edit rule, Modern-Common EntityPlayer.canPlayerEdit (vanilla/server EntityPlayer.java:2034-2040): no
+     * placement in mid-air unless creative, on the ground, in water, on a ladder, riding or in lava. Its riding clause
+     * reads the {@code ridingEntity} field, which the bridge never sets: the vehicle is a 1.20.1 entity that 1.20.1
+     * mounts, and an FC view of it in that field would let FC code dismount or re-mount it (FCEntitySquid.java:956-963).
+     * So a riding player is asked here, from the real player; every other clause stays Modern-Common's (inWater is
+     * synced, the ladder and lava clauses are overridden above).
+     * FCMOD-INTEGRATION(1.20.1): placement_validity: FC's refusal of a placement is final for the 4.B ItemBlock family
+     * (ServerPlayerGameModeMixin.btw$fcItemStep), so a player in a boat or on a horse must pass the rule as in 4.B
+     */
+    @Override
+    public boolean canPlayerEdit(int x, int y, int z, int side, btw.modern.ItemStack stack) {
+        if (realPlayer.isPassenger()) {
+            return this.capabilities != null && this.capabilities.allowEdit;
+        }
+        return super.canPlayerEdit(x, y, z, side, stack);
     }
 
     /**

@@ -17,6 +17,16 @@ import org.apache.logging.log4j.Logger;
  * :250 consumeInventoryItem; ItemStack.damageItem :323-345) and never rewrites a slot it did not
  * touch, so an untouched slot must keep its exact MC stack (subtype, NBT, anything FC cannot
  * represent).</p>
+ *
+ * <p>INV-RESYNC (CurseForge triage CF2-I1): a re-sync never replaces or discards an FC stack FC may still hold. 1.5.2
+ * has one live {@code ItemStack[]} (vanilla/server InventoryPlayer.java:21, getCurrentItem :47-50) that FC edits in
+ * place, so the stack FC takes from the inventory stays the inventory's stack for the whole call. Here FC holds a
+ * snapshot, and {@link #sync()} runs on every {@code PlayerBridge.getOrCreate}, including the ones nested inside FC's own
+ * calls (WorldBridge entity extraction under {@code NotifyNearbyAnimalsOfPlayerBlockAddOrRemove}, the ladder gate under
+ * {@code canPlayerEdit}). So while a real slot is unchanged since its baseline, sync() keeps FC's object and writes FC's
+ * pending edit to it through first; only a slot the real inventory changed is re-read (the real slot wins). A caller
+ * whose FC edits must not land (FC only shadows a vanilla action, or the FC call threw) drops them with
+ * {@link #discardPendingEdits()}; a {@link #beginShadow()} scope keeps a nested sync from writing them first.</p>
  */
 public class InventoryBridge extends btw.modern.InventoryPlayer {
     private static final Logger LOGGER = LogManager.getLogger("BTW-InventoryBridge");
@@ -32,11 +42,11 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
     private final int[] baseSize = new int[slotCount];
     private final int[] baseDamage = new int[slotCount];
     private final CompoundTag[] baseTag = new CompoundTag[slotCount];
-    /**
-     * The FC stack sync() handed out per slot. Unlike baseFc it is not moved by write-through
-     * rebaselining, so writeBack can tell "FC still holds the synced stack" from "FC replaced it".
-     */
-    private final btw.modern.ItemStack[] syncFc = new btw.modern.ItemStack[slotCount];
+    /** The real stack's own count and damage at the baseline (INV-RESYNC: tells an in-place 1.20.1 edit of baseMc). */
+    private final int[] baseMcCount = new int[slotCount];
+    private final int[] baseMcDamage = new int[slotCount];
+    /** Open {@link #beginShadow()} scopes: while above 0, sync() keeps FC's pending edits unwritten. */
+    private int shadowDepth;
     /** Slots whose MC stack could not be converted: FC sees them empty, write-back never touches them. */
     private final boolean[] locked = new boolean[slotCount];
 
@@ -65,6 +75,76 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
     }
 
     private void syncSlot(int i, net.minecraft.world.item.ItemStack modern) {
+        if (keepLive(i, modern)) return;
+        // re-read the slot: a write-through that failed may already have touched it
+        rebuildSlot(i, mcSlot(i));
+    }
+
+    /**
+     * INV-RESYNC: whether slot i keeps the FC object FC holds instead of a fresh copy. Only while the real slot is still
+     * what the bridge last baselined ({@link #mcUnchanged}); a real slot that changed wins, and FC's object is re-read as
+     * before. FC's pending edit to the slot is written through first, on the server only (a client bridge never writes
+     * the client inventory: the server owns it), and not inside a {@link #beginShadow()} scope, whose owner lands or
+     * drops it. A stack the write-through just used up stays in the slot for the rest of FC's call, as 1.5.2 kept a
+     * 0-size stack until the packet handler cleared it (vanilla/server NetServerHandler.java:551-556), so
+     * ProxyBlock.tryPlaceHeldItem's creative restore still lands; the next sync that finds it used up clears it. A state
+     * the real stack could not take ({@link #faithful}) is re-read, as before.
+     */
+    private boolean keepLive(int i, net.minecraft.world.item.ItemStack modern) {
+        if (locked[i] || !mcUnchanged(i, modern)) return false;
+        if (fcChanged(i)) {
+            if (!serverSide()) return false;
+            if (shadowDepth > 0) return true; // the scope's owner lands or drops it: keep the object, write nothing yet
+            writeBackSlot(i);
+            if (fcChanged(i)) return false; // the write failed (logged): re-read as before
+            return faithful(snapshot(i), mcSlot(i));
+        }
+        btw.modern.ItemStack fc = snapshot(i);
+        if (fc != null && fc.stackSize <= 0) return false; // used up and already written: cleared by the re-read
+        return faithful(fc, modern);
+    }
+
+    /**
+     * True when the real slot is what the bridge last baselined: empty then and now, or the very stack object it
+     * baselined with the same count, damage and NBT. An in-place 1.20.1 edit (BlockItem.place's shrink, hurtAndBreak, a
+     * tag change) is a change.
+     */
+    private boolean mcUnchanged(int i, net.minecraft.world.item.ItemStack mc) {
+        net.minecraft.world.item.ItemStack base = baseMc[i];
+        if (base == null || mc == null) return false; // never baselined
+        if (mc.isEmpty()) return baseMcCount[i] == 0;
+        return mc == base && mc.getCount() == baseMcCount[i] && mc.getDamageValue() == baseMcDamage[i]
+                && ItemStackHelper.mcTagMatches(mc, baseTag[i]);
+    }
+
+    /**
+     * FC's object shows what the real stack holds: no stack or a used-up one, or the real count, and the real durability
+     * on a damageable item. False when a write-back could not land FC's state: an FC id with no 1.20.1 item (toMcStack
+     * gave EMPTY), or wear on an Unbreakable item (applyFcState writes durability only where isDamageableItem). Such a
+     * slot is re-read, as before INV-RESYNC, so FC never keeps a count or wear the real item does not have.
+     */
+    private static boolean faithful(btw.modern.ItemStack fc, net.minecraft.world.item.ItemStack mc) {
+        if (fc == null || fc.stackSize <= 0) return true;
+        if (mc.isEmpty() || mc.getCount() != fc.stackSize) return false;
+        return !ItemStackHelper.isDamageable(mc) || mc.getDamageValue() == fc.getItemDamage();
+    }
+
+    /** The real stack of slot i (main inventory, then armor), EMPTY past the list. */
+    private net.minecraft.world.item.ItemStack mcSlot(int i) {
+        boolean armor = i >= mainInventory.length;
+        net.minecraft.core.NonNullList<net.minecraft.world.item.ItemStack> list = armor ? inventory.armor : inventory.items;
+        int idx = armor ? i - mainInventory.length : i;
+        return idx < list.size() ? list.get(idx) : net.minecraft.world.item.ItemStack.EMPTY;
+    }
+
+    /** A server player's inventory: only the server writes FC's edits into the real inventory. */
+    private boolean serverSide() {
+        net.minecraft.world.entity.player.Player p = inventory.player;
+        return p != null && !p.level().isClientSide;
+    }
+
+    /** Slot i re-read from the real stack: a new FC snapshot and baseline (the whole of sync() before INV-RESYNC). */
+    private void rebuildSlot(int i, net.minecraft.world.item.ItemStack modern) {
         btw.modern.ItemStack fc;
         CompoundTag fingerprint;
         try {
@@ -83,7 +163,6 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
             warn("sync slot " + i + " (" + modern + ")", t);
         }
         setSnapshot(i, fc);
-        syncFc[i] = fc;
         rebaseline(i, modern, fingerprint);
     }
 
@@ -149,23 +228,17 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
      * Writes FC ItemStack state back to the real MC inventory slot.
      * Call after FC code that may modify items (damageItem, stackSize changes).
      *
-     * @param fcStack the FC ItemStack that was modified (from getCurrentItem etc.)
+     * <p>INV-RESYNC: the slot's own FC state is written; a detached {@code fcStack} is never adopted. sync() keeps
+     * the object FC holds while the real slot is unchanged, so the stack FC took is the slot's own. FC holds a stack the
+     * slot no longer has only when the real slot changed (the real slot wins), FC replaced it (its replacement is
+     * written) or the slot could not take FC's state (it was re-read).</p>
+     *
+     * @param fcStack the FC ItemStack that was modified (from getCurrentItem etc.); not read since INV-RESYNC
      * @param slot the inventory slot index, or -1 for current held item
      */
     public void writeBack(btw.modern.ItemStack fcStack, int slot) {
         if (slot < 0) slot = inventory.selected;
         if (slot < 0 || slot >= mainInventory.length) return;
-
-        if (fcStack != null && fcStack != mainInventory[slot]) {
-            // Detached FC stack (a re-sync replaced the stack FC was holding): adopt it only while
-            // the slot still holds the stack sync() handed out. If FC replaced or cleared the slot
-            // since (destroyCurrentEquippedItem, setInventorySlotContents with a new stack of the
-            // same id), syncFc no longer matches -- baseFc does, after write-through rebaselining --
-            // and the slot's own FC state is what gets written.
-            if (mainInventory[slot] == syncFc[slot] && syncFc[slot] != null && fcStack.itemID == baseId[slot]) {
-                mainInventory[slot] = fcStack;
-            }
-        }
         writeBackSlot(slot);
     }
 
@@ -189,6 +262,69 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
         for (int i = 0; i < slotCount; i++) writeBackSlot(i);
     }
 
+    /**
+     * INV-RESYNC: drops every FC edit not yet written to the real inventory. Each slot FC changed since its baseline is
+     * re-read from the real stack, which is what every sync() did before INV-RESYNC. For an FC call whose edits must
+     * not land: one that threw (a failed FC call lands nothing: ProxyEntity.playerTouch's arrow, a half-done
+     * SlotCrafting take), or FC only shadowing a 1.20.1 action that owns the stack (ServerPlayerGameModeMixin.btw$useItem
+     * and ItemStackMixin.btw$finishUsing, the STUB_CATALOGUE items-wave caveat). Without it the next sync would write
+     * such an edit, since the real slot did not change: FCItemThrowable's stackSize-- on top of vanilla's shrink, a
+     * second bowl beside vanilla's, one more arrow per touch tick.
+     */
+    public void discardPendingEdits() {
+        this.currentItem = inventory.selected;
+        for (int i = 0; i < slotCount; i++) {
+            if (fcChanged(i)) rebuildSlot(i, mcSlot(i));
+        }
+    }
+
+    /**
+     * INV-RESYNC: opens a shadow scope around an FC call whose edits the caller lands (writeBackAll) or drops
+     * ({@link #discardPendingEdits()}) once FC returns. Inside it a sync nested in the FC call still keeps FC's objects
+     * but writes none of FC's pending edits, so the caller's decision covers all of them. Close it with
+     * {@link #endShadow()} in a finally, after landing or dropping. Scopes do not nest in practice; the depth is
+     * counted anyway.
+     */
+    public void beginShadow() {
+        shadowDepth++;
+    }
+
+    /** Closes the scope {@link #beginShadow()} opened. */
+    public void endShadow() {
+        if (shadowDepth > 0) shadowDepth--;
+    }
+
+    /**
+     * Sends the held slot's real stack to the client, as 1.5.2 did after every place packet (vanilla/server
+     * NetServerHandler.java:551-569: clear a used-up held stack, then Packet103SetSlot for the held slot of the open
+     * container when it differs from the stack the client sent). The 1.20.1 use packet carries no client stack
+     * (ServerboundUseItemOnPacket), and broadcastChanges sends a slot only when the server stack differs from the remote
+     * view (AbstractContainerMenu.synchronizeSlotToRemote), which never covers a client that predicted a change the
+     * server did not make; so the slot is always sent and recorded as the remote view, the way ServerPlayer's own
+     * synchronizer sends one (ServerPlayer.java:212-213; findSlot/setRemoteSlot as in ServerPlayer.drop :1680-1682).
+     * Not while an item is in use (1.5.2 :559 getMaxItemUseDuration() == 0; 1.20.1 ServerPlayerGameMode.useItem :308).
+     * Call after the write-back, so the client gets the stack FC left.
+     */
+    public void resendHeldSlot() {
+        if (!(inventory.player instanceof net.minecraft.server.level.ServerPlayer sp) || sp.connection == null
+                || sp.isUsingItem()) {
+            return;
+        }
+        int selected = inventory.selected;
+        if (selected < 0 || selected >= inventory.items.size()) return;
+        net.minecraft.world.inventory.AbstractContainerMenu menu = sp.containerMenu;
+        java.util.OptionalInt slot = menu.findSlot(inventory, selected);
+        if (slot.isEmpty() && menu != sp.inventoryMenu) {
+            menu = sp.inventoryMenu; // a menu without the player's slots: the client applies container 0 hotbar slots
+            slot = menu.findSlot(inventory, selected);
+        }
+        if (slot.isEmpty()) return;
+        net.minecraft.world.item.ItemStack held = inventory.getItem(selected);
+        menu.setRemoteSlot(slot.getAsInt(), held);
+        sp.connection.send(new net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket(
+                menu.containerId, menu.incrementStateId(), slot.getAsInt(), held.copy()));
+    }
+
     private btw.modern.ItemStack snapshot(int i) {
         return i < mainInventory.length ? mainInventory[i] : armorInventory[i - mainInventory.length];
     }
@@ -205,6 +341,8 @@ public class InventoryBridge extends btw.modern.InventoryPlayer {
         btw.modern.ItemStack fc = snapshot(i);
         baseFc[i] = fc;
         baseMc[i] = mc;
+        baseMcCount[i] = mc != null ? mc.getCount() : 0;
+        baseMcDamage[i] = mc != null && !mc.isEmpty() ? mc.getDamageValue() : 0;
         baseId[i] = fc != null ? fc.itemID : 0;
         baseSize[i] = fc != null ? fc.stackSize : 0;
         baseDamage[i] = fc != null ? fc.getItemDamage() : 0;

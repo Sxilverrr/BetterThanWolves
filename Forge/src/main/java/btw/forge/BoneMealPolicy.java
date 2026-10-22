@@ -45,13 +45,15 @@ import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
  *
  * <p><b>Paths.</b></p>
  * <ul>
- *   <li>Player use, not sneaking: 1.20.1 runs {@code blockstate.use} first (ServerPlayerGameMode.useItemOn), where
- *       BlockBehaviorMixin.btw$use / ProxyBlock.use run FC's onBlockActivated (the plant's weed pull) and then
- *       FCItemDye (Stage 2). That is 4.B's ItemInWorldManager.activateBlockOrUseItem order (vanilla/server
- *       ItemInWorldManager.java:376-407); ServerPlayerGameModeMixin leaves bone meal to it
- *       ({@link #isFcBoneMeal}).</li>
+ *   <li>Player use, main hand, not sneaking: 1.20.1 runs {@code blockstate.use} first (ServerPlayerGameMode.useItemOn),
+ *       where BlockBehaviorMixin.btw$use / ProxyBlock.use run FC's onBlockActivated (the plant's weed pull) and then
+ *       FCItemDye (Stage 2, ProxyBlock.tryPlaceHeldItem). That is 4.B's ItemInWorldManager.activateBlockOrUseItem
+ *       order (vanilla/server ItemInWorldManager.java:376-407). Stage 2 honours a RightClickBlock {@code useItem} DENY
+ *       (FcItemUseOrder), as 1.20.1's item step does (ServerPlayerGameMode.java:351), so a claim mod's DENY keeps the
+ *       bone meal.</li>
  *   <li>Player use otherwise (sneaking, the off hand, a target without Stage 2): {@code BoneMealItem.useOn}, through
- *       BoneMealItemMixin and {@link #onBoneMealUseOn}.</li>
+ *       BoneMealItemMixin and {@link #onBoneMealUseOn}. ServerPlayerGameModeMixin's FC item step, which runs at that
+ *       same {@code useOn} call, leaves bone meal to it ({@link #isFcBoneMeal}).</li>
  *   <li>Other callers of {@code BoneMealItem.applyBonemeal} (mod machines, {@code growCrop}): {@link #onBonemeal}.</li>
  *   <li>Direct {@code performBonemeal} / {@code isValidBonemealTarget} callers: BonemealableGateMixin
  *       ({@link #governsGrowth(BlockGetter, BlockPos, BlockState)}).</li>
@@ -60,8 +62,9 @@ import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
  *       (FCBlockFarmlandBase / FCBlockPlanterBase.onEntityCollidedWithBlock, through the item bridges).</li>
  * </ul>
  *
- * <p>Only {@code minecraft:bone_meal} is fertilizer ({@link #isFertilizer}). LegacyVariants also reads 1.20.1 white dye
- * as FC dye 15 (LegacyVariants.java:159), which 4.B never had as a separate item.</p>
+ * <p>Only {@code minecraft:bone_meal} is fertilizer ({@link #isFertilizer}). 1.20.1 white dye, which 4.B never had as a
+ * separate item, reads as FC (351, 15|0x100) = 271 through LegacyVariants.MODERN_SPELLING, never FC dye 15; isFcBoneMeal
+ * stays for bone meal's 4.B activation order.</p>
  *
  * <p>Modded plants on BTW soil (INTEGRATIONS #026) use this extension point: the positional
  * {@link #route(BlockGetter, BlockPos, BlockState)} adds {@code FcSoil.governsAt} as a {@link Route#SOIL_RELAY} and
@@ -97,10 +100,12 @@ public final class BoneMealPolicy {
      * The route of {@code state}. FC-mapped blocks (vanilla ids and ProxyBlocks, {@link ProxyRegistry#getBlockId}) are
      * {@link Route#FC_TARGET} whatever they are, so the grass block, netherrack, sand and cocoa get 4.B's "nothing"
      * instead of 1.20.1's spread, grass, seagrass or growth. A modern block an integration registered FC machine hooks for
-     * ({@link ModernBlockHooks}: Dynamic Trees branches, roots, rooty soil, trunk shells, pods and fruit, INTEGRATIONS
-     * #027) is {@link Route#FC_TARGET} too: FCItemDye's attemptFertilizer reaches it as a ModernBlockStandIn, whose
-     * AttemptToApplyFertilizerTo asks the hook. Pure: reads only the state, FC's static tables and the hooks registered
-     * during mod construction.
+     * ({@link ModernBlockHooks}: Dynamic Trees branches, roots, rooty soil and trunk shells, INTEGRATIONS #027) is
+     * {@link Route#FC_TARGET} too: FCItemDye's attemptFertilizer reaches it as a ModernBlockStandIn, whose
+     * AttemptToApplyFertilizerTo asks the hook. Dynamic Trees pods and fruit are paced
+     * ({@link TwinRegistry#PACED_LIKE_SWEET_BERRIES}), so the growth test above routes them first, as
+     * {@link Route#SOIL_RELAY}. Pure: reads only the state, FC's static tables and the hooks registered during mod
+     * construction.
      */
     public static Route route(BlockState state) {
         if (!BTWLifecycle.isFcReady()) return Route.VANILLA;
@@ -160,9 +165,11 @@ public final class BoneMealPolicy {
 
     /**
      * True when the FC player holds FC dye 15, which is bone meal to FC (FCItemDye.onItemUse acts on nothing else,
-     * Client FCItemDye.java:34-47). ServerPlayerGameModeMixin's HEAD pre-emption skips it: bone meal goes through
-     * 1.20.1's own order (activation first, then {@code useOn}), and 1.20.1 white dye, which reads as the same FC
-     * stack, must not run FC's bone-meal code at all.
+     * Client FCItemDye.java:34-47). ServerPlayerGameModeMixin's FC item step (at {@code ItemStack.useOn}) skips it, so
+     * bone meal there reaches {@code BoneMealItem.useOn} (BoneMealItemMixin, {@link #onBoneMealUseOn}), its one route
+     * for sneaking, the off hand and targets without Stage 2; activation still comes first (Stage 1, then Stage 2's
+     * FCItemDye), 4.B's order. 1.20.1 white dye reads as FC (351, 15|0x100) = 271 through
+     * LegacyVariants.MODERN_SPELLING, never FC dye 15; isFcBoneMeal stays for bone meal's 4.B activation order.
      */
     public static boolean isFcBoneMeal(btw.modern.Item fcItem, btw.modern.ItemStack fcStack) {
         return fcItem instanceof btw.modern.ItemDye && fcStack != null
@@ -170,10 +177,12 @@ public final class BoneMealPolicy {
     }
 
     /**
-     * False when FC item-use code must not run for the FC stack {@code fcStack} built from {@code mcStack}: 1.20.1
-     * white dye reads as FC dye 15 (LegacyVariants.java:159), and only {@code minecraft:bone_meal} is FC fertilizer.
-     * For the Stage-2 item use of block activation (ProxyBlock.tryPlaceHeldItem), which runs FCItemDye on the held
-     * FC stack.
+     * False when FC item-use code must not run for the FC stack {@code fcStack} built from {@code mcStack}: an FC dye 15
+     * that is not {@code minecraft:bone_meal}, the only FC fertilizer. 1.20.1 white dye reads as FC (351, 15|0x100) =
+     * 271 through LegacyVariants.MODERN_SPELLING, never FC dye 15, so it passes here and FCItemDye declines it (Client
+     * FCItemDye.java:36); the guard stays for any other spelling that would read as dye 15. Checked by
+     * ProxyBlock.tryPlaceHeldItem, the single FC {@code onItemUse} point of a block click (Stage 2 and the item step),
+     * which runs FCItemDye on the held FC stack.
      */
     public static boolean mayUseAsFcItem(ItemStack mcStack, btw.modern.ItemStack fcStack) {
         return fcStack == null || !(fcStack.getItem() instanceof btw.modern.ItemDye)

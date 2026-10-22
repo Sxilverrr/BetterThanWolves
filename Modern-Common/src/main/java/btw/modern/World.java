@@ -884,6 +884,16 @@ public abstract class World implements IBlockAccess {
     public void DropModernBlockLoot(int x, int y, int z) {
     }
 
+    /**
+     * Port hook (vanilla_pair_drops; also the seam the collapsed-identity rule, triage CF2-DR3 (b), extends): true when
+     * the live block at (x, y, z) owns the loot FC would drop there as {@code blockID} (a bed or door that 1.20.1 breaks
+     * and drops), so FC's drop entry points (Block.dropBlockAsItemWithChance, Block.DropItemsOnDestroyedByExplosion)
+     * drop that block's loot through {@link #DropModernBlockLoot}. Base worlds have no live block: false.
+     */
+    public boolean UsesModernBlockLoot(int x, int y, int z, int blockID) {
+        return false;
+    }
+
     // 1.5.2 World.setItemData/loadItemData/getUniqueDataId (vanilla/server World.java:3873-3894) —
     // FCItemEmptyMap.java:41,45 map crafting; delegates to mapStorage exactly like
     // vanilla (WorldBridge installs a live MapStorage backed by the MC level).

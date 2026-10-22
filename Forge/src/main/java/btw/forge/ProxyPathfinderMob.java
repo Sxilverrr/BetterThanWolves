@@ -418,6 +418,8 @@ public class ProxyPathfinderMob extends PathfinderMob
             } catch (Throwable t) {
                 // A bridge gap in FC interact (villager trading, ...) must not crash the packet handler.
                 FCPuppetSupport.logFailureOnce(LOGGER, "FC interact()", fcEntity, t);
+                // INV-RESYNC: a failed FC call lands nothing; the next sync dropped its edits, it would now write them
+                pb.discardInventoryEdits();
             }
         }
         return super.mobInteract(player, hand);

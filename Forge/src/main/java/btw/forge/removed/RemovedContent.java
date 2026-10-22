@@ -475,7 +475,7 @@ public final class RemovedContent {
      * <ul>
      *   <li>every btw.modern.Block.blocksList entry of an FC stub/inert class must be a T1 row's legacy block id,
      *       and every Item.itemsList entry of FCItemStub a T1 row's legacy item id (class names, not a null-tab
-     *       test: the port's vanilla initialisers set no tabs, STUB_CATALOGUE.md:3121-3125);</li>
+     *       test: the port's vanilla initialisers set no tabs, STUB_CATALOGUE.md:3154-3159);</li>
      *   <li>every row's blocks and standalone item map to the 1.5.2 ids the table cites;</li>
      *   <li>every T2 successor resolves to a registered item.</li>
      * </ul>

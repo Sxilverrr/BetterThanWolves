@@ -1,4 +1,5 @@
 # CurseForge feedback triage (2026-10-10)
+> **Later triage:** a CurseForge comment of 2026-10-19 (falling blocks, bed and door duplication, blocks that never run out, beds, flowers, zombified villages) is triaged in [curseforge-feedback-triage-2026-10-19.md](curseforge-feedback-triage-2026-10-19.md).
 
 This is a research-only triage of player comments on the CurseForge page. It is diagnosis only: no code was changed. *(status: fixes were made afterwards, in the working tree; see [Fix status](#fix-status-2026-10-10-uncommitted-working-tree).)*
 

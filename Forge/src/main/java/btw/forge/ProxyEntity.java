@@ -386,12 +386,18 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
                 && player instanceof net.minecraft.server.level.ServerPlayer sp) {
             btw.forge.PlayerBridge pb = btw.forge.PlayerBridge.getOrCreate(sp);
             try {
-                if (fcEntity.interact(pb)) {
+                boolean handled = fcEntity.interact(pb);
+                // FCEntityWindMill(Vertical).interact uses one dye in place (stackSize--) and writes the slot itself
+                // only when it empties; land the edit now, as ProxyAnimal/ProxyMob.mobInteract do
+                pb.syncInventoryToReal();
+                if (handled) {
                     return net.minecraft.world.InteractionResult.SUCCESS;
                 }
             } catch (Throwable t) {
                 LOGGER.warn("FC entity interact() threw: {}: {}",
                         t.getClass().getSimpleName(), t.getMessage());
+                // INV-RESYNC: a failed FC call lands nothing; the next sync dropped its edits, it would now write them
+                pb.discardInventoryEdits();
             }
         }
         return super.interact(player, hand);
@@ -416,6 +422,7 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
     public void playerTouch(net.minecraft.world.entity.player.Player player) {
         if (fcEntity != null && !level().isClientSide
                 && player instanceof net.minecraft.server.level.ServerPlayer sp) {
+            PlayerBridge pb = null;
             try {
                 java.lang.reflect.Method m = onCollideWithPlayerMethod;
                 if (m == null) {
@@ -423,7 +430,7 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
                             "onCollideWithPlayer", btw.modern.EntityPlayer.class);
                     onCollideWithPlayerMethod = m;
                 }
-                PlayerBridge pb = PlayerBridge.getOrCreate(sp);
+                pb = PlayerBridge.getOrCreate(sp);
                 m.invoke(fcEntity, pb);
                 // Arrow pickup puts the arrow into the FC inventory snapshot (vanilla/server
                 // EntityArrow.java:516 AddArrowToPlayerInv -> :600 addItemStackToInventory, which
@@ -437,6 +444,10 @@ public class ProxyEntity extends net.minecraft.world.entity.Entity
                 // rather than waiting for the next tick.
                 syncFromFc();
             } catch (Throwable t) {
+                // INV-RESYNC: the "only after a normal return" rule above. A throw before setDead() leaves the arrow
+                // alive, so drop the arrow FC already put into the snapshot, as the next sync dropped it before; it
+                // would now write it, one free arrow per touch tick.
+                if (pb != null) pb.discardInventoryEdits();
                 Throwable root = t;
                 while (root.getCause() != null && root.getCause() != root) {
                     root = root.getCause();

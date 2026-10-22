@@ -10,9 +10,12 @@ import net.minecraft.world.level.block.Blocks;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -35,10 +38,39 @@ final class LegacyVariants {
     /** 1.5.2 Item.monsterPlacer. */
     static final int SPAWN_EGG_ID = 383;
 
+    /**
+     * Damage bit of an FC stack that stands for a 1.20.1-only spelling of a 1.5.2 ITEM subtype whose canonical item
+     * is another one: the 1.20.1 white, black, brown and blue dye for dyes 15, 0, 3 and 4, whose canonical items are
+     * bone meal, the ink sac, cocoa and lapis (vanilla/server ItemDye.java:19). FC holds them as
+     * (351, d | MODERN_SPELLING) = 271, 256, 259 and 260. The low bits stay the subtype, so FC's colour code, which
+     * masks the damage (BlockCloth.getBlockFromDye, ~d &amp; 15), still reads the colour. FC's (id, damage) tests tell
+     * white dye apart from bone meal: FCItemDye.onItemUse (Server FCItemDye.java:35), the dropped-item fertilizer rule
+     * (FCBlockFarmlandBase.java:157, FCBlockPlanterBase.java:65-66), chicken feed (FCRecipes.java:1080-1104), dog
+     * food (:4007-4013) and the farmer's trade (FCEntityVillager.java:643, through MerchantRecipeList's slot rule).
+     * They tell black, brown and blue dye apart from the ink sac, cocoa and lapis: the book-and-quill recipes (Client
+     * FCRecipes.java:2654-2669), chocolate milk (:2307-2310), polished lapis (:3171-3179), chocolate (:3675-3684) and
+     * the librarian's ink sac (Client FCEntityVillager.java:746). FC's merges tell every spelling apart
+     * (FCUtilsInventory.CanStacksMerge:405-413, through ItemDye's subtypes). toMcStack gives the same item back.
+     * Items only: a block subtype's damage is FC metadata. A positive short, never 32767 (the 1.5.2 wildcard).
+     * {@link #spelledSubtypes} lists the spelled subtypes; ModernSpellingRecipes gives each its FC colour recipes.
+     */
+    // FCMOD-INTEGRATION(1.20.1): bone_meal: only minecraft:bone_meal is FC fertilizer (INTEGRATIONS #017), so white dye
+    // keeps its own FC stack on every FC path (dropped items, both dispensers, hoppers, grids, cauldrons, trades)
+    // FCMOD-INTEGRATION(1.20.1): modern_dyes: black, brown and blue dye are colours only (INTEGRATIONS #038), so they
+    // keep their own FC stacks too, and ink, polished lapis and chocolate stay with the ink sac, lapis and cocoa
+    static final int MODERN_SPELLING = 0x100;
+
     private static final Map<Item, int[]> TO_LEGACY = new IdentityHashMap<>();
     private static final Map<Long, Item> TO_MODERN = new HashMap<>();
     /** 1.5.2 EntityList name -> modern entity registry path (reverse of ItemStackHelper.LEGACY_ENTITY_NAMES). */
     private static final Map<String, String> MODERN_PATH_BY_LEGACY_NAME = new HashMap<>();
+    /**
+     * Legacy id -> the base subtypes that have a {@link #MODERN_SPELLING} entry both ways (351 -> {0, 3, 4, 15}): the
+     * input of ModernSpellingRecipes' colour rule. {@link #spelling} fills it in the static block, which runs after
+     * this declaration (static initialisers run in textual order).
+     */
+    // FCMOD-INTEGRATION(1.20.1): modern_dyes: the spelled subtypes ModernSpellingRecipes twins (INTEGRATIONS #038)
+    private static final Map<Integer, Set<Integer>> SPELLED = new HashMap<>();
     /**
      * entity id -> egg; Items.AIR marks an id with no modern egg (ConcurrentHashMap takes no nulls).
      * A miss is cached only after a complete scan of a filled EntityList.
@@ -71,6 +103,24 @@ final class LegacyVariants {
         if (it != null && it != Items.AIR) TO_MODERN.putIfAbsent(key(id, meta), it);
     }
 
+    /**
+     * Modern-only spelling of a 1.5.2 subtype that must keep its identity through FC: both directions at
+     * (id, meta | {@link #MODERN_SPELLING}), so the canonical item keeps (id, meta) on both sides.
+     */
+    private static void spelling(int id, int meta, ItemLike m) {
+        int spelled = meta | MODERN_SPELLING;
+        both(id, spelled, m);
+        Item it = m.asItem();
+        int[] legacy = it == null ? null : TO_LEGACY.get(it);
+        // Recorded only when both directions hold (the first registration of a key wins on each side, both()):
+        // FC (id, spelled) reads as this item, and this item reads as FC (id, spelled). ModernSpellingRecipes then
+        // twins only spellings that a stack can carry.
+        if (it != null && it != Items.AIR && TO_MODERN.get(key(id, spelled)) == it
+                && legacy != null && legacy[0] == id && legacy[1] == spelled) {
+            SPELLED.computeIfAbsent(id, k -> new TreeSet<>()).add(meta);
+        }
+    }
+
     static {
         try {
             // 1.5.2 subtype tables: BlockWood.java:19, BlockSapling.java:20, BlockLog.java:21,
@@ -84,6 +134,15 @@ final class LegacyVariants {
                     {Blocks.OAK_SLAB, Blocks.SPRUCE_SLAB, Blocks.BIRCH_SLAB, Blocks.JUNGLE_SLAB}};
             for (int r = 0; r < woodIds.length; r++) {
                 for (int m = 0; m < 4; m++) both(woodIds[r], m, wood[r][m]);
+            }
+            // FCMOD-INTEGRATION(1.20.1): modern_woods: acacia, dark oak, mangrove and cherry are FC wood types 5-8
+            // (ModernWoods): log2 at legacy id 165 with species = wood type - 5, and FC planks subtypes 5-8 (item level
+            // only; FC "any planks" recipes accept them, RecipeBridge.java:500-524).
+            ItemLike[] log2 = {Blocks.ACACIA_LOG, Blocks.DARK_OAK_LOG, Blocks.MANGROVE_LOG, Blocks.CHERRY_LOG};
+            ItemLike[] planks2 = {Blocks.ACACIA_PLANKS, Blocks.DARK_OAK_PLANKS, Blocks.MANGROVE_PLANKS, Blocks.CHERRY_PLANKS};
+            for (int s = 0; s < 4; s++) {
+                both(ModernWoods.LOG2_ID, s, log2[s]);
+                both(5, 5 + s, planks2[s]);
             }
 
             // BlockSandStone.java:18 {default, chiseled, smooth}; 1.5.2 "smooth" is 1.20.1 cut sandstone
@@ -146,17 +205,25 @@ final class LegacyVariants {
             both(322, 0, Items.GOLDEN_APPLE);
             both(322, 1, Items.ENCHANTED_GOLDEN_APPLE);
 
-            // ItemDye.java:19 dyeColorNames: dye d is colour 15-d. The 1.5.2 "dyes" that are
-            // separate items in 1.20.1 (ink sac, cocoa, lapis, bone meal) are the canonical
-            // FC -> MC picks; the modern black/brown/blue/white dye items read as the same subtype.
+            // ItemDye.java:19 dyeColorNames: dye d is colour 15-d. The 1.5.2 "dyes" that are separate items in
+            // 1.20.1 (ink sac, cocoa, lapis, bone meal) are dye 0, 3, 4 and 15 both ways.
             both(351, 0, Items.INK_SAC);
-            rev(Items.BLACK_DYE, 351, 0);
             both(351, 3, Items.COCOA_BEANS);
-            rev(Items.BROWN_DYE, 351, 3);
             both(351, 4, Items.LAPIS_LAZULI);
-            rev(Items.BLUE_DYE, 351, 4);
             both(351, 15, Items.BONE_MEAL);
-            rev(Items.WHITE_DYE, 351, 15);
+            // FCMOD-INTEGRATION(1.20.1): modern_dyes: the 1.20.1 black, brown and blue dye are colours only (ruling
+            // 2026-10-20, INTEGRATIONS #038): MODERN_SPELLINGs of dye 0, 3 and 4, FC (351, 256 / 259 / 260) both ways.
+            // FC's (id, damage) tests give the ink sac, cocoa and lapis their own roles (book and quill, chocolate,
+            // polished lapis, the librarian's ink sac), FC's colour code masks the damage, and ModernSpellingRecipes
+            // gives each dye a twin of every FC colour recipe of its subtype. Before the DyeItem loop, like white dye.
+            spelling(351, 0, Items.BLACK_DYE);
+            spelling(351, 3, Items.BROWN_DYE);
+            spelling(351, 4, Items.BLUE_DYE);
+            // FCMOD-INTEGRATION(1.20.1): bone_meal: the modern white dye is a colour only, never bone meal, so it is a
+            // MODERN_SPELLING of dye 15, FC (351, 271) both ways: every 4.B role of dye 15 is a bone-meal role, and
+            // its colour roles mask the damage. Before the DyeItem loop, whose putIfAbsent then keeps (351, 15) ->
+            // bone meal and white dye -> (351, 271).
+            spelling(351, 15, Items.WHITE_DYE);
             for (int d = 0; d < 16; d++) {
                 DyeItem dye = DyeItem.byColor(DyeColor.byId(15 - d));
                 if (dye != null) both(351, d, dye);
@@ -187,6 +254,7 @@ final class LegacyVariants {
 
     /**
      * Returns {legacyId, damage} for a modern item that is a flattened 1.5.2 subtype, or null.
+     * The damage of a modern spelling carries {@link #MODERN_SPELLING} ({@link #baseSubtype} strips it).
      * The returned array is shared; callers must not modify it.
      */
     static int[] toLegacy(Item item) {
@@ -198,6 +266,18 @@ final class LegacyVariants {
     static Item toModern(int id, int meta) {
         if (id == SPAWN_EGG_ID) return eggFor(meta);
         return TO_MODERN.get(key(id, meta));
+    }
+
+    /** The 1.5.2 subtype a legacy damage stands for, without {@link #MODERN_SPELLING} (white dye's 271 -> dye 15). */
+    static int baseSubtype(int meta) {
+        return meta & ~MODERN_SPELLING;
+    }
+
+    /** Legacy id -> base subtypes with a {@link #MODERN_SPELLING} entry (351 -> {0, 3, 4, 15}); a read-only copy. */
+    static Map<Integer, Set<Integer>> spelledSubtypes() {
+        Map<Integer, Set<Integer>> out = new HashMap<>();
+        SPELLED.forEach((id, s) -> out.put(id, Collections.unmodifiableSet(new TreeSet<>(s))));
+        return Collections.unmodifiableMap(out);
     }
 
     /**

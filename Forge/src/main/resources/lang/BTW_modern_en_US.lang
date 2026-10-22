@@ -1,0 +1,8 @@
+# BTW port: FC-side names of content the port adds to FC (FCMOD-INTEGRATION(1.20.1): modern_woods).
+# Loaded third by BTWLifecycle.loadLanguageFiles, after en_US.lang and FC's BTW_en_US.lang, which stays untouched.
+
+# Bark of FC wood types 5-8 (ModernWoods; FCItemBarkWoodMixin names them item.fcItemBark.<wood>)
+item.fcItemBark.acacia.name=Acacia Bark
+item.fcItemBark.darkoak.name=Dark Oak Bark
+item.fcItemBark.mangrove.name=Mangrove Bark
+item.fcItemBark.cherry.name=Cherry Bark

@@ -1,6 +1,7 @@
 package btw.forge.mixin;
 
 import btw.forge.EntityBridge;
+import btw.forge.HookPolicy;
 import btw.forge.ItemEntityBridge;
 import btw.forge.LivingEntityBridge;
 import btw.forge.PlayerBridge;
@@ -33,6 +34,14 @@ import java.util.Random;
  *
  * ProxyBlocks already override these methods, so these injections only fire
  * for vanilla blocks that have FC counterparts.
+ *
+ * FCMOD-INTEGRATION(1.20.1): hook_ownership. stepOn and fallOn are NOTIFY executors of
+ * {@link btw.forge.HookPolicy} (Block.stepOn / Block.fallOn are called on the Block,
+ * Entity.java:676, :1128, so there is no BlockStateBase forwarder): each runs FC only when the
+ * cached owner of its state allows it (farmland FALL is ADAPTER(D9b): one trample roll on
+ * 1.20.1's path, with FC's threshold, FarmBlockMixin). Every FC call is caught and logged once
+ * per throw site; a throw answers the 1.20.1 result. getExplosionResistance keeps its lookup
+ * until Phase 5 (explosions).
  */
 @Mixin(Block.class)
 public abstract class BlockMixin {
@@ -83,7 +92,9 @@ public abstract class BlockMixin {
     // NOTE: playerDestroy is NOT intercepted here. FC's harvest pipeline runs
     // from ServerPlayerGameModeMixin.destroyBlock() at HEAD — BEFORE vanilla
     // removes the block. This is critical because FC's tryHarvestBlock queries
-    // the world for the block, and it must still be there.
+    // the world for the block, and it must still be there. The beds and doors of
+    // vanilla_pair_drops take 1.20.1's playerDestroy instead; BlockPlayerDestroyMixin
+    // charges FC's harvest exhaustion there.
 
     // ================================================================
     // stepOn -> FC onEntityWalking
@@ -92,6 +103,8 @@ public abstract class BlockMixin {
     @Inject(method = "stepOn", at = @At("HEAD"), cancellable = true)
     private void btw$stepOn(Level level, BlockPos pos, BlockState state, Entity entity,
                              CallbackInfo ci) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner-gated and caught; a throw keeps the 1.20.1 body
+        if (!HookPolicy.notifyRuns(state, HookPolicy.STEP)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
@@ -104,12 +117,16 @@ public abstract class BlockMixin {
                 ci.cancel();
                 return;
             }
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            btw.modern.Entity fcEntity = btw$wrapEntity(entity);
-            if (fcEntity != null) {
-                fcBlock.onEntityWalking(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                btw.modern.Entity fcEntity = btw$wrapEntity(entity);
+                if (fcEntity != null) {
+                    fcBlock.onEntityWalking(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+                }
+                ci.cancel();
+            } catch (Throwable t) {
+                HookPolicy.warnOnce("STEP", fcBlock, pos, t);
             }
-            ci.cancel();
         }
     }
 
@@ -120,14 +137,22 @@ public abstract class BlockMixin {
     @Inject(method = "fallOn", at = @At("HEAD"))
     private void btw$fallOn(Level level, BlockState state, BlockPos pos, Entity entity,
                              float fallDistance, CallbackInfo ci) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner-gated and caught. Farmland's FALL is ADAPTER(D9b): FarmBlock.fallOn
+        // (FarmBlock.java:86-91) already rolled the trample on 1.20.1's path with FC's threshold (FarmBlockMixin), so FC's
+        // second roll (Server FCBlockFarmlandBase.java:80-89) is skipped here
+        if (!HookPolicy.notifyRuns(state, HookPolicy.FALL)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
         if (level instanceof ServerLevel sl) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            btw.modern.Entity fcEntity = btw$wrapEntity(entity);
-            if (fcEntity != null) {
-                fcBlock.onFallenUpon(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity, fallDistance);
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                btw.modern.Entity fcEntity = btw$wrapEntity(entity);
+                if (fcEntity != null) {
+                    fcBlock.onFallenUpon(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity, fallDistance);
+                }
+            } catch (Throwable t) {
+                HookPolicy.warnOnce("FALL", fcBlock, pos, t);
             }
             // Do NOT cancel — vanilla fallOn must still call entity.causeFallDamage().
             // FC's onFallenUpon is a notification hook, not a damage replacement.
@@ -143,7 +168,12 @@ public abstract class BlockMixin {
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
-        cir.setReturnValue(fcBlock.getExplosionResistance(null));
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: caught (RESIST stays UNDECIDED until Phase 5); a throw answers 1.20.1's resistance
+        try {
+            cir.setReturnValue(fcBlock.getExplosionResistance(null));
+        } catch (Throwable t) {
+            HookPolicy.warnOnce("RESIST", fcBlock, null, t);
+        }
     }
 
     // ================================================================

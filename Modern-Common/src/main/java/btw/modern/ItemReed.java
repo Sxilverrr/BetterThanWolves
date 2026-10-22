@@ -5,8 +5,8 @@ package btw.modern;
  * behavior (vanilla/server/.../ItemReed.java:18). The shim has no FCItemPlacesAsBlock
  * layer, so the parent's fields and methods (Common/.../FCItemPlacesAsBlock.java) are
  * ported here verbatim. Live caller: FCBetterThanWolves.java:1486 fcItemStake =
- * new ItemReed(..., fcBlockStake) — right-click routes ServerPlayerGameModeMixin.btw$useItemOn
- * → onItemUse.
+ * new ItemReed(..., fcBlockStake) — a right-click on a block routes ServerPlayerGameModeMixin.btw$fcItemStep
+ * (or Stage 2 of the block's use) → ProxyBlock.tryPlaceHeldItem → onItemUse.
  */
 public class ItemReed extends Item {
 

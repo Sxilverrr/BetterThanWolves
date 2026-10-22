@@ -1,6 +1,7 @@
 package btw.forge.mixin;
 
 import btw.forge.EntityBridge;
+import btw.forge.HookPolicy;
 import btw.forge.ItemEntityBridge;
 import btw.forge.PlayerBridge;
 import btw.forge.ProxyAnimal;
@@ -24,7 +25,6 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -42,6 +42,21 @@ import java.util.List;
  * ProxyBlocks already override these methods directly, so these injections
  * only fire for vanilla blocks that have FC replacements in
  * {@code btw.modern.Block.blocksList[]}.
+ *
+ * FCMOD-INTEGRATION(1.20.1): hook_ownership. These are the NOTIFY executors of
+ * {@link btw.forge.HookPolicy}: they run inside the 1.20.1 base bodies, so they fire only
+ * where the 1.20.1 class does not override the hook or calls super, and each runs FC only
+ * when the cached owner of the state it runs for allows it ({@link btw.forge.HookPolicy#notifyRuns}:
+ * NOTIFY, UNDECIDED, never VANILLA). StairBlock's base delegation therefore gets the base
+ * block's owner. The FC-owned rows (the anvils' use, the pumpkins' onPlace) are enforced at
+ * the BlockStateBase forwarders by {@link BlockStateHookMixin}. Every FC call is caught and
+ * logged once per throw site ({@link btw.forge.HookPolicy#warnOnce}): an FC failure answers
+ * the 1.20.1 result and never escapes LevelChunk.setBlockState or a packet handler; a throw
+ * with the player's FC inventory in play discards its pending edits (INV-RESYNC). USE (Stage
+ * 1, FC's onBlockActivated) and REMOVE never run FC's block for a state whose FC block is a
+ * btw.modern.BlockContainer: its block entity is 1.20.1's, and FC's casts of it crashed beacon
+ * and ender-chest removals ({@link btw.forge.HookPolicy#isTeGuarded}). A VANILLA USE owner
+ * drops Stage 1 only: the held FC item (Stage 2) still runs, as in 4.B.
  *
  * Ticks are not routed here. Random and scheduled ticks of FC-mapped states are
  * dispatched at the BlockState level by {@link BlockStateRandomTickMixin} and
@@ -157,13 +172,19 @@ public abstract class BlockBehaviorMixin {
     private void btw$neighborChanged(BlockState state, Level level, BlockPos pos,
                                       Block neighborBlock, BlockPos neighborPos, boolean moving,
                                       CallbackInfo ci) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: FC runs only where the state's NEIGHBOR owner allows it (RULED(4) door, trapdoor and gate redstone, RULED(5) pair blocks), and an FC throw answers the 1.20.1 result
+        if (!HookPolicy.notifyRuns(state, HookPolicy.NEIGHBOR)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
         if (level instanceof ServerLevel sl) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            int neighborId = ProxyRegistry.getNeighbourSourceId(neighborBlock, level, neighborPos);
-            fcBlock.onNeighborBlockChange(world, pos.getX(), pos.getY(), pos.getZ(), neighborId);
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                int neighborId = ProxyRegistry.getNeighbourSourceId(neighborBlock, level, neighborPos);
+                fcBlock.onNeighborBlockChange(world, pos.getX(), pos.getY(), pos.getZ(), neighborId);
+            } catch (Throwable t) {
+                HookPolicy.warnOnce("NEIGHBOR", fcBlock, pos, t);
+            }
             // Don't cancel neighborChanged for vanilla blocks — MC needs its own
             // neighbor logic (redstone, dropper triggering, etc.) to run.
         }
@@ -176,12 +197,18 @@ public abstract class BlockBehaviorMixin {
     @Inject(method = "onPlace", at = @At("HEAD"))
     private void btw$onPlace(BlockState state, Level level, BlockPos pos,
                               BlockState oldState, boolean moving, CallbackInfo ci) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner-gated and caught; an FC-owned PLACE (the pumpkins) ran at the forwarder (BlockStateHookMixin)
+        if (!HookPolicy.notifyRuns(state, HookPolicy.PLACE)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
         if (!state.is(oldState.getBlock()) && level instanceof ServerLevel sl && !WorldBridge.isMetadataOnlyWrite(pos)) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            fcBlock.onBlockAdded(world, pos.getX(), pos.getY(), pos.getZ());
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                fcBlock.onBlockAdded(world, pos.getX(), pos.getY(), pos.getZ());
+            } catch (Throwable t) {
+                HookPolicy.warnOnce("PLACE", fcBlock, pos, t);
+            }
         }
     }
 
@@ -195,15 +222,29 @@ public abstract class BlockBehaviorMixin {
         // The FC block FC's world reads see here: the identity mapping, or the log for a bark / stripped log form
         // (ProxyRegistry.getRemovalLegacyId), so cutting a stripped trunk runs FC's log removal (leaf decay check).
         if ((Object) this instanceof ProxyBlock || !((Object) this instanceof Block self)) return;
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: the old state's REMOVE owner gates FC (VANILLA for removed blocks and block-entity blocks)
+        if (!HookPolicy.notifyRuns(state, HookPolicy.REMOVE)) return;
         int legacyId = ProxyRegistry.getRemovalLegacyId(self);
         if (legacyId <= 0 || legacyId >= btw.modern.Block.blocksList.length) return;
         btw.modern.Block fcBlock = btw.modern.Block.blocksList[legacyId];
         if (fcBlock == null) return;
+        // The block-entity guard, also for states without a cached owner: the block entity here is 1.20.1's, and
+        // WorldBridge.getBlockTileEntity hands FC a TileEntityBridge for it, which FCBlockBeacon.breakBlock /
+        // FCBlockEnderChest.breakBlock cast (Client FCBlockBeacon.java:42, FCBlockEnderChest.java:104): the
+        // ClassCastException left an orphan block entity, lost the drop and crashed explosions. BlockBehaviour's own
+        // onRemove (block entity removal) runs either way.
+        if (HookPolicy.isTeGuarded(fcBlock)) return;
 
         if (!state.is(newState.getBlock()) && level instanceof ServerLevel sl && !WorldBridge.isMetadataOnlyWrite(pos)) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            int meta = 0; // vanilla blocks don't carry FC metadata
-            fcBlock.breakBlock(world, pos.getX(), pos.getY(), pos.getZ(), legacyId, meta);
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                // 1.5.2 passes the removed block's metadata (vanilla/server Chunk.java:581): the old state's derived
+                // metadata (WorldBridge.deriveVanillaMetadata, WorldBridge.java:307; never throws, 0 on a failure)
+                int meta = WorldBridge.deriveVanillaMetadata(level, state, pos);
+                fcBlock.breakBlock(world, pos.getX(), pos.getY(), pos.getZ(), legacyId, meta);
+            } catch (Throwable t) {
+                HookPolicy.warnOnce("REMOVE", fcBlock, pos, t);
+            }
             // Do NOT cancel — let vanilla handle block entity removal etc.
         }
     }
@@ -218,6 +259,12 @@ public abstract class BlockBehaviorMixin {
                           CallbackInfoReturnable<InteractionResult> cir) {
         // Skip for ProxyBlocks — they handle FC delegation in ProxyBlock.use()
         if (state.getBlock() instanceof btw.forge.ProxyBlock) return;
+        // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: Stage 1 (twins' too) and Stage 2 run for the main hand only; the off-hand pass gets 1.20.1's use
+        // The 1.20.1 client sends an OFF_HAND useItemOn after a main-hand pass that did not consume (Minecraft.java:1662,
+        // :1698-1720). FC here would re-run Stage 1 and use the MAIN-hand FC item (the FC player has only the main hand),
+        // sticking the main-hand tool into the block on an off-hand click. Returning without a cancel leaves the block's
+        // own use to run.
+        if (hand != InteractionHand.MAIN_HAND) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         // FCMOD-INTEGRATION(1.20.1): modern_plant_growth: a twin plant gets FC's activation (Stage 1 only), so the weeds FC grows under twin crops can be pulled as under FC's own crops
         boolean twin = false;
@@ -226,55 +273,24 @@ public abstract class BlockBehaviorMixin {
             twin = fcBlock != null;
         }
         if (fcBlock == null) return;
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: the USE owner gates Stage 1 only (RULED(3) beds, the pending door / cake / workbench / pot rows, removed and block-entity blocks keep 1.20.1's activation); Stage 2, the held FC item, still runs, as 4.B ran it whatever the block did (vanilla/server ItemInWorldManager.java:376-407); an FC-owned USE (the anvils) ran at the forwarder (BlockStateHookMixin)
+        // The block-entity guard (see btw$onRemove) also covers states without a cached owner: FC's activation of a
+        // container block casts the 1.20.1 block entity (Client FCBlockEnderChest.java:39, FCBlockBeacon.java:69)
+        boolean stage1 = HookPolicy.notifyRuns(state, HookPolicy.USE) && !HookPolicy.isTeGuarded(fcBlock);
+        // A twin has no Stage 2, so nothing is left to run
+        if (!stage1 && twin) return;
 
         if (level instanceof ServerLevel sl) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            PlayerBridge fcPlayer = PlayerBridge.getOrCreate(player);
-            fcPlayer.syncFromReal();
-            int side = hit.getDirection().get3DDataValue();
-            Vec3 hitLoc = hit.getLocation();
-            float hitX = (float) (hitLoc.x - pos.getX());
-            float hitY = (float) (hitLoc.y - pos.getY());
-            float hitZ = (float) (hitLoc.z - pos.getZ());
-
-            // Snapshot openContainer before FC call to detect GUI opens
-            btw.modern.Container prevContainer = fcPlayer.openContainer;
-
-            // Stage 1: FC block activation (e.g., opening chests, adding spit to campfire)
-            boolean result = fcBlock.onBlockActivated(world, pos.getX(), pos.getY(), pos.getZ(),
-                    fcPlayer, side, hitX, hitY, hitZ);
-
-            // A twin stands for a 1.20.1 plant whose items stay 1.20.1's (identity id 0): no FC Stage 2 on it, the held
-            // item's own use follows (bone meal: BoneMealItemMixin's soil relay).
-            if (!result && !twin) {
-                // Stage 2: FC item use on block (e.g., flint & steel igniting campfire)
-                // This mirrors FC's ItemInWorldManager.activateBlockOrUseItem pipeline
-                // (creative: damage/stackSize restored like ItemInWorldManager.java:394-402, see tryPlaceHeldItem)
-                btw.modern.ItemStack fcHeld = fcPlayer.getCurrentEquippedItem();
-                // The client got PASS from this block's use and predicted the held BlockItem's placement,
-                // place sound included, so FC's place sound leaves this player out (WorldBridge.PREDICTING_ACTOR).
-                // ProxyBlock.use needs no such scope: its client returns SUCCESS and predicts nothing.
-                if (player instanceof net.minecraft.server.level.ServerPlayer sp
-                        && player.getItemInHand(hand).getItem() instanceof net.minecraft.world.item.BlockItem) {
-                    final btw.modern.ItemStack held = fcHeld;
-                    result = WorldBridge.withPredictingActor(sp, () -> ProxyBlock.tryPlaceHeldItem(held, player,
-                            fcPlayer, world, pos, side, hitX, hitY, hitZ));
-                } else {
-                    result = ProxyBlock.tryPlaceHeldItem(fcHeld, player, fcPlayer, world, pos,
-                            side, hitX, hitY, hitZ);
-                }
-            }
-
-            // Check if FC opened a container GUI and open the MC menu
-            btw.forge.ContainerBridge.checkAndOpenContainer(fcPlayer, prevContainer);
-
-            // FC edits the held FC stack in place (e.g. --stackSize when planting/feeding, flint & steel
-            // damage) and nothing applies that natively on this path - land it in the real MC inventory, as
-            // ProxyBlock.use does. Selective write-back: only slots FC changed are written (InventoryBridge);
-            // a creative Stage 2 was already undone above, so it writes nothing.
-            fcPlayer.syncInventoryToReal();
-
-            if (result) {
+            // Stage 1 (when the owner allows it), then Stage 2 (never for a twin: it stands for a 1.20.1 plant whose
+            // items stay 1.20.1's, identity id 0, so the held item's own use follows; bone meal: BoneMealItemMixin's
+            // soil relay), the menu, the write-back and the INV-RESYNC resend: HookPolicy.activate, shared with the
+            // FC-owned executor. The client got PASS from this block's use (the base body) and predicted the held
+            // BlockItem's placement, place sound included, so FC's place sound leaves this player out
+            // (WorldBridge.PREDICTING_ACTOR). ProxyBlock.use needs no such scope: its client returns SUCCESS and
+            // predicts nothing. A Stage 1 throw is logged once, discards FC's pending inventory edits and answers the
+            // 1.20.1 result (null).
+            if (HookPolicy.activate(sl, pos, player, hand, hit, fcBlock, stage1, twin, true)
+                    == InteractionResult.SUCCESS) {
                 cir.setReturnValue(InteractionResult.SUCCESS);
             }
         }
@@ -287,16 +303,22 @@ public abstract class BlockBehaviorMixin {
     @Inject(method = "entityInside", at = @At("HEAD"), cancellable = true)
     private void btw$entityInside(BlockState state, Level level, BlockPos pos, Entity entity,
                                    CallbackInfo ci) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner-gated (the detector rail stays PENDING) and caught; a throw keeps the 1.20.1 body
+        if (!HookPolicy.notifyRuns(state, HookPolicy.INSIDE)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
         if (level instanceof ServerLevel sl) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            btw.modern.Entity fcEntity = btw$wrapEntity(entity);
-            if (fcEntity != null) {
-                fcBlock.onEntityCollidedWithBlock(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                btw.modern.Entity fcEntity = btw$wrapEntity(entity);
+                if (fcEntity != null) {
+                    fcBlock.onEntityCollidedWithBlock(world, pos.getX(), pos.getY(), pos.getZ(), fcEntity);
+                }
+                ci.cancel();
+            } catch (Throwable t) {
+                HookPolicy.warnOnce("INSIDE", fcBlock, pos, t);
             }
-            ci.cancel();
         }
     }
 
@@ -307,14 +329,20 @@ public abstract class BlockBehaviorMixin {
     @Inject(method = "getSignal", at = @At("HEAD"), cancellable = true)
     private void btw$getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction,
                                 CallbackInfoReturnable<Integer> cir) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner-gated and caught; a throw answers 1.20.1's signal
+        if (!HookPolicy.notifyRuns(state, HookPolicy.SIGNAL)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
         if (level instanceof ServerLevel sl) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            int result = fcBlock.isProvidingWeakPower(world, pos.getX(), pos.getY(), pos.getZ(),
-                    direction.get3DDataValue());
-            cir.setReturnValue(result);
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                int result = fcBlock.isProvidingWeakPower(world, pos.getX(), pos.getY(), pos.getZ(),
+                        direction.get3DDataValue());
+                cir.setReturnValue(result);
+            } catch (Throwable t) {
+                HookPolicy.warnOnce("SIGNAL", fcBlock, pos, t);
+            }
         }
     }
 
@@ -325,22 +353,30 @@ public abstract class BlockBehaviorMixin {
     @Inject(method = "getDirectSignal", at = @At("HEAD"), cancellable = true)
     private void btw$getDirectSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction,
                                       CallbackInfoReturnable<Integer> cir) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner-gated and caught; a throw answers 1.20.1's signal
+        if (!HookPolicy.notifyRuns(state, HookPolicy.SIGNAL)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
         if (level instanceof ServerLevel sl) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            int result = fcBlock.isProvidingStrongPower(world, pos.getX(), pos.getY(), pos.getZ(),
-                    direction.get3DDataValue());
-            cir.setReturnValue(result);
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                int result = fcBlock.isProvidingStrongPower(world, pos.getX(), pos.getY(), pos.getZ(),
+                        direction.get3DDataValue());
+                cir.setReturnValue(result);
+            } catch (Throwable t) {
+                HookPolicy.warnOnce("SIGNAL", fcBlock, pos, t);
+            }
         }
     }
 
     // NOTE: getDrops is NOT intercepted. FC's complete drop system runs through
-    // Block.harvestBlock() or Block.OnBlockDestroyedWithImproperTool() called from
-    // BlockMixin.btw$playerDestroy. FC code internally calls dropBlockAsItem() →
+    // Block.harvestBlock() or Block.OnBlockDestroyedWithImproperTool(), called from FC's
+    // harvest (ServerPlayerGameModeMixin.btw$destroyBlock). FC code internally calls dropBlockAsItem() →
     // dropBlockAsItemWithChance() → dropBlockAsItem_do() → world.spawnEntityInWorld()
-    // which creates real MC ItemEntities via EntityProxyFactory.
+    // which creates real MC ItemEntities via EntityProxyFactory. Exception (vanilla_pair_drops):
+    // beds and doors take 1.20.1's own break and loot, and an FC drop of their id at a live
+    // cell is that cell's loot (World.UsesModernBlockLoot).
 
     // ================================================================
     // isSignalSource -> FC canProvidePower
@@ -348,10 +384,16 @@ public abstract class BlockBehaviorMixin {
 
     @Inject(method = "isSignalSource", at = @At("HEAD"), cancellable = true)
     private void btw$isSignalSource(BlockState state, CallbackInfoReturnable<Boolean> cir) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner-gated and caught; a throw answers 1.20.1's flag
+        if (!HookPolicy.notifyRuns(state, HookPolicy.SIGNAL)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
-        cir.setReturnValue(fcBlock.canProvidePower());
+        try {
+            cir.setReturnValue(fcBlock.canProvidePower());
+        } catch (Throwable t) {
+            HookPolicy.warnOnce("SIGNAL", fcBlock, null, t);
+        }
     }
 
     // ================================================================
@@ -361,12 +403,25 @@ public abstract class BlockBehaviorMixin {
     @Inject(method = "attack", at = @At("HEAD"))
     private void btw$attack(BlockState state, Level level, BlockPos pos, Player player,
                              CallbackInfo ci) {
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner-gated and caught
+        if (!HookPolicy.notifyRuns(state, HookPolicy.ATTACK)) return;
         btw.modern.Block fcBlock = btw$getFcBlock();
         if (fcBlock == null) return;
 
         if (level instanceof ServerLevel sl) {
-            btw.modern.World world = WorldBridge.getOrCreate(sl);
-            fcBlock.onBlockClicked(world, pos.getX(), pos.getY(), pos.getZ(), null);
+            PlayerBridge fcPlayer = null;
+            try {
+                btw.modern.World world = WorldBridge.getOrCreate(sl);
+                // 1.5.2 passes the clicking player (ItemInWorldManager.onBlockClicked); a synced PlayerBridge, as
+                // ProxyBlock.attack does, never null
+                fcPlayer = PlayerBridge.getOrCreate(player);
+                fcPlayer.syncFromReal();
+                fcBlock.onBlockClicked(world, pos.getX(), pos.getY(), pos.getZ(), fcPlayer);
+            } catch (Throwable t) {
+                // INV-RESYNC: a failed FC call lands nothing; the next sync dropped its edits, it would now write them
+                if (fcPlayer != null) fcPlayer.discardInventoryEdits();
+                HookPolicy.warnOnce("ATTACK", fcBlock, pos, t);
+            }
         }
     }
 }

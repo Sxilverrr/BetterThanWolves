@@ -814,7 +814,7 @@ final class FCPuppetSupport {
     }
 
     // 1.5.2 EntityCreeper swell counters. Modern-Common's EntityCreeper stub does not declare them;
-    // the frozen class that runs (build.gradle removeModernCommonShadowedClasses) has them public.
+    // the frozen class that runs (shadow list: build.gradle modernCommonRuntime) has them public (openUpEntityAccess).
     private static volatile boolean creeperFieldsResolved;
     private static Field creeperLastActive, creeperIgnited, creeperFuse;
 

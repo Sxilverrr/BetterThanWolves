@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "down": "betterthanwolves:block/fcblocktrunktop",
+    "up": "minecraft:block/workbench_top",
+    "north": "betterthanwolves:block/fcblockworkstumpcherry",
+    "south": "betterthanwolves:block/fcblockworkstumpcherry",
+    "west": "betterthanwolves:block/fcblockworkstumpcherry",
+    "east": "betterthanwolves:block/fcblockworkstumpcherry",
+    "particle": "betterthanwolves:block/fcblocktrunktop"
+  }
+}

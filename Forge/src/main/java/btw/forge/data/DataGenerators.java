@@ -41,6 +41,8 @@ public final class DataGenerators {
             generator.addProvider(true, new LsoClimateDataProvider(packOutput));
             // FCMOD-INTEGRATION(1.20.1): harvestcraft: HarvestCraft food tiers, tags, millstone and reroute data and the modded-fruit pace tag; inert without the mods it names (INTEGRATIONS #032)
             generator.addProvider(true, new HarvestCraftDataProvider(packOutput));
+            // FCMOD-INTEGRATION(1.20.1): fc_log_rules: the bark/<wood> and bark/none block tags the log rule reads for logs FC has no wood type for (FCLogRules.barkSpecies)
+            generator.addProvider(true, new LogBarkTagProvider(packOutput));
         }
 
         // Client-side providers (none yet). Advancements datapack

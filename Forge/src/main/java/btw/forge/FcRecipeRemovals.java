@@ -30,8 +30,8 @@ import java.util.TreeSet;
  * (compat workstream "recipes", Part A, generalised; research report removed_blocks.md section 4.3).
  *
  * <p><b>Maintainer ruling:</b> "blocks that 4.B explicitly removed must stay removed." Recipe decision 3 (a): FC's
- * vanilla-recipe removals are mirrored into {@code minecraft:*} recipes, which also fixes the CHANGELOG known issue
- * "BTW recipe removals are not applied" (CHANGELOG.md:536-537).</p>
+ * vanilla-recipe removals are mirrored into {@code minecraft:*} recipes, which also fixed the former CHANGELOG known
+ * issue "BTW recipe removals are not applied" (now Changed: "Minecraft recipes that BTW 4.B removed ... are gone").</p>
  *
  * <p>Four passes, all on the map before {@code RecipeManager.replaceRecipes}, so they survive {@code /reload} through
  * {@link RecipeBridge#onDatapackSync} and reach clients (and JEI) through the normal recipe sync:</p>

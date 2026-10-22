@@ -24,11 +24,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.HitResult;
 import net.minecraftforge.common.ForgeHooks;
 import net.minecraftforge.common.ToolActions;
-import net.minecraftforge.event.ForgeEventFactory;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -72,11 +69,16 @@ public final class DTHarvestHandler {
     /**
      * A break DT will fell on the next level tick: an axe harvest ({@code harvest}) or the last chew that cuts
      * through. {@code stack} is the main-hand stack that made the break (a reference: vanilla's mineBlock acted on it).
+     * {@code woodMeta} is the family's FC wood type ({@link DTTrees#fcWoodMeta}), for FC's harvest hunger.
      */
     record PendingFell(ServerPlayer p, ItemStack stack, int damageBefore, boolean harvest, int woodMeta, long tick) {}
 
-    /** An axe strip (right click) DT performs inside its {@code use()}, after the event. */
-    record PendingStrip(ServerPlayer p, ItemStack stack, int damageBefore, Direction face, int woodMeta, long tick) {}
+    /**
+     * An axe strip (right click) DT performs inside its {@code use()}, after the event; {@code barkSpecies} is the bark
+     * it pays ({@link DTTrees#barkSpecies}).
+     */
+    record PendingStrip(ServerPlayer p, ItemStack stack, int damageBefore, Direction face, int barkSpecies,
+                        long tick) {}
 
     /** An absolute damage {@code target} for {@code stack}, applied at ServerTickEvent END. */
     record Wear(ServerPlayer p, ItemStack stack, int target) {}
@@ -93,12 +95,15 @@ public final class DTHarvestHandler {
      * pre-cancels act first. Explosions and non-players keep DT's own path.
      * <ol>
      *   <li>Rooty soil under a log is not dug (RootyBlock.playerWillDestroy would delete the tree with no drops).</li>
-     *   <li>An unchewed dead stump and an FC work-stump tool: FC's work stump (the oak one for a species FC never
-     *       had), with FC's convert wear for it (10 on the iron chisel). A chewed one is chewed on, as FC's.</li>
+     *   <li>An unchewed dead stump and an FC work-stump tool: FC's work stump of the family's wood by the shared log
+     *       rule ({@link DTTrees#workStumpSpecies}: FC's four 0-3, acacia, dark oak, mangrove and cherry 5-8, a
+     *       modded family's bark tag or oak; none for the fungi, which are chewed), with FC's convert wear for it (10
+     *       on the iron chisel). A chewed one is chewed on, as FC's.</li>
      *   <li>Not a stump, and an FC-harvesting axe: the break proceeds; DT fells on the next tick
      *       ({@link #onJoin}).</li>
-     *   <li>Otherwise FC chews: hit 1 strips and gives bark; down to radius 4 each hit takes one radius and pops the
-     *       stage item; the last chew pops sawdust and lets DT fell what stands above, with no logs.</li>
+     *   <li>Otherwise FC chews: hit 1 strips and gives the family's bark ({@link DTTrees#barkSpecies}); down to radius
+     *       4 each hit takes one radius and pops the stage item; the last chew pops sawdust and lets DT fell what
+     *       stands above, with no logs.</li>
      * </ol>
      */
     // FCMOD-INTEGRATION(1.20.1): dynamic_trees: a DT branch hit without an FC-harvesting axe is chewed as FCBlockLog.ConvertBlock, never felled with its logs
@@ -122,7 +127,9 @@ public final class DTHarvestHandler {
             BranchBlock b = (BranchBlock) cs.getBlock();
             int r = b.getRadius(cs);
             boolean stump = DTTrees.isStump(level, core);
+            // FCMOD-INTEGRATION(1.20.1): dynamic_trees: the family's FC wood type (FC's hunger) and the bark and work stump of the shared log rule (FCLogRules), so a DT dark oak is wood type 6 like the vanilla log
             int meta = DTTrees.fcWoodMeta(b);
+            int barkSpecies = DTTrees.barkSpecies(b);
             ItemStack held = p.getMainHandItem();
             Direction face = hitFace(p, pos);
             long now = level.getServer().getTickCount();
@@ -132,15 +139,16 @@ public final class DTHarvestHandler {
             //    convert (Server FCBlockLogDamaged.java:164-207). setBlockStateIgnored avoids BranchBlock.onRemove's
             //    sloppy break. The wear hands FC the log's id 17 at a cell that now holds the work stump, as
             //    ItemInWorldManager does (Modern-Common :85-108), so FCItemChiselIron charges its 10 (Server :44-54);
-            //    the vanilla oak log reads as 17.
-            if (stump && !b.isStrippedBranch() && DTTrees.isDeadStump(level, core)
+            //    the vanilla oak log reads as 17. A family with no work stump (the fungi) is chewed instead.
+            int stumpWood = DTTrees.workStumpSpecies(b);
+            if (stump && stumpWood >= 0 && !b.isStrippedBranch() && DTTrees.isDeadStump(level, core)
                     && FCLogRules.isWorkStumpTool(p, held, core)) {
-                BlockState ws = FCLogRules.workStumpState(Math.max(meta, 0));
+                BlockState ws = FCLogRules.workStumpState(stumpWood);
                 if (ws != null) {
                     e.setCanceled(true);
                     b.setBlockStateIgnored(level, core, ws, 3);
                     wearOne(level, p, held, Blocks.OAK_LOG.defaultBlockState(), core);
-                    DynamicTreesCompat.trace("work stump at {} (wood {})", core, meta);
+                    DynamicTreesCompat.trace("work stump at {} (wood {})", core, stumpWood);
                     return;
                 }
             }
@@ -157,9 +165,9 @@ public final class DTHarvestHandler {
                 e.setCanceled(true);
                 strips.remove(key);
                 b.stripBranch(cs, level, core);
-                popToward(level, core, face, FCLogRules.bark(meta));
+                popToward(level, core, face, FCLogRules.bark(barkSpecies));
                 wearOne(level, p, held, cs, core);
-                DynamicTreesCompat.trace("chew at {}: strip, bark of wood {}", core, meta);
+                DynamicTreesCompat.trace("chew at {}: strip, bark of wood {}", core, barkSpecies);
                 return;
             }
             // 6. Last chew (FCBlockLogDamaged's last ConvertBlock, Server :196-206): sawdust; DT fells, no logs.
@@ -239,7 +247,7 @@ public final class DTHarvestHandler {
             BranchBlock b = (BranchBlock) cs.getBlock();
             if (b.isStrippedBranch() || !b.getFamily().canStripBranch(cs, level, core, p, held)) return;
             Direction face = e.getFace() != null ? e.getFace() : Direction.UP;
-            strips.put(key(level, core), new PendingStrip(p, held, damage(held), face, DTTrees.fcWoodMeta(b),
+            strips.put(key(level, core), new PendingStrip(p, held, damage(held), face, DTTrees.barkSpecies(b),
                     level.getServer().getTickCount()));
         } catch (RuntimeException | LinkageError t) {
             DynamicTreesCompat.fail("the axe strip handler", t);
@@ -354,11 +362,11 @@ public final class DTHarvestHandler {
             ServerLevel level = server.getLevel(k.dim());
             if (level != null && level.isLoaded(k.pos())
                     && level.getBlockState(k.pos()).getBlock() instanceof BranchBlock bb && bb.isStrippedBranch()) {
-                popToward(level, k.pos(), ps.face(), FCLogRules.bark(ps.woodMeta()));
+                popToward(level, k.pos(), ps.face(), FCLogRules.bark(ps.barkSpecies()));
                 if (!ps.p().getAbilities().instabuild) {
                     wears.add(new Wear(ps.p(), ps.stack(), ps.damageBefore() + 1));
                 }
-                DynamicTreesCompat.trace("strip bark at {} (wood {}), wear target {}", k.pos(), ps.woodMeta(),
+                DynamicTreesCompat.trace("strip bark at {} (wood {}), wear target {}", k.pos(), ps.barkSpecies(),
                         ps.damageBefore() + 1);
                 it.remove();
             } else if (now - ps.tick() > EXPIRY_TICKS) {
@@ -405,28 +413,20 @@ public final class DTHarvestHandler {
 
     /**
      * FC's per-hit convert wear (Modern-Common ItemInWorldManager onBlockDestroyed): the held item's mineBlock, which
-     * ProxyItem routes to FC's onBlockDestroyed for FC tools; a stack used up fires Forge's destroy-item event.
+     * ProxyItem routes to FC's onBlockDestroyed for FC tools; a stack used up fires Forge's destroy-item event. The
+     * log rule's own helper ({@link FCLogRules#wearConvert}).
      */
     private static void wearOne(ServerLevel level, ServerPlayer p, ItemStack held, BlockState state, BlockPos pos) {
-        if (held.isEmpty()) return;
-        ItemStack copy = held.copy();
-        held.mineBlock(level, state, pos, p);
-        if (held.isEmpty()) {
-            ForgeEventFactory.onPlayerDestroyItem(p, copy, InteractionHand.MAIN_HAND);
-        }
+        FCLogRules.wearConvert(level, p, held, state, pos);
     }
 
-    /** The face of {@code pos} the player is looking at, else UP. */
+    /** The face of {@code pos} the player is looking at, else UP ({@link FCLogRules#hitFace}). */
     private static Direction hitFace(ServerPlayer p, BlockPos pos) {
-        HitResult h = p.pick(p.getBlockReach(), 1.0F, false);
-        if (h instanceof BlockHitResult bh && h.getType() == HitResult.Type.BLOCK && bh.getBlockPos().equals(pos)) {
-            return bh.getDirection();
-        }
-        return Direction.UP;
+        return FCLogRules.hitFace(p, pos);
     }
 
     private static void popToward(ServerLevel level, BlockPos pos, Direction face, ItemStack stack) {
-        if (!stack.isEmpty()) Block.popResourceFromFace(level, pos, face, stack);
+        FCLogRules.popToward(level, pos, face, stack);
     }
 
     private static void pop(ServerLevel level, BlockPos pos, ItemStack stack) {

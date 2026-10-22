@@ -430,14 +430,17 @@ public class ProxyItem extends Item implements LegacyProxyItem {
     }
 
     // ================================================================
-    // Right-click block → FC onItemUse (also handled by BlockBehaviorMixin)
+    // Right-click block → FC onItemUse (ProxyBlock.tryPlaceHeldItem)
     // ================================================================
 
     @Override
     public InteractionResult useOn(UseOnContext ctx) {
-        // Handled by ServerPlayerGameModeMixin.btw$useItemOn which intercepts
-        // at HEAD, calls FC's onItemUse, syncs inventory, and cancels the
-        // original method (preventing creative-mode count restoration).
+        // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: FC onItemUse never runs here. A player's click runs it through
+        // ProxyBlock.tryPlaceHeldItem: Stage 2 inside the clicked block's use (ProxyBlock.use,
+        // BlockBehaviorMixin.btw$use), or ServerPlayerGameModeMixin.btw$fcItemStep, which runs just before this call in
+        // ServerPlayerGameMode.useItemOn and cancels it when FC acted (its own creative restore replacing 1.20.1's). Doing
+        // it here would run FC under Forge's block-snapshot capture (ForgeHooks.onPlaceItemIntoWorld), which defers
+        // onPlace. A caller that reaches this directly (a deployer-style fake player) gets 1.20.1's default.
         return super.useOn(ctx);
     }
 
@@ -621,9 +624,10 @@ public class ProxyItem extends Item implements LegacyProxyItem {
         if (fcItem == null || !USE_TICK_OVERRIDDEN.get(fcItem.getClass())) return;
         if (!(entity instanceof Player player) || player.getUsedItemHand() != InteractionHand.MAIN_HAND
                 || stack != player.getMainHandItem()) return;
+        PlayerBridge serverBridge = null;
         try {
             if (level instanceof ServerLevel sl) {
-                PlayerBridge pb = PlayerBridge.getOrCreate(player);   // syncs the inventory snapshot
+                PlayerBridge pb = serverBridge = PlayerBridge.getOrCreate(player);   // syncs the inventory snapshot
                 btw.modern.ItemStack fcStack = pb.getCurrentEquippedItem();
                 if (fcStack == null || fcStack.itemID != legacyId) return;
                 fcItem.UpdateUsingItem(fcStack, WorldBridge.getOrCreate(sl), pb);
@@ -637,6 +641,8 @@ public class ProxyItem extends Item implements LegacyProxyItem {
         } catch (Throwable t) {
             // Runs inside LivingEntity.tick: a throw would crash the entity tick.
             logFcFailureOnce("UpdateUsingItem", legacyId, t);
+            // INV-RESYNC: a failed FC call lands nothing; the next sync dropped its edits, it would now write them
+            if (serverBridge != null) serverBridge.discardInventoryEdits();
         }
     }
 
@@ -723,36 +729,47 @@ public class ProxyItem extends Item implements LegacyProxyItem {
     // Mine block → FC onBlockDestroyed
     // ================================================================
 
+    /**
+     * FC's onBlockDestroyed on the player's live held FC stack, written back. 1.5.2 wears the HELD stack in place
+     * (vanilla/server ItemInWorldManager.java:494-501 currentStack.onBlockDestroyed). As in hurtEnemy: the
+     * PlayerBridge's live snapshot plus a write-back, so FC's wear is not discarded with a throwaway toFcStack copy (FC
+     * tools took no durability from modern-only blocks). Null when {@code stack} is not the main-hand stack of a player
+     * with a held FC stack. Shared by {@link #mineBlock} and ItemStackMixin.btw$mineBlock (vanilla_pair_drops).
+     */
+    public static Boolean onBlockDestroyedLive(btw.modern.Item fcItem, ItemStack stack, ServerLevel sl, int blockId,
+                                               BlockPos pos, LivingEntity entity) {
+        if (!(entity instanceof Player player) || player.getMainHandItem() != stack) return null;
+        PlayerBridge pb = PlayerBridge.getOrCreate(player);
+        btw.modern.ItemStack held = pb.getCurrentEquippedItem();
+        if (held == null) return null;
+        try {
+            return fcItem.onBlockDestroyed(held, WorldBridge.getOrCreate(sl),
+                    blockId, pos.getX(), pos.getY(), pos.getZ(), pb);
+        } finally {
+            boolean broke = held.stackSize <= 0;
+            pb.syncInventoryToReal();   // wear (or a broken tool) FC applied before any throw
+            if (broke) {
+                // the break sound/particles MC's own hurtAndBreak would have sent (DiggerItem)
+                player.broadcastBreakEvent(InteractionHand.MAIN_HAND);
+                // FCMOD-INTEGRATION(1.20.1): vanilla_pair_drops: the write-back emptied the slot; empty the caller's stack too, as hurtAndBreak's shrink does, so ServerPlayerGameMode.destroyBlock posts PlayerDestroyItemEvent (:251-252)
+                if (player.getMainHandItem() != stack && !stack.isEmpty()) stack.setCount(0);
+            }
+        }
+    }
+
     @Override
     public boolean mineBlock(ItemStack stack, Level level, BlockState state, BlockPos pos, LivingEntity entity) {
         if (fc() == null) return super.mineBlock(stack, level, state, pos, entity);
         if (level instanceof ServerLevel sl) {
-            // Only reached for blocks ServerPlayerGameModeMixin.btw$destroyBlock leaves to vanilla (no FC
-            // block: deepslate, tuff, granite, ...). FC gets their world-read id (minedBlockIdForFc), so
-            // FCItemTool.onBlockDestroyed (Client FCItemTool.java:64-72) wears the tool as 1.5.2 did for any
-            // block of hardness > 0.
+            // Reached for blocks ServerPlayerGameModeMixin.btw$destroyBlock leaves to vanilla: no FC block
+            // (deepslate, tuff, granite, ...), and the beds and doors of vanilla_pair_drops. FC gets their
+            // world-read id (minedBlockIdForFc), so FCItemTool.onBlockDestroyed (Client FCItemTool.java:64-72)
+            // wears the tool as 1.5.2 did for any block of hardness > 0.
             int blockId = minedBlockIdForFc(state, sl, pos);
             if (blockId == 0) return false;
             try {
-                // 1.5.2 wears the HELD stack in place (vanilla/server ItemInWorldManager.java:494-501
-                // currentStack.onBlockDestroyed). As in hurtEnemy: the PlayerBridge's live snapshot plus a
-                // write-back, so FC's wear is not discarded with a throwaway toFcStack copy (FC tools took
-                // no durability from modern-only blocks).
-                if (entity instanceof Player player && player.getMainHandItem() == stack) {
-                    PlayerBridge pb = PlayerBridge.getOrCreate(player);
-                    btw.modern.ItemStack held = pb.getCurrentEquippedItem();
-                    if (held != null) {
-                        try {
-                            return fc().onBlockDestroyed(held, WorldBridge.getOrCreate(sl),
-                                    blockId, pos.getX(), pos.getY(), pos.getZ(), pb);
-                        } finally {
-                            boolean broke = held.stackSize <= 0;
-                            pb.syncInventoryToReal();   // wear (or a broken tool) FC applied before any throw
-                            // the break sound/particles MC's own hurtAndBreak would have sent (DiggerItem)
-                            if (broke) player.broadcastBreakEvent(InteractionHand.MAIN_HAND);
-                        }
-                    }
-                }
+                Boolean live = onBlockDestroyedLive(fc(), stack, sl, blockId, pos, entity);
+                if (live != null) return live;
                 btw.modern.ItemStack fcStack = ItemStackHelper.toFcStack(stack);
                 if (fcStack != null) {
                     btw.modern.EntityLiving fcEntity = LivingEntityBridge.wrapLiving(entity);

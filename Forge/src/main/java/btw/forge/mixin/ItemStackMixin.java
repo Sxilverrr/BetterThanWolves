@@ -119,34 +119,52 @@ public abstract class ItemStackMixin implements ProxyItem.FcOwnedEat {
             }
             if (fcStack != null) {
                 boolean fcDone = false;
+                boolean fcEditsLanded = false;
+                // INV-RESYNC: vanilla's finishUsingItem body runs after this inject and owns the eat; FC's inventory
+                // edits land only through the bowl write-back below. A sync nested in onEaten keeps FC's objects but
+                // writes none of its edits (shadow scope), and the finally drops whatever the bowl branch did not land,
+                // as every sync dropped it before: creative stew (vanilla keeps the stew and gives no bowl), an eat FC
+                // did not feed, a throw in onEaten. Otherwise the sync inside vanilla's Player.eat (FoodDataMixin)
+                // would write FC's bowl beside vanilla's.
+                btw.forge.InventoryBridge shadow =
+                        pb.inventory instanceof btw.forge.InventoryBridge ib ? ib : null;
+                if (shadow != null) shadow.beginShadow();
                 try {
-                    fcItem.onEaten(fcStack, WorldBridge.getOrCreate(sl), pb);
-                    fcDone = true;
-                } catch (Throwable t) {
-                    // Runs inside LivingEntity.updatingUsingItem: a throw would crash "Ticking player".
-                    ProxyItem.logFcFailureOnce("onEaten", fcItem.itemID, t);
-                }
-                pb.syncToReal();
-                // S10: FC fed this eat, so its ItemFood.onEaten played the 1.5.2 burp: one owner for the eat's
-                // closing sounds (vanilla's are silenced for the rest of this call).
-                this.btw$fcOwnedEat = fcDone && PlayerBridge.fcFedForEat(self.getItem(), player);
-                // FC bowl foods (FCItemMushroomSoup, the 1.5.2 mushroom stew 282: Common FCItemMushroomSoup.java:29-41)
-                // return their bowl with player.inventory.addItemStackToInventory, which only reaches the
-                // InventoryBridge snapshot, while vanilla BowlFoodItem.finishUsingItem hands back its own bowl.
-                // Exactly one bowl, as 1.5.2: land FC's (the write-back is selective, InventoryBridge.writeBackAll:
-                // only the slot FC put it in -- the first bowl stack or empty slot, never the held one, which FC
-                // still sees holding the stew, as 1.5.2 still held the emptied stack until onItemUseFinish cleared
-                // it, vanilla/server EntityPlayer.java:406-426; a full inventory drops it through
-                // PlayerBridge.dropPlayerItem) and return the eaten stack instead
-                // of vanilla's bowl (btw$finishUsingResult). Only when FC fed this eat (PlayerBridge.fcFedForEat,
-                // the FoodDataMixin cancel) and outside creative, where vanilla keeps the stew and gives no bowl.
-                if (fcDone && btw$vanillaReturnsBowl(self) && !player.getAbilities().instabuild
-                        && PlayerBridge.fcFedForEat(self.getItem(), player)) {
                     try {
-                        pb.syncInventoryToReal();
-                        this.btw$fcBowlReturned = true;
+                        fcItem.onEaten(fcStack, WorldBridge.getOrCreate(sl), pb);
+                        fcDone = true;
                     } catch (Throwable t) {
-                        ProxyItem.logFcFailureOnce("onEaten write-back", fcItem.itemID, t);
+                        // Runs inside LivingEntity.updatingUsingItem: a throw would crash "Ticking player".
+                        ProxyItem.logFcFailureOnce("onEaten", fcItem.itemID, t);
+                    }
+                    pb.syncToReal();
+                    // S10: FC fed this eat, so its ItemFood.onEaten played the 1.5.2 burp: one owner for the eat's
+                    // closing sounds (vanilla's are silenced for the rest of this call).
+                    this.btw$fcOwnedEat = fcDone && PlayerBridge.fcFedForEat(self.getItem(), player);
+                    // FC bowl foods (FCItemMushroomSoup, the 1.5.2 mushroom stew 282: Common
+                    // FCItemMushroomSoup.java:29-41) return their bowl with player.inventory.addItemStackToInventory,
+                    // which only reaches the InventoryBridge snapshot, while vanilla BowlFoodItem.finishUsingItem hands
+                    // back its own bowl. Exactly one bowl, as 1.5.2: land FC's (the write-back is selective,
+                    // InventoryBridge.writeBackAll: only the slot FC put it in -- the first bowl stack or empty slot,
+                    // never the held one, which FC still sees holding the stew, as 1.5.2 still held the emptied stack
+                    // until onItemUseFinish cleared it, vanilla/server EntityPlayer.java:406-426; a full inventory
+                    // drops it through PlayerBridge.dropPlayerItem) and return the eaten stack instead of vanilla's
+                    // bowl (btw$finishUsingResult). Only when FC fed this eat (PlayerBridge.fcFedForEat, the
+                    // FoodDataMixin cancel) and outside creative, where vanilla keeps the stew and gives no bowl.
+                    if (fcDone && btw$vanillaReturnsBowl(self) && !player.getAbilities().instabuild
+                            && PlayerBridge.fcFedForEat(self.getItem(), player)) {
+                        try {
+                            pb.syncInventoryToReal();
+                            fcEditsLanded = true;
+                            this.btw$fcBowlReturned = true;
+                        } catch (Throwable t) {
+                            ProxyItem.logFcFailureOnce("onEaten write-back", fcItem.itemID, t);
+                        }
+                    }
+                } finally {
+                    if (shadow != null) {
+                        if (!fcEditsLanded) shadow.discardPendingEdits();
+                        shadow.endShadow();
                     }
                 }
                 // 1.5.2 ItemFood.onEaten eats one item (vanilla/server ItemFood.java:69 --stackSize, before the
@@ -331,7 +349,7 @@ public abstract class ItemStackMixin implements ProxyItem.FcOwnedEat {
     // mineBlock → FC onBlockDestroyed
     // ================================================================
 
-    @Inject(method = "mineBlock", at = @At("HEAD"))
+    @Inject(method = "mineBlock", at = @At("HEAD"), cancellable = true)
     private void btw$mineBlock(Level level, net.minecraft.world.level.block.state.BlockState state,
                                 net.minecraft.core.BlockPos pos, Player player, CallbackInfo ci) {
         // ProxyItems run onBlockDestroyed in ProxyItem.mineBlock.
@@ -339,14 +357,32 @@ public abstract class ItemStackMixin implements ProxyItem.FcOwnedEat {
         btw.modern.Item fcItem = btw$getFcItem();
         if (fcItem == null) return;
         if (level instanceof ServerLevel sl) {
-            // ServerPlayerGameModeMixin.btw$destroyBlock handles every FC-mapped block, so this is
-            // reached for modern-only blocks (before removeBlock: the state is still in the world). FC
-            // gets their world-read id -- a ModernBlockStandIn whose getBlockHardness is the MC destroy
-            // speed (design_blockmap cross-cluster 1) -- never 0: FC item code dereferences
-            // blocksList[id] unguarded (FCItemTool.java:66) and the NPE crashed the integrated server.
-            // FC works on a toFcStack copy here; the vanilla mineBlock that follows applies the wear.
+            // ServerPlayerGameModeMixin.btw$destroyBlock runs FC's harvest for every FC-mapped block except the beds
+            // and doors 1.20.1 breaks (vanilla_pair_drops), so this is reached for those and for modern-only blocks
+            // (before removeBlock: the state is still in the world). FC gets the world-read id -- for a modern-only
+            // block a ModernBlockStandIn whose getBlockHardness is the MC destroy speed (design_blockmap
+            // cross-cluster 1) -- never 0: FC item code dereferences blocksList[id] unguarded (FCItemTool.java:66)
+            // and the NPE crashed the integrated server.
             int blockId = ProxyItem.minedBlockIdForFc(state, sl, pos);
             if (blockId == 0) return;
+            // FCMOD-INTEGRATION(1.20.1): vanilla_pair_drops: on a block with an FC identity FC owns the wear, as in its own harvest (Modern-Common ItemInWorldManager.java:107-108; 1.5.2 :494-501): the live held stack, written back, and 1.20.1's Item.mineBlock skipped (shears take no wear from a bed or door, as in 4.B, not ShearsItem's 1)
+            if (ProxyRegistry.getFcBlock(state.getBlock()) != null) {
+                ItemStack self = (ItemStack) (Object) this;
+                net.minecraft.world.item.Item item = self.getItem();
+                Boolean used;
+                try {
+                    used = ProxyItem.onBlockDestroyedLive(fcItem, self, sl, blockId, pos, player);
+                } catch (Throwable t) {
+                    ProxyItem.logFcFailureOnce("onBlockDestroyed", fcItem.itemID, t);
+                    used = Boolean.FALSE;   // FC owned the attempt: no 1.20.1 wear on top
+                }
+                if (used != null) {
+                    if (used) player.awardStat(net.minecraft.stats.Stats.ITEM_USED.get(item));   // as ItemStack.mineBlock
+                    ci.cancel();
+                    return;
+                }
+            }
+            // A modern-only block: FC works on a toFcStack copy; the vanilla mineBlock that follows applies the wear.
             try {
                 btw.modern.ItemStack fcStack = ItemStackHelper.toFcStack((ItemStack) (Object) this);
                 if (fcStack != null) {

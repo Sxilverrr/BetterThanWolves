@@ -58,10 +58,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * copies, sorted by id (RecipeManager.getRecipeFor is findFirst over a HashMap, so not deterministic), cached per
  * RecipeManager and recipe generation ({@link #onRecipesReplaced}).</p>
  *
- * <p>An FC cell holds only the 1.5.2 (id, damage), so items 1.20.1 split from one 1.5.2 subtype read back as the
- * canonical pick (a black dye as the ink sac, a stone slab as the smooth stone slab). When no recipe takes the
- * canonical grid, the grid is tried once more with LegacyVariants' modern spellings of the same subtypes
- * ({@link RecipeBridge#legacyAlias}); the craft remembers which grid matched.</p>
+ * <p>An FC cell holds only the 1.5.2 (id, damage), so an item 1.20.1 split from one 1.5.2 subtype reads back as the
+ * canonical pick: a stone slab reads back as the smooth stone slab (44:0). The four modern dyes are the exception: they
+ * keep their own FC stacks (351:256/259/260/271, LegacyVariants.MODERN_SPELLING), so they read back as themselves, and
+ * a 1.20.1 result converts the same way (cornflowers, wither roses and lilies of the valley give real dyes, never FC
+ * lapis, ink sacs or bone meal). When no recipe takes the canonical grid, the grid is tried once more with the modern
+ * spelling 1.20.1 recipes want for each 4.B subtype ({@link RecipeBridge#legacyAlias}, one-way, so the ink sac, cocoa,
+ * lapis and bone meal still stand in for the dyes as in 4.B); the craft remembers which grid matched.</p>
  */
 // FCMOD-INTEGRATION(1.20.1): recipes: FC grids fall back to every non-FC RecipeManager crafting recipe, FC first
 public final class WorkbenchFallback implements btw.modern.CraftingManager.ExternalResolver {
@@ -132,11 +135,12 @@ public final class WorkbenchFallback implements btw.modern.CraftingManager.Exter
         Match match = firstMatch(recipes, grid, level);
         boolean aliased = false;
         if (match == null) {
-            // FCMOD-INTEGRATION(1.20.1): recipes: an FC cell holds only the 1.5.2 subtype, so a black dye placed in
-            // the grid reads back as the ink sac (351:0) and a stone slab as the smooth stone slab (44:0). When no
-            // recipe takes the canonical items, try once more with LegacyVariants' modern spellings of the same
-            // subtypes (RecipeBridge.legacyAlias): candles, stained glass, concrete powder, wool dyed with an ink
-            // sac (1.5.2 RecipesDyes), the grindstone, any #forge:dyes recipe.
+            // FCMOD-INTEGRATION(1.20.1): recipes: an FC cell holds only the 1.5.2 subtype, so an ink sac (351:0) is the
+            // 1.5.2 black dye, which 1.20.1 recipes spell minecraft:black_dye, and a stone slab reads back as the
+            // smooth stone slab (44:0). When no recipe takes the canonical items, try once more with the modern
+            // spelling 1.20.1 recipes want for each 4.B subtype (RecipeBridge.legacyAlias, one-way): candles, stained
+            // glass, concrete powder, wool dyed with an ink sac or bone meal (1.5.2 RecipesDyes), the grindstone, any
+            // #forge:dyes recipe. The modern dyes need no retry: they keep their own FC stacks (351:256/259/260/271).
             NonNullList<ItemStack> aliasItems = withAliases(items);
             if (aliasItems != null) {
                 match = firstMatch(recipes, container(aliasItems, w), level);

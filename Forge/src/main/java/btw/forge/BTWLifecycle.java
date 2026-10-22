@@ -160,6 +160,17 @@ public class BTWLifecycle {
             LOGGER.error("Building the FC plant twins failed; post-1.5.2 plants keep their 1.20.1 growth", t);
         }
 
+        // FCMOD-INTEGRATION(1.20.1): modern_woods: acacia, dark oak, mangrove and cherry are FC wood types 5-8 through
+        // a plain FCBlockLog at the reserved legacy id 165 ("log2", ModernWoods), the id the four logs map to
+        // (ProxyRegistry). Built after the twins (which take the free ids from 174 down and skip the mapped 165) and
+        // before fcReady, like them, so TickPolicy's gate and every bake see it.
+        LOGGER.info("Step 5e: Building log2 (FC wood types 5-8) for the modern woods...");
+        try {
+            ModernWoods.create();
+        } catch (Throwable t) {
+            LOGGER.error("Building log2 failed; acacia, dark oak, mangrove and cherry keep the modern-log rule", t);
+        }
+
         LOGGER.info("Step 6: Block/item registration happens via RegisterEvent (see BTWForgeMod).");
         // Registration moved to BTWForgeMod.onRegister() which calls BTWRegistration.registerAllBTWContent(event)
         try {
@@ -245,6 +256,17 @@ public class BTWLifecycle {
             }
         } catch (Exception e) {
             LOGGER.debug("Could not load BTW_en_US.lang: {}", e.getMessage());
+        }
+
+        // FCMOD-INTEGRATION(1.20.1): modern_woods: the port's own FC-side names (bark 5-8, ModernWoods), loaded third;
+        // FC's BTW_en_US.lang copy stays untouched.
+        try (java.io.InputStream modernStream =
+                     BTWLifecycle.class.getResourceAsStream("/lang/BTW_modern_en_US.lang")) {
+            if (modernStream != null) {
+                st.loadLangStream(modernStream);
+            }
+        } catch (Exception e) {
+            LOGGER.debug("Could not load BTW_modern_en_US.lang: {}", e.getMessage());
         }
 
         LOGGER.info("Loaded {} translation entries.", st.GetTranslateTable().size() - before);

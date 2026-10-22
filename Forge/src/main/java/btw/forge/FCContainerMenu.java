@@ -413,6 +413,8 @@ public class FCContainerMenu extends AbstractContainerMenu {
                 return result;
             } catch (Throwable t) {
                 warnFcFailure("FC clickMenuButton", t);
+                // INV-RESYNC: a failed FC call lands nothing; the next sync dropped its edits, it would now write them
+                fcPlayer.discardInventoryEdits();
             }
         }
         return false;
@@ -688,6 +690,8 @@ public class FCContainerMenu extends AbstractContainerMenu {
                 pb.syncInventoryToReal();
             } catch (Throwable t) {
                 warnFc("onPickupFromSlot", t);
+                // INV-RESYNC: a failed FC call lands nothing; the next sync dropped its edits, it would now write them
+                pb.discardInventoryEdits();
             }
         }
 

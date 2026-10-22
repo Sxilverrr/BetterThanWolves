@@ -54,6 +54,10 @@ public class BTWForgeMod {
 
         // FCMOD-INTEGRATION(1.20.1): mod-compat: one guarded loader for optional mods; a missing or broken mod only switches its own integration off
         btw.forge.compat.BTWCompat.init(modEventBus);
+
+        // FCMOD-INTEGRATION(1.20.1): fc_log_rules: 1.20.1 logs FC has no identity for follow FCBlockLog's rule (class F: the bark and stripped forms FC reads as log 17 or 165; class S: stems and modded logs). The FC machine hook is registered after BTWCompat.init, so an integration's own hook (Dynamic Trees #027) is asked first.
+        ModernLogHooks.register();
+        MinecraftForge.EVENT_BUS.register(ModernLogRules.class);
     }
 
     /**
@@ -109,6 +113,9 @@ public class BTWForgeMod {
         // FCMOD-INTEGRATION(1.20.1): stays-removed: the removed-id table must cover every FC stub/inert id and
         // resolve every BTW successor; FC init (RegisterEvent/BLOCKS) and proxy registration are done by now.
         event.enqueueWork(btw.forge.removed.RemovedContent::audit);
+        // FCMOD-INTEGRATION(1.20.1): modern_dyes: the 1.20.1 dyes' FC colour twins, before RecipeBridge and JEI read
+        // FC's recipe lists (INTEGRATIONS #038)
+        event.enqueueWork(ModernSpellingRecipes::apply);
     }
 
     @SubscribeEvent

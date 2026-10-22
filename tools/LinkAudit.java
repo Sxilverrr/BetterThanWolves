@@ -13,13 +13,19 @@ import java.util.zip.ZipFile;
  * Rebuilds the EFFECTIVE runtime class set using the single precedence rule shared
  * by the dist jar and dev runs (Forge/build.gradle "Class precedence"): a btw.modern
  * class present in both Modern-Common and the relocated fc set resolves to
- * Modern-Common unless it is shadow-listed (jar exclude list == dev
- * removeModernCommonShadowedClasses). Then only the fc copy exists. In the jar the
- * Modern-Common child spec is walked before the fc child spec under EXCLUDE; in dev
- * securejarhandler searches mods{} sources in reverse order and the listed stubs are
- * deleted. Forge main (btw/forge) collides with nothing. Every method/field/ctor
- * reference is then resolved against the winning class. Unresolved refs = latent
+ * Modern-Common unless it is shadow-listed (the excludes of the one copySpec
+ * modernCommonRuntime, which the jar and syncDevModernCommon share). Then only the fc
+ * copy exists. In the jar the Modern-Common child spec is walked before the fc child
+ * spec under EXCLUDE; in dev securejarhandler searches mods{} sources in reverse order
+ * and the last one, devModernCommon, is Modern-Common's output minus the list. Forge
+ * main (btw/forge) collides with nothing. Every method/field/ctor reference is then
+ * resolved against the winning class. Unresolved refs = latent
  * NoSuchMethodError / NoSuchFieldError / NoClassDefFoundError.
+ *
+ * DEV FILTER CHECK compares that dev view (Forge/build/classes/java/devModernCommon,
+ * written only by syncDevModernCommon) with Modern-Common's output: leaked (a listed or
+ * btw/api class in the view), missing (an unlisted class absent from it), stale (bytes
+ * differ from Modern-Common's) and extra (no Modern-Common copy). All four must be empty.
  *
  * It also lists FOREIGN net.minecraft refs: any class name (owner, supertype, class
  * constant, member/indy descriptor) in a winning fc or Modern-Common class that lies in
@@ -42,6 +48,8 @@ public class LinkAudit {
     static final String ROOT = resolveRoot();
     static final String FC_DIR = ROOT + "/Forge/build/classes/java/fc";
     static final String MC_DIR = ROOT + "/Modern-Common/build/classes/java/main";
+    /** The dev runs' view of Modern-Common: MC_DIR minus the shadow list (Forge/build.gradle syncDevModernCommon). */
+    static final String DEV_MC_DIR = ROOT + "/Forge/build/classes/java/devModernCommon";
     static final String FORGE_DIR = ROOT + "/Forge/build/classes/java/main";
     static final String API_DIR = ROOT + "/Api/build/classes/java/main";
     static final String GRADLE = ROOT + "/Forge/build.gradle";
@@ -76,30 +84,21 @@ public class LinkAudit {
     static Map<String, ClassInfo> api = new TreeMap<>();
 
     public static void main(String[] args) throws Exception {
-        // ---- parse shadow lists from build.gradle ----
+        // ---- parse the shadow list from build.gradle ----
+        // One list since the dev-run fix: the literal excludes of the copySpec modernCommonRuntime, which the jar
+        // (`with modernCommonRuntime`) and syncDevModernCommon (the dev view) share, so dev and jar cannot drift.
         String gradle = new String(Files.readAllBytes(Paths.get(GRADLE)), StandardCharsets.UTF_8);
         Set<String> jarExcludes = new TreeSet<>();
         Matcher m = Pattern.compile("exclude 'btw/modern/([A-Za-z0-9_$]+)\\.class'").matcher(gradle);
         while (m.find()) jarExcludes.add(m.group(1));
-
-        Set<String> devDeletes = new TreeSet<>();
-        int taskIdx = gradle.indexOf("task removeModernCommonShadowedClasses");
-        int endIdx = gradle.indexOf("].each", taskIdx);
-        Matcher d = Pattern.compile("'([A-Za-z0-9_$]+)\\.class'").matcher(gradle.substring(taskIdx, endIdx));
-        while (d.find()) devDeletes.add(d.group(1));
-
-        // ---- dev/jar shadow-list drift ----
-        Set<String> devOnly = new TreeSet<>(devDeletes); devOnly.removeAll(jarExcludes);
-        Set<String> jarOnly = new TreeSet<>(jarExcludes); jarOnly.removeAll(devDeletes);
-        System.out.println("== Shadow-list drift ==");
-        System.out.println("dev-delete only (stub still ships in PROD jar): " + devOnly);
-        System.out.println("jar-exclude only (stub still shadows FC in DEV): " + jarOnly);
+        System.out.println("== Shadow list (modernCommonRuntime: jar and dev view), " + jarExcludes.size() + " classes ==");
+        System.out.println(jarExcludes);
 
         // ---- build effective runtime set, mirroring the jar task and dev runs ----
         Map<String, ClassInfo> fc = new TreeMap<>();
         loadDir(FC_DIR, "fc", fc, null);
         runtime.putAll(fc);
-        // Modern-Common overwrites fc unless shadow-listed: same winner as the jar (MC child spec before fc child, EXCLUDE) and dev (reverse search order + deletion)
+        // Modern-Common overwrites fc unless shadow-listed: same winner as the jar (MC child spec before fc child, EXCLUDE) and dev (reverse search order over devModernCommon, MC minus the list)
         Map<String, ClassInfo> mc = new TreeMap<>();
         loadDir(MC_DIR, "modern-common", mc, null);
         List<String> orphanExcludes = new ArrayList<>();
@@ -112,6 +111,7 @@ public class LinkAudit {
             }
             runtime.put(ci.name, ci);
         }
+        checkDevFilter(mc, jarExcludes);
         loadDir(FORGE_DIR, "forge", runtime, null);
         loadDir(API_DIR, "api(dev-only)", api, null);
         System.out.println("\nruntime classes: " + runtime.size() + " (api dev-only: " + api.size() + ")");
@@ -199,6 +199,41 @@ public class LinkAudit {
             + (pathFinder == null ? "PathFinder absent from fc" : pathingPatched ? "applied" : "NOT APPLIED (stale fc dir?)"));
 
         checkJar(fc, mc);
+    }
+
+    // ---------------- dev view cross-check ----------------
+    /**
+     * Dev runs load DEV_MC_DIR (syncDevModernCommon's copy of Modern-Common minus the shadow list) instead of MC_DIR.
+     * Every unlisted, non-btw/api Modern-Common class must be there with identical bytes, and nothing else.
+     */
+    static void checkDevFilter(Map<String, ClassInfo> mc, Set<String> shadowList) throws IOException {
+        if (!Files.isDirectory(Paths.get(DEV_MC_DIR))) {
+            System.out.println("\n== DEV FILTER CHECK == skipped: run :Forge:syncDevModernCommon (no " + DEV_MC_DIR + ")");
+            return;
+        }
+        Map<String, ClassInfo> dev = new TreeMap<>();
+        loadDir(DEV_MC_DIR, "dev-modern-common", dev, null);
+        Set<String> leaked = new TreeSet<>(), missing = new TreeSet<>(), stale = new TreeSet<>(), extra = new TreeSet<>();
+        for (ClassInfo ci : dev.values()) {
+            ClassInfo src = mc.get(ci.name);
+            if (!expectedInDevView(ci.name, shadowList)) leaked.add(ci.name);
+            else if (src == null) extra.add(ci.name);
+            else if (!src.sha.equals(ci.sha)) stale.add(ci.name);
+        }
+        for (ClassInfo ci : mc.values())
+            if (expectedInDevView(ci.name, shadowList) && !dev.containsKey(ci.name)) missing.add(ci.name);
+        System.out.println("\n== DEV FILTER CHECK (" + DEV_MC_DIR.substring(ROOT.length() + 1) + ": " + dev.size()
+            + " classes; Modern-Common " + mc.size() + ", shadow list " + shadowList.size() + ") ==");
+        System.out.println("leaked (shadow-listed or btw/api class in the dev view, stub shadows FC in DEV): " + leaked);
+        System.out.println("missing (unlisted Modern-Common class absent from the dev view): " + missing);
+        System.out.println("stale (bytes differ from Modern-Common's; rerun :Forge:syncDevModernCommon): " + stale);
+        System.out.println("extra (no Modern-Common copy): " + extra);
+    }
+
+    /** True for a Modern-Common class the dev view (and the jar) must carry: not btw/api, not shadow-listed. */
+    static boolean expectedInDevView(String name, Set<String> shadowList) {
+        if (name.startsWith("btw/api/")) return false;
+        return !(name.startsWith("btw/modern/") && shadowList.contains(name.substring("btw/modern/".length())));
     }
 
     // ---------------- built-jar cross-check ----------------

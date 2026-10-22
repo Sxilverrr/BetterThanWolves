@@ -13,6 +13,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -32,8 +33,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p><b>Integration pattern:</b> bridge correctness, not a modern-feature rebalance (closest: D). The 1.20.1
  * executors keep deciding when farmland reverts; FC decides what it reverts to.</p>
  *
- * <p><b>Rebalance:</b> none. The trample odds are untouched here (1.20.1's fallOn and FC's onFallenUpon both
- * still run; that is a separate finding).</p>
+ * <p><b>Rebalance:</b> none for the reversion. The trample odds are FC's (hook_ownership D9(b), below): 1.20.1's
+ * fallOn rolled {@code rand < fall - 0.5} (Entity.canTrample, Entity.java:3426-3430) and FC's onFallenUpon then rolled
+ * {@code rand < fall - 0.75} (Server FCBlockFarmlandBase.java:80-89) on the same fall, both ending here. One roll now:
+ * 1.20.1's, with FC's threshold, and HookPolicy's farmland FALL row (ADAPTER(D9b)) skips FC's onFallenUpon
+ * (BlockMixin.btw$fallOn). 4.B's 0.75 lets a player step off a slab without ruining crops (FCBlockFarmlandBase.java:83-84);
+ * Forge's FarmlandTrampleEvent veto and the mobGriefing rule stay in force, and only living entities above 0.512
+ * cubic size trample (1.20.1's own condition, which 4.B did not have).</p>
  *
  * <p><b>Injection strategy:</b> {@link Inject} at HEAD of the static {@code turnToDirt(Entity, BlockState, Level,
  * BlockPos)}, cancellable. Only for {@code Blocks.FARMLAND} (DirtPathBlock.tick shares the method and keeps
@@ -67,5 +73,21 @@ public abstract class FarmBlockMixin {
         level.setBlockAndUpdate(pos, dirt);
         level.gameEvent(GameEvent.BLOCK_CHANGE, pos, GameEvent.Context.of(entity, dirt));
         ci.cancel();
+    }
+
+    /**
+     * FC's trample threshold on 1.20.1's one roll (hook_ownership D9(b)): the fall distance FarmBlock.fallOn passes to
+     * {@code ForgeHooks.onFarmlandTrample} (FarmBlock.java:87) is lowered by 0.25, so Entity.canTrample's
+     * {@code rand < fall - 0.5} (Entity.java:3426-3430) becomes 4.B's {@code rand < fall - 0.75} (Server
+     * FCBlockFarmlandBase.java:80-89). The event (FarmlandTrampleEvent) carries the adjusted distance too. A
+     * {@link ModifyArg} chains with other mods' injectors; a Redirect of the call would be exclusive. The target is a
+     * Forge method (not obfuscated), hence {@code remap = false} on the {@link At}.
+     */
+    // FCMOD-INTEGRATION(1.20.1): hook_ownership: farmland tramples once, on 1.20.1's roll with 4.B's 0.75 threshold (D9(b)); FC's own roll is skipped by the FALL owner
+    @ModifyArg(method = "fallOn", at = @At(value = "INVOKE",
+            target = "Lnet/minecraftforge/common/ForgeHooks;onFarmlandTrample(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;FLnet/minecraft/world/entity/Entity;)Z",
+            remap = false), index = 3)
+    private float btw$fcTrampleThreshold(float fallDistance) {
+        return fallDistance - 0.25F;
     }
 }

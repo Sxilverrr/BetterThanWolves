@@ -30,7 +30,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <ul>
  *   <li>Per-object {@link PlayerBridge} storage ({@link PlayerBridge.Holder}); bridge marked dead on removal</li>
  *   <li>Dig speed / tool effectiveness (mining)</li>
- *   <li>Bed sleeping disabled</li>
  *   <li>Mid-air block placement restriction</li>
  *   <li>Eating restriction (hunger potion; the FC food meter decides "needs food" on the server)</li>
  *   <li>Every causeFoodExhaustion goes to FC under FC's rule: armour weight, invulnerable exemption (#021)</li>
@@ -99,16 +98,10 @@ public abstract class PlayerMixin implements PlayerBridge.Holder {
     // FC mining speed modifier (penalty-based slowdown)
     // ================================================================
 
-    // ================================================================
-    // FC bed sleeping disabled
-    // ================================================================
-
-    @Inject(method = "startSleepInBed", at = @At("HEAD"), cancellable = true)
-    private void btw$disableBeds(BlockPos pos,
-                                  CallbackInfoReturnable<Player.BedSleepingProblem> cir) {
-        // FC completely disables bed sleeping — always returns OTHER_PROBLEM
-        cir.setReturnValue(Player.BedSleepingProblem.OTHER_PROBLEM);
-    }
+    // NO startSleepInBed veto (beds_sleep_no_spawn, ruling 3): beds keep 1.20.1 sleep and never set the spawn
+    // (btw.forge.BedSpawnPolicy); FC hostiles keep a player awake (ServerPlayerMixin.btw$fcHostilesPreventRest). The
+    // former HEAD veto declared CallbackInfoReturnable<BedSleepingProblem> on a method returning Either
+    // (Player.java:1306) and threw a ClassCastException at the night super call (ServerPlayer.java:869).
 
     // ================================================================
     // FC mid-air block placement restriction

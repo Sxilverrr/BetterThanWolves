@@ -17,9 +17,7 @@ import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.EnchantmentTableBlock;
 import net.minecraftforge.event.entity.living.LivingDropsEvent;
-import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.village.VillagerTradesEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -31,7 +29,6 @@ import java.util.List;
 /**
  * Bridges FC gameplay systems that modify vanilla mechanics:
  * <ul>
- *   <li>Disables the vanilla enchanting table (FC uses the Infernal Enchanter)</li>
  *   <li>Mob scroll drops — vanilla (non-FC) mobs roll FC's per-death chance to drop
  *       a specific Arcane Scroll (FC's enchantment carrier items)</li>
  *   <li>Villager scroll trades — max-level villagers sell specific scrolls</li>
@@ -47,17 +44,10 @@ public class FCGameplayBridge {
     /** FC Arcane Scroll itemsList index: ParseID 22223 + 256 offset = 22479. */
     private static final int SCROLL_ITEM_ID = 22479;
 
-    // ================================================================
-    // Disable vanilla enchanting table
-    // ================================================================
-
-    @SubscribeEvent
-    public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
-        if (event.getLevel().getBlockState(event.getPos()).getBlock()
-                instanceof EnchantmentTableBlock) {
-            event.setCanceled(true);
-        }
-    }
+    // NO enchanting-table cancel (hook_ownership D5(a)): 4.B kept the 1.5.2 table (vanilla/server
+    // BlockEnchantmentTable.java:54-66) and only removed its recipe (FCRecipes.java:5476), using the table as the
+    // Infernal Enchanter's ingredient (FCRecipes.java:2518-2526), so a table placed or found opens the 1.20.1
+    // EnchantmentMenu. A RightClickBlock cancel here also hid every click on the table from other mods' handlers.
 
     // ================================================================
     // FC penalty debuffs — mining speed, movement, melee damage

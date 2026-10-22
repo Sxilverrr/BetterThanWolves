@@ -45,9 +45,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *       a {@code useItem} DENY from another handler (ServerPlayerGameMode.useItemOn) and the adventure-mode gate
  *       ({@code mayBuild} or the dung's CanPlaceOn tag, ItemStack.onItemUse; 4.B ItemDye.onItemUse's
  *       {@code canPlayerEdit}). Either one leaves the event to vanilla, where dung does nothing.</li>
- *   <li><b>Why an event</b>: FC dung has no onItemUse (Server FCItemDung.java), and ServerPlayerGameModeMixin's FC item
- *       use does not cancel, so Forge posts RightClickBlock for it. A RightClickBlock cancel skips 1.20.1's creative
- *       count restore, hence the explicit {@code instabuild} check.</li>
+ *   <li><b>Why an event</b>: Forge posts RightClickBlock before any FC item use of the click (ServerPlayerGameModeMixin
+ *       runs FC {@code onItemUse} at 1.20.1's item step, after the event, block use and the DENY check:
+ *       fc_item_use_order), and FC dung has no onItemUse anyway (Server FCItemDung.java). A RightClickBlock cancel skips
+ *       1.20.1's creative count restore, hence the explicit {@code instabuild} check.</li>
  *   <li><b>Bone meal</b> is not here: BoneMealPolicy routes it (4.B: an fc_soil_plants member on FC ground relays to
  *       the ground, which declines, so the bone meal is kept). BonemealableGateMixin gates only the vanilla classes
  *       BTW governs, so a tagged modded block's own performBonemeal runs unchanged.</li>

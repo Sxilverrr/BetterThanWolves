@@ -842,9 +842,9 @@ The following former stubs are now **done** and no longer need work:
 
 ### P0 — CRITICAL (14 remaining)
 
-These are OVERRIDE POINTS — the base class default is intentionally empty/false/true.
-FC subclasses override them. They only need real base implementations if vanilla
-Block.java in 1.5.2 had logic in the base class (e.g., breakBlock cleans up tile entities).
+These are OVERRIDE POINTS — the base class default is intentionally empty/false/true. FC subclasses override them. They
+only need real base implementations if vanilla Block.java in 1.5.2 had logic in the base class (e.g., breakBlock cleans
+up tile entities). *(2026-10-20: the table omits `DropItemsOnDestroyedByExplosion`, which had such logic; see (bb).)*
 
 | Signature | Current | Notes |
 |-----------|---------|-------|
@@ -903,6 +903,9 @@ had real logic in the base class for that method.
 | Piston | 5 | `CanBlockBePulledByPiston`, `CanBePistonShoveled`, `GetPistonShovelEjectDirection`, `GetAsPistonMovingBoundingBox`, `CanContainPistonPackingToFacing` |
 | Growth/hydration | 11 | `CanDomesticatedCropsGrowOnBlock`, `CanReedsGrowOnBlock`, `CanSaplingsGrowOnBlock`, `CanWildVegetationGrowOnBlock`, `CanNetherWartGrowOnBlock`, `CanCactusGrowOnBlock`, `IsBlockHydratedForPlantGrowthOn`, `IsConsideredNeighbouringWaterForReedGrowthOn`, `GetIsFertilizedForPlantGrowth`, `NotifyOfFullStagePlantGrowthOn`, `NotifyOfPlantAboveRemoved` |
 | Block property | 6 | `CanWeedsGrowInBlock`, `GetWeedsGrowthLevel`, `RemoveWeeds`, `AttemptToApplyFertilizerTo`, `GetConvertsLegacySoil`, `CanSpitWebReplaceBlock` |
+
+*(2026-10-20: the work stumps of the four modern woods (META 5-8) are retrievable by the block dispenser through
+2026-10-20 (ay)'s M2 patch; FC's own work stumps (META 0-3) still hit this stub.)*
 
 ### P3 — LOW (Rendering/Client/Intentional No-ops — unchanged)
 
@@ -1346,6 +1349,9 @@ Fix:
   the Modern-Common child. The shadow list (jar excludes == removeModernCommonShadowedClasses) is
   the only thing that lets fc win, in the jar and in dev alike. A new `jar.doLast` guard fails the
   build unless btw/modern/ContainerChest is Modern-Common's bytes and btw/modern/Entity is fc's.
+  *(2026-10-19: removeModernCommonShadowedClasses is gone: the jar and the dev runs share one copySpec,
+  modernCommonRuntime, and dev runs load a filtered copy of Modern-Common instead of deleting from its output; see
+  2026-10-19 (av).)*
 - widenFcHookDescriptors pass (c): narrow hook overrides in fc Entity subclasses get the wide
   `(Lbtw/modern/Entity;)V` descriptor and an `aload_1; checkcast <narrow>; astore_1` prologue;
   classes are read with EXPAND_FRAMES and every widened method is logged. Passes (a)/(b) and the
@@ -1641,6 +1647,12 @@ btw.modern.World per query for FC classes that override getCollisionBoundingBoxF
 contact-fire counter is kept per entity in ProxyBlock and survives stepping out and back in within
 20 ticks, where 1.5.2 resets it. Pre-existing: if FC re-syncs the PlayerBridge in the middle of a
 call, the held FC stack is detached and a later survival decrement is not written back.
+*(2026-10-15: the caveat "1.20.1-only blocks get no FC mining penalty" is fixed by compat wave C1, see 2026-10-18
+(au): FCGameplayBridge.onBreakSpeed now applies BTW's health, hunger, fat and gloom modifier
+(FCMiningSpeed.miningModifier) to every block with no FC block, on both sides.)*
+*(2026-10-20: the "Pre-existing" re-sync caveat above (a held FC stack detached mid-call, so a later survival
+decrement is lost) was the root of a survival duplication bug, CurseForge triage CF2-I1. Retired by 2026-10-20
+(az): a re-sync now keeps the FC stack FC holds.)*
 
 ## 2026-10-10 (aa) FC mob puppets: kill credit, one HP pool, no MC drowning, death-only scroll drops
 
@@ -2187,6 +2199,13 @@ Fix:
   hardpoints, hardness and blast resistance from the live MC state, cannot be moved by FC pistons,
   is inert to the saw and block dispenser, drops MC loot, and is never written. Non-colliding
   water-bearing states (seagrass, kelp, bubble columns) read as water.
+  *(2026-10-18: no longer inert to the saw by rule. Since compat wave C1 the stand-in's FC machine hooks
+  (FCBlockSaw's 7-argument OnBlockSawed, GetDoesStumpRemoverWorkOnBlock, AttemptToApplyFertilizerTo) ask a hook
+  an integration registered for the live state (ModernBlockHooks), and answer FC's inert false only when none
+  applies. Since C2 they are live for Dynamic Trees (INTEGRATIONS.md #027): the saw fells full-width trunks, the
+  stump remover clears dead stumps, bone meal fertilizes the rooty soil. A block whose cached collision shape is
+  empty is now asked again at its live position, so a Dynamic Trees trunk shell reads as stand-in 161, not air.
+  See 2026-10-18 (au).)*
 - getCollidingBoundingBoxes scans from minY-1. handleMaterialAcceleration, isAnyLiquid and
   isMaterialInBB also count waterlogged water, and unmapped water-holders always report metadata 0
   (source).
@@ -2417,6 +2436,10 @@ child's raw CompoundTag without its tagMap, which affects FC stacks written stra
 ForgeNBTCompound (FcWorldSavedData slots). Enchanted-book StoredEnchantments are not mirrored. FC
 now sees MC enchantments: authentic, but noticeable (Silk Touch, Fortune and Looting apply to FC
 drops, MC-enchanted ProxyItems glint, and the Infernal Enchanter counts existing enchantments).
+*(2026-10-20: the modern dyes no longer collapse: white dye since 2026-10-20 (aw), black, brown and blue dye since
+(bc), as FC 351:271, 256, 259 and 260. A broken bed or door drops its own 1.20.1 item, a bed in its colour, since
+(bb), though a bed item FC holds still collapses to the red bed. Flowers still collapse when broken, popped or
+placed by FC (triage CF2-DR3, CF2-P8c).)*
 
 ## 2026-10-10 (aj) Item use: one arrow per bow shot, FC right-click once, entity items, 1.5.2 food values
 
@@ -2518,6 +2541,9 @@ MC-side stack sizes of vanilla-id foods stay at 1.20.1's 64 while FC sees 16, pe
 policy (BTWRegistration.java:125-127). A potion's bottle goes to the hand, as in vanilla, instead of
 1.5.2's first free slot. The client briefly predicts a bowl in hand until the server's slot update
 arrives.
+*(2026-10-20: btw$useItemOn is gone: the block is used first and the FC item at 1.20.1's item step, see 2026-10-20
+(ba). btw$useItem still lets vanilla run after FC; FC's edits there are now dropped explicitly inside a shadow
+scope ((az)).)*
 
 ## 2026-10-10 (ak) FC sees dropped items (ItemEntityBridge); FC projectiles and damage reach vanilla entities
 
@@ -2597,6 +2623,8 @@ edits. The frozen 5-HP item health pool is per bridge. New FC item spawns land 0
 arrows hurt a perched dragon (vanilla deflects only AbstractArrow there). FC projectiles on players
 are not difficulty-scaled (1.5.2 parity, unlike 1.20.1 skeleton arrows). Vanilla mobs wrapped in FC
 block callbacks now take FC block damage (1.5.2 parity).
+*(2026-10-21: checkNoEntityCollision and canPlaceEntityOnSide follow 1.5.2: only entities that block building
+count, so items and XP orbs no longer obstruct; see 2026-10-21 (bd).)*
 
 ## 2026-10-10 (al) Recipes (login, /reload, 2x2 grid, table rules), JEI, FC login handshake, entity names
 
@@ -3019,6 +3047,8 @@ Caveats:
   2026-10-18 with UpdateUsingItem (ProxyItem.onUseTick; PlayerBridge mirrors the real use counter).
 - The 508 SoundEvent registry entries and network protocol 4 refuse mismatched client and server
   builds.
+  *(2026-10-15: network protocol 5 since compat wave C1: PenaltySync also carries FC exhaustion, and
+  FoodTableSync sends the btw_foods table to a dedicated server's clients.)*
 
 ## 2026-10-11 (ap) Creative tab, Search and JEI from FC's creative rules; block-item names, subtypes, pick block
 
@@ -3079,6 +3109,9 @@ computed them, never from the registries):
   FCItemPlacesAsBlock.java:60-123): GetBlockIDToPlace, ground-cover and replaceable targeting,
   canPlaceEntityOnSide, getMetadata(damage), onBlockPlaced, PreBlockPlacedBy, set, onBlockPlacedBy,
   onPostBlockPlaced, the animal notification, PlayPlaceSound.
+  *(2026-10-21: WorldBridge.canPlaceEntityOnSide only checked for an entity in the cell until 2026-10-21 (bd): no
+  replaceable-target or canPlaceBlockOnSide rule ran, so FC placement went into solid cells and flowers onto stone
+  (triage CF2-P8a, correction 3).)*
 - CI-1 (review blocker): getMetadata(damage) is faithful (:94), but the port registers plain
   ItemBlocks and getMetadata-less ItemMultiTextureTile / ItemBlockWithMetadata / ItemColored stubs
   at the vanilla subtype ids, so wool colours, wood species, slabs, sandstone, stone bricks, quartz,
@@ -3413,6 +3446,10 @@ the exception table.
     setBlockAndMetadata;
   - Block.opaqueCubeLookup filled in the constructor (BlockHalfSlab: double slabs);
   - World.GetModernSoilPlantSurvival, asked first by checkFlowerChange (base answer -1).
+  *(2026-10-21: later base ports: BlockLeaves' drop methods and the interim canSilkHarvest (ax); ItemDye subtypes
+  and MerchantRecipeList's slot rule (aw); Block.DropItemsOnDestroyedByExplosion's 1.5.2 body behind
+  World.UsesModernBlockLoot, and the matching dropBlockAsItemWithChance branch (bb); ItemStack.isItemDamaged for
+  subtyped items (bc); BlockTripWireSource's placement hooks and BlockLog.onBlockPlaced (bd).)*
 - **WorldBridge and the FC-metadata overlay:**
   - derive/apply branches ahead of the generic FACING ones: crop, wart, cactus, cane and fire AGE;
     farmland MOISTURE apply; cocoa FACING | AGE << 2; vine faces; stems (AGE = growth / 2, attached =
@@ -3454,6 +3491,8 @@ the exception table.
   FCUtilsGenHugeTree.generate against World.getFcMinBuildHeight / getFcMaxBuildHeight: the base test,
   the clearance-scan floor and the 256 tops (4 methods). FC's own 128 top for birch and spruce stays, a
   4.B rule measured from sea level. Idempotent; any other bytecode shape fails the build.
+  *(2026-10-19: extendFcTreeBuildRange is no longer a task but a pass inside extractFcClasses, after
+  extendFcPathingBuildRange; see (av).)*
 - **Self-audits:** BridgeSelfAudit.runServerStart, called from BTWForgeMod.onServerStarting, logs
   [SELF-AUDIT/tick] and [SELF-AUDIT/light] once per JVM. It runs at ServerStartingEvent because Forge
   fills the BlockStateBase caches at the registry freeze, after FMLCommonSetupEvent (run 1 audited at
@@ -3557,6 +3596,8 @@ the exception table.
   fire (review R9).
   *(2026-10-15: the FC plant twins of (at) take five ids of the free range (174, 169, 168, 167, 166), so
   four flammable stand-ins remain (162-165) and more buckets share one.)*
+  *(2026-10-20: log2 takes 165 (ay), so three flammable stand-ins remain (162-164), two when the plant stand-in
+  takes 162.)*
 - lightOpacity is not filled: ProxyBlock reads it for light blocking, so filling it would change
   1.20.1 lighting for every FC block. The opaque-cube fill cannot fix FC-only ProxyBlocks whose port base
   answers isOpaqueCube true (1036 wood door, 1084 wicker pane, 1085 grate, 1086 slats): Modern-Common
@@ -3565,9 +3606,15 @@ the exception table.
   log from a stripped log or wood.
 - The farmland double trample stays open: 1.20.1 FarmBlock.fallOn and FC onFallenUpon both run (both
   now give loose dirt).
+  *(2026-10-21: closed by (be): farmland FALL is 1.20.1's (ADAPTER(D9b)), so FC's onFallenUpon no longer runs, and
+  1.20.1's one roll uses 4.B's 0.75 threshold (FarmBlockMixin).)*
 - The non-tick hook families remain open: pistons, liquid hardening, beds and hardcore spawn, beacon and
   ender-chest casts, the anvil workbench, buddy-block notifications, wooden doors on redstone,
   explosions (decision D6, stone's position-aware blast resistance).
+  *(2026-10-21: settled since: liquid hardening (bf); beds (be; 4.B's random hardcore respawn is still open, triage
+  CF2-U1-HS); the beacon and ender-chest casts (the block-entity guard of (be); the Phase-4 tile-entity bridge is
+  still open); the anvil workbench (be); wooden doors on redstone (ruled 1.20.1, an explicit row of (be)). Pistons,
+  buddy-block notifications and explosions remain.)*
 - Supersedes the NetherPortalBlockMixin part of 2026-10-10 (ag) and corrects the 2026-07-08 "fire
   spread" and "grass/mycelium spread" claims (both annotated there).
 
@@ -3659,6 +3706,8 @@ post-1.5.2 plants; "Bone meal (BoneMealPolicy)"; "Stays removed (RemovedContent)
     ALLOW when FC took the fertilizer (Forge then uses one item), else the event is cancelled.
   - Only `minecraft:bone_meal` is fertilizer (isFertilizer); BoneMealPolicy.mayUseAsFcItem in
     ProxyBlock.tryPlaceHeldItem keeps 1.20.1 white dye out of Stage 2.
+    *(2026-10-20: white dye is FC 351:271 since (aw), so mayUseAsFcItem lets it into Stage 2, where FCItemDye acts
+    only at damage 15 and nothing happens. Since (ba) no FC item runs at the head of useItemOn.)*
   - Dispensers: `DispenserBlock.registerBehavior(Items.BONE_MEAL, new DefaultDispenseItemBehavior())` at
     common setup (eject one, aux 1000 and 2000: 4.B's BehaviorDefaultDispenseItem); Modern-Common
     Item.OnItemUsedByBlockDispenser is the 1.5.2 default (FCBlockBlockDispenser.SpitOutItem inlined, aux
@@ -3686,6 +3735,12 @@ post-1.5.2 plants; "Bone meal (BoneMealPolicy)"; "Stays removed (RemovedContent)
     RETURN: the live plant's 1.20.1 soil as well) and FCBlockMushroomTwinMixin (updateTick HEAD:
     TwinRegistry.fungusTick). A tree that does not fit leaves every sapling of its square at FC stage 3,
     FC's restore rule.
+    *(2026-10-18: the two twins also run other mods' plants. Compat wave C1 (maintainer decision D2 (b)): every
+    other SaplingBlock with STAGE and no legacy id, for example HarvestCraft's 50 fruit-tree saplings, is a
+    sapling twin of species 0 and grows into its own tree. Compat wave C2: a sapling of another mod that is not a
+    SaplingBlock joins through TwinRegistry.registerModdedSapling (Dynamic Trees' DynamicSaplingBlock); its
+    Nether fungi take the FCBlockMushroom twin, 1 in 50 random ticks and never in the End, as vanilla crimson and
+    warped fungi do. See 2026-10-18 (au) and BRIDGE_SPEC.md, "Tick ownership (TickPolicy)", twins.)*
   - WorldBridge: the twin metadata codec first in derive / apply (TwinRegistry.deriveMeta / stateForMeta:
     species, or the crop level of AGE); setTwinMetadata (the torchflower's level 7 as a block switch under
     the metadata-only write guard; the pitcher's upper half placed as PitcherCropBlock.grow places it, or
@@ -3726,6 +3781,10 @@ post-1.5.2 plants; "Bone meal (BoneMealPolicy)"; "Stays removed (RemovedContent)
     166), before any stand-in exists; the stand-ins allocate from the bottom (160 solid, 161 collider,
     flammable from 162), so four flammable stand-ins remain. ModernBlockStandIn.FIRST_FREE_ID / LAST_FREE_ID
     / isFreeId are package-visible for it.
+    *(2026-10-15: four, or three when the pack has a modded crop: compat wave C1 allocates the plant stand-in
+    (ModernPlantStandIn) right after the collider, only then. The 2026-10-18 production smoke with every optional
+    mod installed logs `plant stand-in=162`.)*
+    *(2026-10-20: three, or two with the plant stand-in: log2 holds 165, see (ay).)*
 - **C. Stays removed** (Forge/src/main/java/btw/forge/removed/RemovedContent.java): one table drives every
   hook. Each row has the 1.20.1 item and blocks, the tier, the expected 1.5.2 ids, the 4.B citation, and the
   structure rule or BTW successor.
@@ -3861,27 +3920,61 @@ post-1.5.2 plants; "Bone meal (BoneMealPolicy)"; "Stays removed (RemovedContent)
   The miss: a `/give`'d tripwire hook used on stone placed nothing (use FAIL). The stays-removed rule leaves
   a removed item's own placement alone (RemovedContent.placesRemovedBlock), so this is a placement-routing
   issue that predates the change; parked.
+  *(2026-10-21: the miss came from the plan's geometry: the target cell (4,-61,7) is the superflat grass layer,
+  which 1.20.1 refused correctly, and the old helper never put its player on the ground, so FC's mid-air rule
+  refused too. The real bug was wider: FC placement ignored validity, so a rerun on 2026-10-18 "placed" the hook
+  inside the grass block. Fixed by (bd); P-PLACE H0 (the grass kept), H1 and H2 (hooks on a north and an east face)
+  pass.)*
 - Not run: any client (the bone-meal swing prediction, the hidden creative-tab entries and JEI's list),
   off-hand and creative bone meal (the helper has no flags for them), BonemealEvent callers from other mods,
   Serene Seasons, existing-world upgrades (sapling stages, generated legacy blocks), and modded templates.
+- *(2026-10-18, production smoke.)* The release jar `BetterThanWolves-1.20.1-1.6.2-alpha.5.jar` (reobfuscated)
+  on a clean Forge 1.20.1-47.3.0 dedicated server from the official installer, a fresh default world and 60 s of
+  ticks, once with BTW alone and once with every optional mod of INTEGRATIONS.md #027-#032. `logs/debug.log`
+  shows `Mixing fcext.FCBlockSaplingTwinMixin from betterthanwolves.mixins.json into
+  net.minecraft.src.btw.block.FCBlockSapling`, the same line for `fcext.FCBlockMushroomTwinMixin` into
+  `FCBlockMushroom`, and the same for compat wave C1's `fcext.FCBlockCropsDailyGrowthMixin` and
+  `fcext.FCBlockHempCropMixin`. Both boots: 0 mixin errors, 0 crash reports, 20 TPS, and the self-audits as in
+  the dev runs (`[SELF-AUDIT/twin] 6 twin families (11 blocks), 41 twin states, 173 paced states, 0 warnings`,
+  `[SELF-AUDIT/tick] 238 blocks, 778 FC-random states, 200 FC-scheduled blocks, 0 warnings (0 expected)`,
+  `[REMOVED-AUDIT] stays-removed table: 12 T1, 8 T2, 8 T3 rows; ... 0 warning(s)`); BTW alone logs 0 ERROR lines.
+  `fcext.FCUtilsMiscColdBiomeMixin` logs no Mixing line in 60 s: it applies when FCUtilsMisc first loads.
+  Run since, from the list above: Serene Seasons (proof H3, bone meal on an out-of-season tagged FC crop
+  fertilizes the soil to block_1088), off-hand bone meal (on a Dynamic Trees branch, dt_p3 B2) and the
+  BonemealEvent path of other mods (`BoneMealItem.applyBonemeal` on Dynamic Trees, dt_p3 B5 and B9), see (au).
 
 **Caveats.**
 - Dropped white dye (WD5): an item entity of 1.20.1 white dye on FC farmland fertilizes it and is used up.
   The item bridge hands FC the stack (351, 15), and FCBlockFarmlandBase.onEntityCollidedWithBlock checks
   only id and damage (FCBlockPlanterBase the same, by code reading). The fix is a bone-meal-only check in
   the item bridge before FC sees the stack. White dye used by hand does nothing.
+  *(2026-10-20: fixed by (aw): white dye is FC 351:271, which no dye-15 rule matches; P-WD 40/40, the bone-meal
+  plan 96/96.)*
 - Stranded recipes: blast_furnace, smoker and furnace_minecart need the furnace (T3) and crossbow a tripwire
   hook (T1). They stay craftable from salvaged or existing items (a furnace mined with Silk Touch, as in
   4.B; by code reading); a BTW route is later compat work.
+  *(2026-10-15: superseded by compat wave C1, maintainer decision D-B (a). RetiredIngredientWidening now gives
+  every tier its ingredient successor: the furnace (T3) takes the brick oven that replaced it (FCRecipes.java:
+  349-353), the tripwire hook (T1) one FC iron nugget, FC's own value for a hook (FCRecipes.java:4480-4485). The
+  four recipes are widened and none is stranded in 1.20.1: the 2026-10-18 production smoke logs `Widened 17
+  recipes` and no `Stranded` line. Every removed id stays removed as a result.)*
 - A `/give`'d tripwire hook cannot be placed (above).
+  *(2026-10-21: closed, see the note under the verification above and (bd).)*
 - Bone meal keeps 1.20.1's behaviour on what BTW does not govern: moss, nylium, rooted dirt, pink petals,
   tall flowers, glow lichen, sea pickles, seagrass, dripleaf, mangrove leaves (a hanging propagule) and
   modded plants, and growWaterPlant on a block with no FC mapping. A later compat rule for modded plants on
   BTW soil adds its condition to BoneMealPolicy.route as a SOIL_RELAY and reuses onBonemeal; it must not add
   a second BonemealEvent listener.
+  *(2026-10-18: done in compat waves C1 and C2, through that extension point and without a second listener.
+  BoneMealPolicy.route(level, pos, state) makes a modded crop, sapling or #betterthanwolves:fc_soil_plants member
+  on FC ground a SOIL_RELAY (INTEGRATIONS.md #026), and a modern block an integration registered FC machine
+  hooks for an FC_TARGET (Dynamic Trees, #027). Modded plants on modern or modded soil keep 1.20.1 bone meal.
+  BRIDGE_SPEC.md, "Bone meal (BoneMealPolicy)", has the route table.)*
 - The early return for bone meal restores the 4.B order for bone meal only. Every other FC item still runs
   at HEAD of useItemOn, before block activation, RightClickBlock and the spectator check (BM8); generalising
   the early return is the 4.B rule but needs its own regression pass.
+  *(2026-10-20: closed by (ba): no FC item runs at the head of useItemOn; the block is used first, then 1.20.1's
+  item step runs the FC item.)*
 - Paced plants reproduce FC's mean pace, not its cadence: FC's reed and cactus counters are near-regular,
   the thinning is geometric. Exact cadence would need a per-cell counter store that FC reads never see.
 - Twin identity is visible to every FC world reader: FC animals graze the crop twins (4.B BlockCrops
@@ -3901,3 +3994,923 @@ post-1.5.2 plants; "Bone meal (BoneMealPolicy)"; "Stays removed (RemovedContent)
   and logs foreign removals at INFO.
 - Supersedes the D2 and D4 caveats of 2026-10-14 (as) and narrows the CT6 caveat of 2026-10-11 (ap) (all
   annotated there).
+
+## 2026-10-18 (au) Compat waves: FC machine hooks on modern blocks, modded saplings on the FC twins, FC's warm loose stone, BTW's mining penalty on modern blocks
+
+**Symptom.** Four stubs and gaps of earlier entries, closed while BTW was opened to other mods: compat wave C1
+(2026-10-15, committed as 3985147) and compat wave C2 (2026-10-17 and 2026-10-18, in the 2026-10-18 commits merged
+as 0292e38, together with the hold-to-craft fix of (ao)). INTEGRATIONS.md #020-#032 has the integration entries;
+BRIDGE_SPEC.md has the seams and data formats ("Recipe bridge", "Food values", "Modded plants", "Mod compatibility
+(BTWCompat)", "Held use").
+- **Mining penalty (C1).** A block with no FC block (deepslate, tuff, any modded block) dug at full speed while
+  BTW's health, hunger, fat or gloom penalty slowed every FC block ((z) caveat).
+- **FC machines on modern blocks (C2).** FC's saw, stump remover and bone meal did nothing to a Dynamic Trees
+  trunk, stump or tree ((ag): the stand-in "is inert to the saw"). At 3985147 bone meal on a DT branch, rooty soil
+  or trunk shell ran DT's own growth pulse instead, from either hand and at fertility 15 too (dt_p3 B1, B2, B8 fail
+  at HEAD).
+- **Saplings that are not SaplingBlocks (C2).** Dynamic Trees and dtphc2 saplings grew on their first random tick
+  with no light, End or pace gate: in a sealed dark box a DT sapling grew at once, and DT saplings grew in the End
+  (dt_p4 P1-P4 fail at HEAD). DT's Nether fungi never grew from random ticks at all (DT NetherFungusSpecies.java:63,
+  gated at DynamicSaplingBlock.java:82), while vanilla crimson and warped fungi follow FC's mushroom rule ((at)).
+- **FC warmth (C1 review, fixed in C2).** Loose cobblestone and loose stone brick with lava in their cracks were not
+  warm to Cold Sweat or LSO: BtwThermalTable, new in C1, left out FC's own warm-block rule.
+
+**Root cause.**
+- Penalty: 1.5.2 multiplies every dig by GetMiningSpeedModifier (vanilla/server EntityPlayer.java:789-791). The
+  port applies it to FC blocks inside FCMiningSpeed.compute only. Other blocks dig through 1.20.1
+  Player.getDigSpeed, and FCGameplayBridge.onBreakSpeed read m_fCurrentMiningSpeedModifier, which is 1.0 outside
+  compute, on the server only.
+- FC machines: ModernBlockStandIn answered OnBlockSawed, GetDoesStumpRemoverWorkOnBlock and
+  AttemptToApplyFertilizerTo with Modern-Common's inert false. C1 added the ModernBlockHooks seam; no integration
+  registered a hook before C2. Found by the C2 after-runs (and present at 3985147): ModernBlockStandIn.idFor asked
+  only MC's cached collision shape, which MC builds at BlockPos.ZERO in an empty world. A DT trunk shell
+  (TrunkShellBlock, whose shape follows its core, without a dynamic shape) caches empty, so it read as air to FC and
+  the saw and stump remover never reached it.
+- Saplings: TwinRegistry.isFallbackSapling (C1, decision D2 (b)) accepted only an unmapped SaplingBlock with STAGE.
+  DynamicSaplingBlock extends Block and has no STAGE, so TickPolicy.decide never classified it.
+- Warmth: BtwThermalTable rows are contiguous metadata ranges. FC's rule is FCBlockLavaReceiver.GetIsBlockWarm =
+  GetHasLavaInCracks, `(meta & 1) != 0` (Server FCBlockLavaReceiver.java:99-102, :106-109): every odd metadata,
+  which no single range can hold.
+
+**Fix (general rules).**
+- **Mining penalty (C1, INTEGRATIONS.md #022).** `FCMiningSpeed.miningModifier(Player)` gives BTW's modifier on
+  either side through the one formula `EntityPlayer.computeHealthAndExhaustionModifier` (server: the bridge's own
+  levels; client: the PenaltySync mirror; 1.0 on any failure). `FCGameplayBridge.onBreakSpeed` multiplies
+  BreakSpeed's `newSpeed` by it for every block with no FC block, on both sides, so the client predicts the
+  server's progress. FC blocks keep it inside `compute`, and FC digging now posts BreakSpeed itself
+  (`FCMiningSpeed.postBreakSpeed`, FC's strength as the original speed), so the penalty applies exactly once and
+  other mods' factors reach FC blocks too.
+- **FC machine hooks (C1 seam, live since C2; #022, #027).** `ModernBlockHooks.register(Predicate<BlockState>,
+  Hook)`, called during mod construction. The stand-in's 7-argument `OnBlockSawed` (FCBlockSaw),
+  `GetDoesStumpRemoverWorkOnBlock` (FCItemStumpRemover) and `AttemptToApplyFertilizerTo` (FCItemDye) ask the first
+  hook whose predicate accepts the live state, on a ServerLevel; with none, on the client, or when the hook throws,
+  FC's inert false stands. `BoneMealPolicy.route` answers FC_TARGET for a hooked state that no earlier row claims
+  (DT's and dtphc2's pods and fruit are tagged paced plants and route SOIL_RELAY). Dynamic Trees registers
+  `DTBlockHooks` for branches (roots included), rooty soil, trunk shells and DT pods and fruit (dtphc2's
+  included):
+  - the saw fells a trunk of radius 8 or more away from the saw; the cut block gives FC's log saw output (4 planks
+    of the wood, 2 sawdust, 1 bark when unstripped; FCBlockSaw.java:618-639) and the falling payload is one log
+    short; a species FC never had gives 2 sawdust and keeps its log in the payload;
+  - the stump remover clears a dead DT stump, from its core or any trunk shell; a living stump is refused (air
+    there would collapse the whole tree with no drops);
+  - bone meal gives the rooty soil +2 fertility and nothing at 15; pods and fruit take none, as FC cocoa.
+  `ModernBlockStandIn.idFor` asks the live collision shape at the position when MC's cached one is empty for a
+  block without a dynamic shape (FCBakedModel's LiveAccess reads it the same way in the read-only region), so a
+  trunk shell reads as stand-in 161.
+- **Modded saplings (C2, #027).** `TwinRegistry.ModdedSapling` (`isSapling`, `isFungus`, `growTree`) and
+  `registerModdedSapling`, called during mod construction. `isFallbackSapling` also accepts a registered
+  non-SaplingBlock sapling, and a registered Nether fungus takes the FUNGUS twin. FC's rule decides (the sapling
+  twin: survival, light 9 above, four stages at 1/64, never in the End; the fungus twin: 1 in 50 random ticks,
+  never in the End), then the kind's `growTree` grows the mod's own tree. `DTSaplingTwin` grows DT's tree through
+  `Species.canSaplingGrow` and `transitionToTree` only, honours a tree pack's `canSaplingGrowNaturally` false for
+  saplings (fungi skip that gate: their natural growth is FC's roll), asks SeasonGate by the species' seed item, and
+  drops the seed of a sapling that cannot stay.
+- **FC warmth (C2, #030, #031).** `HeatTier.LAVA_CRACKS` and one heat row per odd metadata of
+  `fcBlockCobblestoneLoose` and `fcBlockStoneBrickLoose`, so `heatSources()` has 29 rows over 14 blocks. Cold Sweat
+  maps LAVA_CRACKS to its own magma block (20 F, range 3, max 48 F), LSO to 12.0.
+- Unchanged: FC code.
+
+**Verification.** Dev dedicated server over RCON with the (as) harness and `-PbtwDevMods` tokens, C2 after-runs of
+2026-10-17 and 2026-10-18 (scratchpad compat/refresh2/BASELINE_RUNS_C2.md, Parts 2 and 3); every listed run passes
+all its checks.
+- Mining penalty: by code reading only. The C1 harness rows (harvest-tools_p0p1, section E) cannot show it: the
+  proof FakePlayer never ticks, so FC's penalty levels stay 0 and every dig row printed `mod=1.0`, starving or fed.
+  What the runs do show is the BreakSpeed post on FC blocks: one post per dig query (`bs=1`), and a test listener
+  that halves BreakSpeed halves FC stone's progress with an iron pickaxe, 0.08888889 to 0.044444446 per tick (C1
+  after-run ht_p3_cs_as).
+- FC machine hooks, Dynamic Trees 1.4.10: dt_p2 (saw and stump remover) 26 of 26 (18 GAP, 8 CONTROL) after the
+  live-shape fix, with `[STAND-IN] dynamictrees:trunk_shell reads as legacy id 161 to FC`. The saw (the proof
+  helper calls FCBlockSaw.SawBlockToFront once, as the powered saw's tick does) fells a radius-8 oak trunk into 4
+  oak planks, 2 sawdust and 1 oak bark, with the falling logs one short; a sawed trunk shell fells its core; the
+  stump remover on a shell of the dead radius-12 stump left behind removes the core, the clicked shell and a
+  diagonal shell, with no logs; a dark oak trunk gives 2 sawdust, no FC bark, and keeps its log. dt_p3 (bone
+  meal) 14 of 14 (8 GAP, 6 CONTROL): at fertility 15 nothing is used from either hand or through
+  `BoneMealItem.applyBonemeal`; at 13 one bone meal is used for +2; bone meal never grows a DT sapling.
+- Modded saplings and fungi: dt_p4 19 of 19 (10 GAP, 9 CONTROL). 3 of 100 DT oak saplings grew in 64 random
+  ticks (FC's pace allows at most 7) and the other 97 later; none grew at night or in the End; a sapling in a
+  sealed dark box pops and drops its seed; SeasonGate DENY holds them, DESTROY removes them without a seed, and a
+  provider that throws is dropped (ALLOW). 16 of 16 DT crimson fungi became DT trees by 600 random ticks (none at
+  HEAD), none in the End. Logs: `[TWIN] modded sapling kind registered: Dynamic Trees saplings (#027)`,
+  `[STAND-IN] FC machine hook registered: Dynamic Trees (#027)`, `[MODDED-PLANTS] ... modded-saplings-on-FC-rule=19`
+  with Dynamic Trees alone. dt_p8 (Dynamic Trees, HarvestCraft, dtphc2) 12 of 12: HarvestCraft apple saplings
+  keep FC's pace and DT saplings run the same rule.
+- FC warmth: coldsweat_p1 55 of 55: lava-cracked loose cobblestone (meta 1) and loose stone brick (meta 3) give
+  20 F (max 48, range 3), the same blocks without lava nothing; Cold Sweat logs `Loaded 19 block temperatures`.
+  lso_p1 86 of 86: 12.0 for both blocks with lava, none without. `[SELF-AUDIT/thermal] 29 heat-source rows (14
+  blocks), 20 clothing, 4 textiles, 3 meals, 39 fuels (nethercoal betterthanwolves:item_481 = 3200); 0 warning(s)`.
+- Production smoke (2026-10-18, see (at), Verification): the release jar boots with every optional mod, 0 mixin
+  errors, and logs `[MODDED-PLANTS] crops=100 saplings=0 modded-saplings-on-FC-rule=114 fc_soil_plants=6 plant
+  stand-in=162 base=0.1`.
+
+**Caveats.**
+- The mining penalty on modern blocks has no runtime proof yet: a TickProof step that sets the bridge's penalty
+  levels directly is needed (a C1 review note).
+- A real powered saw on a DT trunk has not been run; the proof calls the saw's step directly.
+- Declared Dynamic Trees deviations (INTEGRATIONS.md #027): the stump remover and the work-stump chisel act only on
+  dead DT stumps; thick trunks (radius 9-24) chew one radius per hit; DT growth may thicken a chewed trunk again;
+  direct `performBonemeal` callers on branches and rooty soil keep DT's effect.
+- FC's sapling survival rule pops DT saplings with no sky view and light below 8, including seeds DT plants under
+  dense canopies; FC behaviour, applied by lore.
+- The related hold-to-craft bridge of 2026-10-18 is in (ao)'s caveats and in BRIDGE_SPEC.md, "Held use
+  (hold-to-craft)".
+
+## 2026-10-19 (av) Dev runs load a filtered copy of Modern-Common; FC bytecode passes run inside extractFcClasses
+
+Entries (av) to (bf) (2026-10-19 to 2026-10-21) are the post-C2 follow-ups and the CurseForge fixes of
+docs/curseforge-feedback-triage-2026-10-19.md, made in the working tree on top of 0292e38 and not committed. Each
+gap was first recorded by a scripted in-world plan on the old code, then each stage's gate passed and every
+regression plan read SAME; the proof record, with every count quoted below, is the scratchpad's
+fu_runs/BASELINE_RUNS_FU.md. Every stage built with exit 0, LinkAudit kept the 6 pre-existing missing members and
+BridgeAudit reported 0 high-severity findings. Not run for any of them: the release jar (no production smoke), a
+launcher-installed client, multiplayer.
+
+**Symptom.** Two build hazards of the dev runs (build tooling only: no gameplay change, no INTEGRATIONS entry):
+- **A build rewrote class directories a running server loads.** On 2026-10-15 a runClient started beside a running
+  runServer re-ran `:Modern-Common:compileJava` and removeModernCommonShadowedClasses, and the server died with
+  `NoClassDefFoundError: btw/modern/DataWatcher`, a class that exists only in Modern-Common's output. On the fc
+  side, openUpEntityAccess rewrote 71 classes on every build and extractFcClasses re-synced the whole directory
+  every second build.
+- **A stripped Modern-Common output was packaged and compiled against.** `:Modern-Common:jar --rerun` without
+  compileJava gave a jar with 0 `btw/modern/EntityLiving.class`, and `:Forge:compileJava` then failed (exit 1, 555
+  errors, the first `PlayerBridge.java:19: error: cannot access EntityLiving`).
+- The proof harness worked around both with a prebuild before every server run and an 11-flag `-x` list for client
+  runs.
+
+**Root cause.** The dev-only task removeModernCommonShadowedClasses deleted the shadow-listed classes from
+Modern-Common's own compile output (Modern-Common/build/classes/java/main) and declared no output. That directory
+has four consumers (Modern-Common's jar, Forge's compile classpath, the dist jar and the dev runs' mods{} source),
+and Gradle assumes only Modern-Common:compileJava writes it, so a later build either rewrote it under a live server
+or packaged the stripped copy. The fc directory had the same flaw: four ASM tasks (widenFcHookDescriptors,
+extendFcPathingBuildRange, extendFcTreeBuildRange, openUpEntityAccess) patched extractFcClasses' output in place.
+The rule both broke: every class directory a dev run loads must be the declared output of exactly one task, and
+nothing else may write it.
+
+**Fix (general rules).** Forge/build.gradle, tag `dev-run`:
+- New source set `devModernCommon` with no sources (Forge/build.gradle:44-65), the dev view of Modern-Common. All
+  three runs list it last, after fc, in place of Modern-Common's own output (:111, :133, :159).
+- One shadow list, the copySpec `modernCommonRuntime` (:775; 67 exclude lines, 65 of them naming classes
+  Modern-Common has), used by the dist jar (`with modernCommonRuntime`, :1643) and by the new Sync task
+  `syncDevModernCommon` (:884-897). That task fills Forge/build/classes/java/devModernCommon, fails the build
+  unless ContainerChest is present and Entity absent, then logs `Dev class precedence OK (ContainerChest =
+  Modern-Common, Entity = fc)`. Dev and jar bind every btw.modern collision from the same spec, so they cannot
+  drift. Modern-Common's own output is never modified, and removeModernCommonShadowedClasses is removed.
+- A configuration-time mods{} order guard (:907-920) fails the build if a run lacks fc, lists devModernCommon
+  before fc, or lists Modern-Common's own output. Every run and prepareRun task depends on syncDevModernCommon
+  (:1589-1595).
+- The four ASM passes are closures with the same names, run as `extractFcClasses.doLast` steps in the order widen,
+  pathing, tree, openUp (:1575-1587), so build/classes/java/fc has one writer and extractFcClasses stays
+  UP-TO-DATE. The pass bodies are unchanged.
+- tools/LinkAudit.java prints the one shadow list and gains a DEV FILTER CHECK (:25, :52, :206-215): the dev view's
+  leaked, missing, stale and extra classes against Modern-Common's output, or "skipped: run
+  :Forge:syncDevModernCommon" when the dev view is absent.
+- Three comment-only Java edits keep each file's line count, so their classes compile unchanged (FCPuppetSupport,
+  Modern-Common FCEntityLightningBolt and RenderEntityAccess).
+- Unchanged: FC code; the jar's content.
+
+**Verification.** Record, stages head and A (2026-10-19):
+- GATE-A PASS: the jar keeps 6354 entries and only META-INF/MANIFEST.MF changed; fc 914 files identical; the dev
+  view holds 512 files, each equal to Modern-Common's, with the 65 shadowed classes omitted. javap spot checks 0 2
+  0 9 1, as at HEAD. The build logs 4 guard lines, `Dev class precedence OK` among them.
+- LinkAudit: DEV FILTER CHECK four empty lists; 80 collisions, drift 0; stale-jar 3 and missing members 6, both as
+  at HEAD.
+- P-DEV-A 15/15 in both after-runs (HEAD 11/15); the second shows Modern-Common:compileJava, extractFcClasses and
+  syncDevModernCommon UP-TO-DATE, 0 rewrite lines and the prebuild skipped. P-DEV-B, a client run with no `-x`
+  list, 10/10 (HEAD 8/10), all six tasks UP-TO-DATE. The stripped-output symptom is gone: the Modern-Common jar
+  keeps EntityLiving and `:Forge:compileJava` succeeds.
+- P-BM 96/96, P-RM 73/73 and P-DT1 39/39 SAME. The record's final sweep (2026-10-21) ran P-DEV-A 15/15 again on the
+  final tree, after every later build change.
+
+**Caveats.**
+- `Dev class precedence OK` prints only when syncDevModernCommon runs: a plain `:Forge:build` finds it UP-TO-DATE.
+- removeModernCommonShadowedClasses is gone, and the four passes are no longer tasks (their names live on as
+  passes): a static `-x` list that names any of them fails with "Task not found". Wire to extractFcClasses or
+  syncDevModernCommon instead.
+- Any edit to Forge/build.gradle runs syncDevModernCommon and extractFcClasses once.
+- A Modern-Common output directory stripped by an older build needs a one-time `--rerun` recovery; it was needed
+  once, at landing.
+- LinkAudit's stale-jar 3 (ContainerEnchantment, EntityAIBase, IEntitySelector) predates this change.
+- The older text that names the deletion task (:718, :774 and (w)'s jar{} bullet) stays as history.
+
+## 2026-10-20 (aw) White dye is not bone meal; ItemDye subtypes; the 4.B merchant slot rule
+
+**Symptom.** 1.20.1 white dye was FC bone meal (351:15) wherever FC saw it: dropped on FC farmland or a planter it
+fertilized the soil and was used up ((at), caveat WD5), and it served as chicken feed, dog food and the farmer's
+bone-meal trade. FC grids gave bone meal for the 1.20.1 `white_dye` and `white_dye_from_lily_of_the_valley`
+recipes. Separately, an ink sac (dye 0) merged into an FC slot of any other dye and took its colour, and FC trades
+accepted any subtype of a subtyped item. HEAD: P-WD 16/40 (GAP 0/24).
+
+**Root cause.**
+- LegacyVariants spelled white dye as (351, 15) in both directions, the same FC stack as bone meal, so every FC
+  rule for dye 15 applied to it.
+- Modern-Common ItemDye had no subtypes, where 1.5.2 ItemDye declares subtypes and no durability (vanilla/server
+  ItemDye.java:23-29). FC's merge rule (FCUtilsInventory.CanStacksMerge:405-413) compares damage only for subtyped
+  items.
+- Modern-Common MerchantRecipeList compared item ids only, where 4.B also compares the damage of subtyped items
+  (vanilla/server MerchantRecipeList.java:138-207).
+
+**Fix (general rules).** Tag `bone_meal`, #017's tag; INTEGRATIONS.md #017 and #025 describe it:
+- **A modern spelling is its own FC stack.** `LegacyVariants.MODERN_SPELLING = 0x100` (LegacyVariants.java:61) and
+  `spelling(id, meta, item)` (:110) map a 1.20.1 item to (id, meta | 0x100) both ways, so the 4.B item keeps (id,
+  meta) on both sides. Items only; a positive short, never 32767. White dye is FC 351:271 (:226). FC's colour code
+  masks the damage (`~d & 15`), so FC sheep, wolf collars and windmills still read it as white, while no dye-15
+  rule (fertilizer, feed, the trade) matches it.
+- `baseSubtype` (:272) strips the bit. RecipeBridge builds its legacy aliases from the base subtype (`legacyAlias`
+  :289, `buildLegacyAliases` :299-308), so the alias stays bone_meal -> white_dye, one way, and FC grids give real
+  white dye.
+- Modern-Common ItemDye: `setHasSubtypes(true); setMaxDamage(0)`, as in 1.5.2 (ItemDye.java:5-17).
+- Modern-Common MerchantRecipeList: both slot tests go through `validFirst` and `validSecond` (:34, :41), which
+  compare damage for subtyped items. 4.B's index strictness is not ported, because the port's trade screen selects
+  a trade only on a click (client/FCContainerScreen.java:314-333).
+- ItemDye and MerchantRecipeList are now at 1.5.2/4.B parity. Side effects: the brown wool knit (Server
+  FCEntityVillager.java:642) and blood wood sapling (:781) trades are 4.B-strict; the log trades (:638-641) stay
+  lenient until the setHasSubtypes audit.
+- Comments only: WorkbenchFallback. Unchanged: FC code; BoneMealPolicy (white dye is not `isFcBoneMeal`, and
+  FCItemDye acts only at damage 15).
+
+**Verification.** Record, stage B (2026-10-20): P-WD 40/40, GATE after OK (HEAD 16/40); the bone-meal plan P-BM 94
+-> 96/96 (WD5's two checks flip), every other row SAME.
+
+**Caveats.**
+- White dye saved in FC storage before the update was stored as damage 15 and reads back as bone meal; there is no
+  migration. An older jar reads damage 271 as item 351 with {Damage:271}.
+- Modern-Common ItemStack.isItemDamaged was `damage > 0`, where 1.5.2 counts damage only on an item with
+  durability; known here and narrowed by (bc) to items without the subtype flag.
+- The setHasSubtypes audit of the other Modern-Common items stays queued.
+
+## 2026-10-20 (ax) Leaves drop by FC's leaf rule on every loot path
+
+**Symptom.**
+- FC's own leaves (id 18, the four 1.5.2 species) dropped an oak leaves block (18:0), never a sapling, on FC's
+  harvest, decay, machine and block-dispenser paths; shears and silk touch did not give the leaves; blood wood
+  leaves dropped their sapling on every break.
+- The newer leaves (acacia, dark oak, mangrove, cherry, azalea, flowering azalea) and Dynamic Trees leaves have no
+  FC identity and kept their 1.20.1 and DT tables: Fortune-scaled saplings plus sticks, dark oak apples, mangrove
+  leaves with sticks and no propagule, DT seeds at 1/64 plus sticks. 1.20.1 explosions rolled the vanilla table for
+  FC's own leaves too. #027's decision D2 (DT leaf loot) was open.
+- HEAD: P-LEAF-V 12/32, P-LEAF-DT 2/10.
+
+**Root cause.**
+- Modern-Common BlockLeaves had none of 1.5.2's drop methods (vanilla/server BlockLeaves.java:184-287), so
+  FCBlockLeaves and FCBlockBloodWoodLeaves inherited Block's defaults: the block itself at meta 0, one per break.
+- The 4.B rule lives in FCBlockLeaves, and only legacy id 18 reaches it. Every other leaves block drops through a
+  loot table, and nothing in the port rewrote leaf loot.
+
+**Fix (general rules).** INTEGRATIONS.md #035, tag `leaves_drop_like_fc`:
+- **Base ports** (Modern-Common BlockLeaves.java:43-106): quantityDropped 1 in 20, idDropped the sapling,
+  damageDropped `meta & 3`, harvestBlock (shears, item 359, take the species' leaves), createStackedBlock (the
+  silk-touch drop and the block dispenser's take), and an interim `canSilkHarvest()` true (decision D6(b)): 1.5.2's
+  general rule (renders as a normal block and is not a container) is true for leaves, while Modern-Common Block
+  answers false for every block. The Modern-Common drop-parity follow-up (D7, 66 candidates) restores the general
+  rule and then removes this override. dropBlockAsItemWithChance is not ported: both FC subclasses replace it.
+- **One rule for every leaves block on every loot path:** `LeafDrops` (LeafDrops.java:67; `Resolution` :87, `KEEP`
+  :90, `Hook` :96, `register` :115, `apply` :121; logger `BTW-Leaves`), applied by one condition-free global loot
+  modifier, `betterthanwolves:fc_leaves` shipped as `leaves_drop_like_fc` (data/FCLeavesLootModifier.java:27,
+  BTWLootModifiers.java:40-42, FCLootOverrides.java:104-107). On a `#minecraft:leaves` block's own table (never
+  `forge:unknown_loot_table`) a registered hook decides first; legacy id 18 takes FC's idDropped and damageDropped;
+  any other leaves block takes its sapling by name (same namespace, `<stem>_sapling`, then `<stem>`, then the only
+  `<stem>_*`). Shears and silk-touch loot is kept as is. Otherwise saplings, `#forge:rods/wooden`, the hook's
+  byproducts and (minecraft leaves only) apples are stripped, and the sapling is rolled at 1 in 20 (1 in 40 for
+  wood type 3, jungle); Fortune and the explosion radius are never read. The cache clears on the server tag load.
+- FC's own paths (harvest, decay, machines, block dispenser) run FCBlockLeaves on the base ports; the table paths
+  (1.20.1 breaks and decay of the newer leaves, every 1.20.1 explosion, stand-in machine drops, foreign
+  destroyBlock) go through the modifier. Neither path rolls the other, so nothing drops twice.
+- **Dynamic Trees** (#027's D2 settled): `DynamicTreesCompat.init` registers the DT hook first, with Minecraft
+  types only (DynamicTreesCompat.java:120-124, `LeafHook` :156), then probes `DTLeafDrops`: the roll's species
+  (orphan leaves take the family's common species), the seed only when `shouldDropSeeds`, the wood type from
+  `FCLogRules.fcWoodMeta` of the family's primitive log, DT's seasonal seed chance as a veto, the family stick as a
+  byproduct; a throw keeps DT's loot and switches #027 off with one ERROR (DTLeafDrops.java:92-94,
+  `DynamicTreesCompat.fail`).
+- FCImmatureCropLootModifier's ordering claim is corrected: GlobalLootModifierProvider writes the modifier list in
+  hash order (FCImmatureCropLootModifier.java:41-43), and neither modifier needs a place in it.
+- runData is required: without `leaves_drop_like_fc.json` and its `global_loot_modifiers.json` entry the modifier
+  never loads.
+- Unchanged: FC code.
+
+**Verification.** Record, stage B (2026-10-20): P-LEAF-V 32/32 (HEAD 12/32; F6, the blood wood sapling, 100 in 2000
+breaks) and P-LEAF-DT 10/10 (HEAD 2/10), both GATE after OK, and the same again in stage BDD. Logs: `[LEAVES] leaf
+drop hook registered: Dynamic Trees leaves (#027)`; no `[LEAVES] minecraft:` or `[LEAVES] dynamictrees:` line, no
+loot-modifier decode error. runData wrote only `leaves_drop_like_fc.json` and its list entry.
+- Harness gap found by the first run (31/32): blood wood saplings spawn as FCEntityItemBloodWoodSapling, a plain
+  proxy (BTWEntityRegistration.java:177), and the drop capture counted only ItemEntity, so F6 read 0; it read 0 at
+  HEAD too, where the row was blind. TickProof gained `capturedStack(Entity)` (an ItemEntity's stack, or the FC
+  stack of a proxy wrapping an FC EntityItem), and the rerun gave the result above.
+
+**Caveats.**
+- `canSilkHarvest()` true is interim, until the drop-parity follow-up.
+- An FC identity other than 18 in `#minecraft:leaves` is left to the general getDrops bridge with one INFO line;
+  none exists today.
+- FC's mining charge is FC's own drop path, which stays a stub for leaves until CF2-DR5.
+
+## 2026-10-20 (ay) Acacia, dark oak, mangrove and cherry as FC wood types 5-8; the log rule for stems and modded logs
+
+**Symptom (maintainer rulings of 2026-10-19: the four woods become real FC wood types through runtime patches, with
+their own bark, tanning, work stump, chewed log and saw output, never mapped onto oak, spruce, birch or jungle
+(ruling 1); crimson and warped stems take the log rule with no bark and no work stump (ruling 2)).**
+- Acacia, dark oak, mangrove and cherry logs had no FC identity (`getBlockId` 0; FC's world reads saw a stand-in):
+  a bare hand took whole logs; no bark, tanning, work stump, saw planks, chopping or FC fuel; 1.20.1's 0.005
+  harvest hunger instead of FC's 0.025; and the vanilla log -> 4 planks recipe stayed (FC removes it for species
+  0-3 only). Triage CF2-PR-WOOD; #022's known limitation.
+- Crimson and warped stems and modded logs had no log rule at all.
+- FCBlockPlanks' client `getIcon` indexes `m_iconArray[meta]`, which overflows for meta 5 and above (Client
+  FCBlockPlanks.java:126-129).
+- HEAD: wood_p1 14/67, mlog_p1 18/73, dt_wood 2/4, dt_p2 24/27 (the three new S4 rows fail).
+
+**Root cause.** FC keys every wood rule on log id 17 and `meta & 3`, or on wood types 0-4: FCBlockLog's chew,
+bad-break bark, stump test and fuel; the work stump's species, side icons and block-dispenser stack; FCItemBark's
+five subtypes; FCBlockPlanks' fuel and icons; the saw's log case; log chopping and FCItemBlockLog.OnUsedInCrafting;
+the 4.B log -> planks removals. The four woods had no place in that space, and nothing gave stems and modded logs
+FC's log rule.
+
+**Fix (general rules).** INTEGRATIONS.md #034, tags `modern_woods` and `fc_log_rules`; BRIDGE_SPEC.md has the API.
+- **Log2.** `ModernWoods` builds a plain, unmodified FCBlockLog at the fixed legacy id 165 (`LOG2_ID`,
+  ModernWoods.java:60) with FC's FCItemBlockLog, at BTWLifecycle step 5e (BTWLifecycle.java:164-169, after the
+  twins): wood types 5 acacia, 6 dark oak, 7 mangrove, 8 cherry; log2 species = wood type - 5, in FC's own log
+  layout (bits 0-1 species, 2-3 axis, 12 stump). The four logs and their wood and stripped forms read as 165, so
+  they go through FC's own pipeline as oak does: chewing, bark 5-8, the work stump, the 0.025 harvest hunger, the
+  kiln, FC fire and drops. `create` (:193) logs one ERROR and builds nothing if 165 is taken; `addRecipes` (:260)
+  adds 8 cauldron tanning recipes and 4 RemoveVanillaRecipe records through FC's own API, so FcRecipeRemovals
+  removes the four log -> 4 planks recipes; `audit` (:328) logs `[SELF-AUDIT/wood]` (BridgeSelfAudit.java:45).
+  Tannin per leather by lore: acacia 2, dark oak 5, mangrove 2, cherry 8 (`BARK_PER_LEATHER` :91); planks fuel 400,
+  400, 200 and 500, logs x4 (`PLANKS_BURN_TIME` :97).
+- **Identity.** ProxyRegistry maps the four logs to 165, but `getBlockId` (:243-250) answers 165 only when
+  `ModernWoods.isBuilt()`, so a foreign block at 165 never receives them. `LOG_FORMS` (:285; Block ->
+  `LogForm(logId, species)` :271) holds the wood and stripped forms; `isLogForm` :315, `getTreeLogId` :325,
+  `getTreeLogSpecies` :338 (now public), `getWoodType` :351 (0-3, 5-8 or -1). The planks variants take mask 15,
+  with 5-8 for the four planks. LegacyVariants rows (LegacyVariants.java:138-144, wiring W-B1) round-trip the log
+  and planks items.
+- **Nine load-time patches** M1-M9 (`@Pseudo`, `remap = false`, `btw.forge.mixin.fcext`), keyed on id 165 or wood
+  type 5-8, so FC's id 17 is untouched: FCBlockLogWoodMixin (M1: the work stump's wood type, bark, bad-break bark,
+  the stump test, fuel, the client log icons); FCBlockWorkStumpWoodMixin (M2: the bark of a chewed work stump, the
+  block dispenser's take for META 5-8, side icons); FCItemBarkWoodMixin (M3: names, icons, the creative list);
+  FCItemBlockLogWoodMixin (M4: the stick branch's bark); FCRecipesLogChoppingWoodMixin (M5: log2 chops into its own
+  planks); FCBlockSawWoodMixin (M6: FC's log case with the wood type); FCBlockPlanksWoodMixin (M7: fuel for 5-8;
+  `getIcon` gives the 1.20.1 planks for 5-8 and icon 0 for any other meta of 5 or more, which closes FC's array
+  overflow); FCBlockLogDamagedWoodMixin (M8: a chewed log connects to 165); FCItemChiselIronWoodMixin (M9: the
+  chisel charge of 10 for a log2 work stump).
+- **Textures and names.** The bark 5-8 icons are item models on `minecraft:block/<x>_log`, so they follow resource
+  packs. The work-stump sides are derived, not drawn: `deriveModernWoodTextures`
+  (Forge/gradle/modern-woods.gradle:22, input override `-PbtwClientExtraJar=<path>`) lays FC's work-stump overlay
+  of the nearest FC species (acacia and mangrove: jungle; dark oak: oak; cherry: birch) on the 1.20.1 log side. The
+  four PNGs are checked in, and the task rewrites one only when its pixels and bytes differ. Names are in
+  `lang/BTW_modern_en_US.lang`, loaded third (BTWLifecycle.java:261).
+- **The log rule.** FCLogRules: `fcWoodMeta` (:166) answers `getWoodType` (contract C1: 0-3, 5-8 or -1, never
+  log2-local bits); `bark` (:186) takes 0-8; `workStumpState` (:219) is unmasked; `chargeLogHarvest` (:241) takes a
+  wood type; `isLogRuleTarget` (:319); `isStump` (:331, contract C2) is the one stump rule, a vertical log on a
+  solid block that is not a log, so an oak log on a stem or a DT branch is no longer a stump; `sawPlanks` (:451);
+  the bark tags `betterthanwolves:bark/<wood>` and `bark/none` (:92-96, generated by data/LogBarkTagProvider.java).
+  - Class F, the barked and stripped forms FC reads as 17 or 165: FC's dig rate and FC's own ConvertBlock chew; the
+    harvest drop stays vanilla.
+  - Class S, stems, hyphae and modded logs no earlier integration owns: the axe gate, an immediate chewed log with
+    bark (decision 3(b)), the work stump, and FC's saw and stump remover through `ModernLogHooks`
+    (ModernLogHooks.java:33, registered after Dynamic Trees, BTWForgeMod.java:59-60, so DT's hook wins for DT
+    blocks). Stems (`bark/none`) give no bark and leave no work stump. Saw planks come from the log's
+    one-ingredient planks recipe; with none, the log drops as itself.
+  - `ModernLogRules`: BreakSpeed, BreakEvent and BlockToolModificationEvent at LOWEST (ModernLogRules.java:99,
+    :146, :254); an axe strip's bark is settled at ServerTickEvent END (:288-289); the caches clear on TagsUpdated,
+    OnDatapackSync and ServerStopped (:316-328).
+  - WorldBridge's log derive uses `isStump` (WorldBridge.java:356-370, wiring W-B2).
+  - Dynamic Trees (#027): DTTrees, DTBlockHooks and DTHarvestHandler use `fcWoodMeta`, so DT families of the four
+    woods get their own bark, work stump and saw planks; DT's fungi are chewed, with no bark and no work stump.
+- **Decisions taken at landing (WOOD-B D1-D9):** D1, a class-S log with no planks recipe saws into itself only
+  (no sawdust or bark loop); D2, every log-rule chew sends break effect 2001 to the other players, as FC's
+  pipeline does; D3, class-F convert wear hands FC the original 17 or 165, so M9's chisel charge applies; D4,
+  `chargeLogHarvest` maps a wood type to (17, wt & 3) or (165, wt - 5), falling back to 17; D5,
+  `bark/oak|spruce|birch|jungle` = `#minecraft:<wood>_logs` (FC's own wood type is checked first); D6, a DT
+  family with no primitive log pays oak bark; D7, DT helper failures are logged once and swallowed instead of
+  switching #027 off; D8, a class-S work stump is set with UPDATE_ALL and plays no shaft-ripped sound, as #027
+  does; D9, the log hook makes `BoneMealPolicy.route` answer FC_TARGET for class-S logs, a no-op for vanilla
+  logs.
+- **Wiring at landing:** W-B1 the LegacyVariants rows; W-B2 the WorldBridge log derive; W-B3 the nine mixins.json
+  entries; W-B4 `ModernWoods.audit()` in BridgeSelfAudit; W-B5 `apply from: 'gradle/modern-woods.gradle'`; W-B6 the
+  texture task, runData and the build.
+- Unchanged: FC code. FCBlockLog, FCBlockWorkStump, FCItemBark and FCBlockPlanks run unmodified on log2.
+
+**Verification.** Record, stage B (2026-10-20):
+- Build: Jar bundling OK (1840 classes), Mixin config OK (50 entries). `deriveModernWoodTextures: 4 work-stump
+  textures checked (0 written)`: the checked-in PNGs are reproduced byte for byte. runData wrote the 10 bark tags
+  (`none` = crimson and warped stems; oak, spruce, birch and jungle = `#minecraft:<wood>_logs`; the others empty).
+- wood_p1 67/67 (HEAD 14/67), mlog_p1 73/73 (HEAD 18/73), dt_wood 4/4, dt_p2 27/27 (the three new S4 rows), dt_off
+  2/2; dt_p1 39/39 and dt_p5 9/9 SAME.
+- Logs: `[WOOD] log2 FCBlockLog at 165: acacia, dark oak, mangrove and cherry are FC wood types 5-8`, `[WOOD]
+  tanning with bark 5-8 ([2, 5, 2, 8] bark per leather) and the 4 vanilla log -> planks removals added`,
+  `[STAND-IN] FC machine hook registered: the log rule (stems and modded logs, fc_log_rules)`, `[SELF-AUDIT/wood]
+  ... at 165: 4 woods (wood types 5-8), 0 warnings (0 expected)`; no `[WOOD]` ERROR and no mixin apply failure.
+  Every stand-in id allocation comes after the `[WOOD]` line.
+- Clients: wood_c1 shows the sprites `fcblockworkstumpacacia` and `fcblockworkstumpcherry`, bark drawn from
+  `minecraft:block/acacia_log` and `cherry_log`, and dig progress 0.004 (HEAD: the spruce and oak stump sprites,
+  blood wood bark, 0.016666668); mlog_c1's client dig progress equals the server's for every cell. Both read the
+  same in the final sweep.
+- The wave-C hook scan (W-C0) finds the four logs at 165 with OAK_LOG's hooks. Since (bd), FC-placed logs on a
+  north face get axis z.
+
+**Caveats** (#034's known limitations):
+- Legacy id 165 must never change: FC stack NBT stores numeric ids. If 165 is taken at start-up, the four woods
+  stay on the class S rule.
+- The flammable stand-in pool shrinks by one: three ids (162-164), two with the plant stand-in.
+  ModernBlockStandIn's comments (ModernBlockStandIn.java:56, :213) still count 165 as free; a code-comment
+  follow-up.
+- FC's own work stumps (META 0-3) still hit the block-dispenser stub (:895, the P2 "Block dispenser" row), while
+  META 5-8 are retrievable through M2. Blood planks 5:4 still become oak planks.
+- Old headless acacia stacks do not stack with new (165, s) stacks until they pass through a 1.20.1 inventory.
+- The derived work-stump sides carry Mojang pixels and do not follow resource packs (the bark icons do).
+- Kept from 4.B: a broken work stump drops an oak plank, and the chewed log is oak-textured; stems become FC's
+  oak-textured, flammable chewed log.
+- Class F and class S keep 1.20.1's 0.005 harvest hunger (INTEGRATIONS.md:488; follow-up FU-W5). Stand-in logs have
+  no kiln and no smouldering; explosions drop whole logs; a chew can flicker for one frame; `barked()` uses a
+  synthetic context with no player; chewed items are ejected upward (triage CF2-DR2).
+- Follow-ups: FU-W1, the sidings, mouldings, corners and decorative blocks of the four woods (approved 2026-10-20);
+  FU-W2, the lightning trunk burn; FU-W3, FC leaves support from log2; FU-W4, endermen carrying log2; FU-W5.
+- No proof row covers M8, M2's dispenser take or M3's creative list. Review minors accepted at landing: the
+  log-rule chew runs before a tool's onBlockStartBreak; DT's recipe-planks path takes the first `#minecraft:logs`
+  stack; the W-B1 rows are unconditional even if log2 is refused.
+
+## 2026-10-20 (az) INV-RESYNC: a re-sync never replaces or discards an FC stack FC may still hold (CF2-I1)
+
+**Symptom (CurseForge triage CF2-I1, survival; maintainer ruling of 2026-10-20: fix it first, before the use-order
+change).** Placing a block against BTW terrain could leave the held stack untouched: gravel and other slabs
+combined onto a slab never ran out, and dirt, cobblestone, planks, pressure plates and loose snow were placed for
+free, also from a ladder (CF2-I5). The client then showed one count while the server held another, so a shift-click
+made phantom items (CF2-I2), and blocks placed before a death came back in the death pile (CF2-I3). The use-order
+change of (ba) would have widened it to stakes (CF2-I6). Dyeing a windmill used no dye. (z)'s caveats had recorded
+the mechanism as "Pre-existing" without its effect. HEAD: the joined-client plan placeconsume failed all 7 GAP
+rows, and the client showed 3 cobblestone while the server held 4.
+
+**Root cause.** 1.5.2 has one live `ItemStack[]` that FC edits in place (vanilla/server InventoryPlayer.java:21,
+getCurrentItem :47-50), so the stack FC takes stays the inventory's stack for the whole call. The port's
+InventoryBridge hands FC a snapshot and re-ran `sync()` on every `PlayerBridge.getOrCreate`, including the ones
+nested inside FC's own calls: WorldBridge's entity extraction under `NotifyNearbyAnimalsOfPlayerBlockAddOrRemove`,
+and the ladder gate under `canPlayerEdit`. A nested sync replaced the held FC stack with a fresh copy, so a
+decrement after the notify (ItemBlock, ItemReed) hit a detached object and was lost, and one made before the notify
+(FCItemBlockSlab and its kin) was overwritten by the re-read. `writeBack`'s adoption of a detached stack, meant to
+rescue such edits, could also overwrite a genuine 1.20.1 change of the slot.
+
+**Fix (general rules).** No INTEGRATIONS entry (bridge correctness); BRIDGE_SPEC.md has the sync rule.
+- **The rule** (InventoryBridge class javadoc, InventoryBridge.java:21-30): while a real slot is exactly what the
+  bridge last baselined (the same object, or empty then and now, with the same count, damage and NBT), `sync()`
+  (:63) keeps FC's object in that slot; if FC changed it since the baseline, the change is written to the real slot
+  first (server only). Only a real slot that changed is re-read, and then the real slot wins. `syncSlot` (:77) is
+  `keepLive` (:93, with `mcUnchanged` :112) or `rebuildSlot` (:147); `rebaseline` (:340) records two MC-side
+  baselines.
+- `writeBack` (:239) no longer adopts a detached FC stack (the `syncFc` field is gone); `writeBackAll` :261.
+- **Two escape hatches, explicit at each call site:** `discardPendingEdits` (:274;
+  `PlayerBridge.discardInventoryEdits`, PlayerBridge.java:244) drops FC's edits; a shadow scope (`beginShadow`
+  :288, `endShadow` :293) keeps a nested sync from writing them, and the scope's owner lands or drops them.
+  - Shadow scopes: FC's `onItemRightClick` in ServerPlayerGameModeMixin.btw$useItem (:468-478; edits always
+    dropped) and FC's `onEaten` in ItemStackMixin.btw$finishUsing (:129-167; only the bowl write-back lands).
+    Review fix: the creative FC placement call is scoped too and closed after the count restore (now in
+    ProxyBlock.runFcItemUse, ProxyBlock.java:799-809): a creative blood wood sapling placed in the Nether near FC
+    pigmen lost the last item through two nested syncs.
+  - A discard in every FC catch: ProxyEntity (:400, :450), FCContainerMenu (:417, :694), ProxyAnimal (:502),
+    ProxyMob (:737), ProxyPathfinderMob (:422) and ProxyItem.onUseTick (:645).
+- **Held-slot resend** (`resendHeldSlot`, :308): after FC places through Stage 2 (ProxyBlock.use :606,
+  BlockBehaviorMixin.btw$use), the server resends the held slot, so the client shows the server's count.
+- ProxyEntity writes back after FC's `interact` (the windmill dye), as ProxyAnimal and ProxyMob already did.
+- Two rules are now explicit: a failed FC call lands nothing; shadow paths discard.
+- Unchanged: FC code. `PlayerBridge.getOrCreate` and `syncFromReal` still call `sync()`; the rule lives in what it
+  does per slot.
+
+**Verification.** Record, stage INV (2026-10-20); plans and gates in the scratchpad's invresync/. The proof's fake
+player is not in the level (TickProof.java:154, :385-392), so server-only plans cannot see CF2-I1: the fix was
+proven with a development client joined to the dedicated server.
+- placeconsume (joined client, 30 checks): HEAD GAP 0/7; after2 GATE after OK 30/30 (GAP 7/7: G1, G6, G3b, L1, G2,
+  G4 x2; CONTROL 23/23) and HAND OK (slab x3, air, lever x3, cobblestone x3). Ablation, the resend alone: the
+  client shows the server's count, and every GAP row still fails.
+- windmill 4/4 (the dye is used); P-INV-S 3/3 (P10-1 `left=3`, CF2-P10); hookclient, bedclient and holduseclient
+  SAME.
+- Server regressions: 24 of 25 plans SAME with identical output values (`left=`, `ran=`/`doneAt=`); lso_p1's large
+  campfire row is a pre-existing flake (86/86 on two reruns). After the creative review fix, P-INV-S, P-USE, P-BM,
+  P-PLACE, P-RM and P-SMOKE1/2 SAME again.
+- placeconsume passes 30/30 again after (ba) (its stake row S1 included), after (bb) with (bc), and after wave C.
+
+**Caveats.**
+- Watch items: a client that rejoined after a stalled login missed slot updates until a full resync (one invalid
+  run; never on a first-attempt join); one of four client runs missed the single stake click (a timing flake; a
+  server-side onGround witness before S1 would tell it from the airborne rule).
+- Shadow paths stay non-4.B: for vanilla items with FC replacements (snowballs, eggs, buckets, bottles, maps,
+  stews) vanilla runs after FC and FC's edits do not count ((aj) caveat; open question 1 of invresync/design.md).
+- "A failed FC call lands nothing" is a port rule that 1.5.2 never had (a throw crashed the game); open question 2.
+- When the real slot and FC both changed, the real slot wins at a sync, but `writeBackSlot` still lets FC win if no
+  sync came between (pre-existing). A fingerprint drift falls back to the re-read: safe, but CF2-I1 would return
+  for that item. Locked slots keep the old re-read.
+- Retires the "Pre-existing" re-sync caveat of 2026-10-10 (z) (annotated there).
+
+## 2026-10-20 (ba) Use order: the block before the held FC item (I-1)
+
+**Symptom.** ServerPlayerGameModeMixin's HEAD pre-emption `btw$useItemOn` ran FC's `onItemUse` at the head of
+`useItemOn` for every FC item but bone meal, before Forge's RightClickBlock event, the spectator check and the
+block's own activation ((aj) caveat; (at) caveat BM8): flint and steel used on a lever did not toggle it; Stage 2
+(the held FC item after the block declined) ignored a claim mod's DENY; an off-hand click ran the main-hand FC
+item; a successful FC use counted in no statistic. 4.B activates the block first (vanilla/server
+ItemInWorldManager.java:376-407). HEAD: P-USE 21/39.
+
+**Root cause.** The pre-emption itself; FC's Stage 2 (ProxyBlock.tryPlaceHeldItem) never read RightClickBlock's
+verdict; nothing gated the hand.
+
+**Fix (general rules).** INTEGRATIONS.md #033, tag `fc_item_use_order`; BRIDGE_SPEC.md has the click frame.
+- `btw$useItemOn` is deleted. `useItemOn` runs 1.20.1's order: RightClickBlock, the spectator check, the sneak
+  rule, `blockstate.use` (Stage 1, FC's `onBlockActivated`, then Stage 2), then `ItemStack.useOn`.
+- **The click frame** (contract C5, PlayerBridge.java:313-420): `UseClick` (:313) on a per-player stack,
+  `beginUseClick` :355, `endUseClick` :361, `isFcUseDenied` :366, `setFcUseDenied` :372, `markFcItemUse` :382,
+  `fcItemUseRanAt` :390; a frame from an earlier tick is dropped when the next click opens. In
+  ServerPlayerGameModeMixin, `btw$beginClick` (HEAD of useItemOn, never cancels; :244-246) opens it and
+  `btw$afterUseItemOn` (RETURN; :368-370) keeps the facing rewrite and closes it.
+- **The item step** `btw$fcItemStep` (a cancellable inject at INVOKE `ItemStack.useOn`, `require = 2`; :261-265)
+  skips the off hand, BlockItems, items without an FC identity, a block Stage 2 already ran FC on, and bone meal
+  (`BoneMealPolicy.isFcBoneMeal`). It runs FC through ProxyBlock.tryPlaceHeldItem; on success it opens any FC
+  container, writes back every changed slot, resends the held slot (:336), syncs the ProxyBlockEntity, fires
+  ITEM_USED_ON_BLOCK (:342), closes the frame and returns CONSUME.
+- **One FC `onItemUse` point,** ProxyBlock.tryPlaceHeldItem (ProxyBlock.java:657): a DENY recorded by
+  `FcItemUseOrder` (FcItemUseOrder.java:41-45, a LOWEST server-side RightClickBlock listener) returns false with
+  nothing recorded; then the click mark, then `runFcItemUse` (:778: the FC run and 1.5.2's creative count restore,
+  in a shadow scope since (az)), and `Stats.ITEM_USED` on a true result (:686). ProxyBlock.use (:567) answers PASS
+  for the off hand on the server; BlockBehaviorMixin.btw$use (:257) gates the main hand before any FC lookup.
+- Rebased onto (az) before landing: the only conflict was `btw$useItemOn`, which this deletes; its creative
+  guarantee now lives in `runFcItemUse`, and a successful item step resends the held slot.
+- The ProxyBlock client comment is corrected: 1.20.1's `MultiPlayerGameMode.useItemOn` sends the use packet
+  whatever the block answers (MultiPlayerGameMode.java:284-296; ProxyBlock.java:623-624).
+- Comments only: BoneMealPolicy, DungSpreading, ProxyItem.useOn. Unchanged: FC code.
+
+**Verification.** Record, stage I1 (2026-10-20):
+- The refmap carries `m_7179_` (useItemOn) and `m_41661_` (useOn).
+- P-USE 39/39, GATE B OK (HEAD 21/39; GAP 18/18). P-HOOK 19/34, GATE B OK: P1a and P1b flip, and its wave-C rows
+  wait for (be) and (bf).
+- Every other plan SAME, with intended output changes: the stump remover and a stick on grass reply SUCCESS instead
+  of CONSUME (the block answers first, same `left=`); flint and steel on a lever toggles the lever (P1a); `useheld`
+  under a RightClickBlock cancel fails (P1b).
+- Clients: placeconsume 30/30 with HAND OK, its stake row S1 passing through the item step (CF2-I6 closed);
+  windmill OK; hookclient, bedclient and holduseclient SAME.
+
+**Caveats.**
+- Residuals, accepted by the maintainer pending the activation audit: D6 (redstone ore, the empty flower pot,
+  signs, a tuning fork on a note block, TNT wear 1, a fire charge priming TNT), D8 (the client's `useItem` after an
+  FC success), D4 (the decline fallback), D9 (an off-hand sneak).
+- `BedBlock.use` consumes every server click, so a bed click in the Nether or the End explodes whatever is held; a
+  sneak still reaches the FC item, as in 4.B.
+- Between this landing and wave C, a night bed click with an FC item in hand reached the old
+  `PlayerMixin.btw$disableBeds` ClassCastException; (be) deleted it.
+- Modern-Common ItemReed.java:8 named the deleted `btw$useItemOn`; *(2026-10-21: it now names `btw$fcItemStep`.)*
+- Closes (aj)'s HEAD note and (at)'s BM8 (both annotated there).
+
+## 2026-10-20 (bb) Beds and doors break and drop as in 1.20.1
+
+**Symptom (CurseForge triage CF2-DR1, CF2-DR6; maintainer ruling of 2026-10-20: beds and doors take 1.20.1
+drops).** Breaking the foot of a bed in survival gave two beds (a red one and one of the bed's colour) and its head
+one red bed; an oak door's top half (or an iron door's, with a pickaxe) gave two doors; in creative, a bed's foot
+and a door's top dropped an item; the FC saw on an oak door's top gave two doors; an FC mining charge on a door, or
+on a bed facing north or west, left nothing. 4.B gives one item, and nothing in creative.
+
+**Root cause.**
+- A: FC dropped legacy 26, 64 or 71 from either half: Modern-Common BlockBed and BlockDoor have none of 1.5.2's
+  drop rules, so `Block.idDropped` is the block's own id, and `toMcStack(26)` resolves to the canonical red bed.
+- B: 1.20.1 pops the partner half with its own loot when one half goes (`updateShape` returns AIR, then
+  `Level.destroyBlock`).
+- The duplication was A plus B on the FC harvest (survival and creative) and on FC's own drop at a live cell (the
+  saw). The loss was the mining charge: its drop entry point, `Block.DropItemsOnDestroyedByExplosion`, was an empty
+  stub in Modern-Common, although 1.5.2's Block had a body there (vanilla/server Block.java:1730-1747). The P0
+  table above did not list it (triage correction 11).
+
+**Fix (general rules).** INTEGRATIONS.md #039, tag `vanilla_pair_drops`. The rule, "one item, two cells": a block
+that is not a ProxyBlock, has an FC identity and has `BED_PART` or `DOUBLE_BLOCK_HALF` in its 1.20.1 state
+(`VanillaPairDrops.isRuled`, VanillaPairDrops.java:84-111) takes 1.20.1's break, drops and partner handling. Today
+that is 18 blocks: the 16 beds (26), the oak door (64) and the iron door (71).
+- **S1, the player break:** ServerPlayerGameModeMixin.btw$destroyBlock returns without cancelling for a ruled state
+  (ServerPlayerGameModeMixin.java:123-125), so vanilla `destroyBlock` runs (the BreakEvent, `playerWillDestroy`'s
+  creative partner removal, the loot, the partner pop) for survival, creative, adventure, fake players and direct
+  callers. A RETURN inject into Forge's `removeBlock` (:105-113) runs FC's animal panic after the removal and
+  before the drops, 4.B's order.
+- **S2, FC drops at a live cell:** the World hook `UsesModernBlockLoot` (Modern-Common World.java:893,
+  WorldBridge.java:3236) at both FC drop entry points: `Block.dropBlockAsItemWithChance` extends its twin branch
+  (Block.java:653-659; the saw), and `DropItemsOnDestroyedByExplosion` gets 1.5.2's base body behind the hook
+  (Block.java:1534-1544; the mining charge). An FC drop of a ruled id at a live ruled cell becomes that cell's
+  1.20.1 loot (`DropModernBlockLoot`).
+- **B3, harvest exhaustion:** the new BlockPlayerDestroyMixin charges FC's 0.025 instead of 1.20.1's 0.005 for
+  ruled blocks (`VanillaPairDrops.chargeHarvest`, :145).
+- **W, FC's tool wear:** ItemStackMixin.btw$mineBlock (:353) wears the live held FC stack through FC's
+  `onBlockDestroyed` when an FC item mines an FC-identity block, and skips 1.20.1's `Item.mineBlock`; one helper,
+  `ProxyItem.onBlockDestroyedLive` (ProxyItem.java:739), serves it and `ProxyItem.mineBlock`. Shears take no wear
+  from a bed or door, as in 4.B.
+- **Audit:** `VanillaPairDrops.audit` (:174), at server start (wiring W-BD2), logs each ruled block and a summary,
+  and WARNs on W1 (a ruled block that is neither a BedBlock nor a DoorBlock), W2 (a ruled block whose 1.20.1 class
+  does not override `neighborChanged` while its FC class declares `onNeighborBlockChange`), W3 (a legacy id that
+  maps ruled and unruled blocks) and W4 (26, 64 or 71 without a ruled block). Wiring W-BD1 adds
+  BlockPlayerDestroyMixin to the mixin list.
+- FC keeps the dig speed, harvest exhaustion, tool wear and animal panic. Not done, on purpose: no bed or door
+  codec (drops no longer need one), no 1.5.2 drop rules in Modern-Common BlockBed and BlockDoor, and no
+  `DropItemsOnDestroyedByExplosion` body for any other block (CF2-DR5). The queued Modern-Common drop-parity
+  follow-up (D7) must drop its FCBlockBed, FCBlockDoor and FCBlockDoorWood rows (ruled vanilla), or keep
+  FCBlockDoorWood only for the ProxyBlock door 1036 (open question Q4); audit W2 and HookPolicy's RULED(5) row
+  ((be)) guard it.
+- Unchanged: FC code; explosions through `level.explode`, pistons, fire and FC zombies, which already took 1.20.1's
+  path and gave one item.
+
+**Verification.** Record, stage BDD (2026-10-20), with the harness addendum (verbs `fcmine` and `listen expect`):
+P-BEDDOOR 288/288, GATE BD OK (GAP 63/63; 225/288 at the I1 baseline, every GAP row failing), and 288/288 again
+after wave C. All 25 regression plans SAME. Log: `[SELF-AUDIT/pairdrops] 18 ruled blocks (16 BedBlock, 2 DoorBlock,
+0 other); FC drops of ids [26, 64, 71] at a live cell take that cell's 1.20.1 loot; 0 warnings (0 expected)`.
+
+**Caveats.**
+- As in 1.20.1 and 4.B, an iron door's top broken by hand drops the door (Q1). A door whose top burns first drops
+  itself (1.20.1; 4.B dropped nothing; Q6).
+- New 1.20.1 side effects on the break: the BLOCK_MINED stat, ITEM_USED for a tool FC wore, the BLOCK_DESTROY game
+  event, other mods' loot modifiers on beds and doors, and PlayerDestroyItemEvent when FC breaks a tool (also from
+  ProxyItem tools on modern blocks, through the shared helper).
+- A mod that changes the locals of Forge's `removeBlock` fails the mixin at load (CAPTURE_FAILHARD), loudly; so
+  would a Forge update that restructures it.
+- A future FC identity on a `DOUBLE_BLOCK_HALF` block would switch its drops to 1.20.1 (audit W1 WARNs; Q3).
+- FC's own wood door 1036, a ProxyBlock, still double-drops if it is ever placed; it is unreachable in survival
+  (Q4).
+- A bed codec is still wanted for FC reads (`BlockBed.isBlockHeadOfBed`, ocelots; Q8). Open: Q4, Q7 (RULED(5),
+  carried by (be)) and Q9 (CF2-DR5 in its own slot); Q1, Q3, Q6 and Q8 stand at their defaults.
+- The FC animal panic and PlayerDestroyItemEvent have no proof row (a manual check and code reading).
+
+## 2026-10-20 (bc) 1.20.1 black, brown and blue dye are colours; 1.5.2 subtype stacking
+
+**Symptom (maintainer rulings of 2026-10-20: modern black, blue and brown dye are colour only, while ink for the
+book and quill, polished lapis and chocolate stay with the ink sac, lapis and cocoa, as in 4.B; restore 1.5.2's
+subtype stacking).** LegacyVariants spelled 1.20.1 black, brown and blue dye as the 4.B ink sac (351:0), cocoa
+(351:3) and lapis (351:4): in FC hoppers, chests, cauldrons and dispensers they turned into those items (blue dye
+into lapis, brown dye into plantable cocoa beans); at FC grids cornflowers gave lapis and wither roses ink sacs,
+and nine blue dyes made a lapis block. FC hoppers and chests merged no subtyped item into an existing stack (lapis,
+cocoa, bone meal, white dye, BTW wool, candles, vases, slabs, sidings, bark: one slot per pickup), and moving black
+dye off subtype 0 would have put it on that list too (dye3 risk R3). HEAD: P-DYE3 35/60.
+
+**Root cause.**
+- Each of the three dyes was the same FC stack as its 4.B item, as white dye was before (aw).
+- Modern-Common `ItemStack.isItemDamaged` was `damage > 0`, where 1.5.2 counts damage only on an item with
+  durability (vanilla/server ItemStack.java:239-242), and FC merges only an undamaged source
+  (FCUtilsInventory.java:347, :538).
+
+**Fix (general rules).** INTEGRATIONS.md #038, tag `modern_dyes`:
+- **Four spellings** (the R-SPELL rule): black, brown and blue dye are FC 351:256, 259 and 260 both ways
+  (LegacyVariants.java:219-221), beside white dye's 351:271 from (aw). `SPELLED` and `spelledSubtypes()` (:73,
+  :277) list the spelled subtypes, `351 -> {0, 3, 4, 15}`. ItemDye's subtypes now carry four spellings
+  (Modern-Common ItemDye.java:7-13). FC's colour code masks the damage, so sheep, wolf collars and windmills read
+  the colour.
+- **Colour roles from FC's own data** (`ModernSpellingRecipes`, new; `apply` :66): a 4.B recipe is a colour role
+  when FC makes the same recipe with another dye colour, and each such recipe that takes a spelled subtype d gets a
+  twin taking (351, d | 0x100). Grid twins are appended to FC's list, so the existing `fc_recipe_*` ids keep their
+  place; bulk twins go right after their original, keeping FC's first-match order; a metadata-exclusive bulk recipe
+  is never a member. One-colour recipes stay with the 4.B item: the book and quill, polished lapis, chocolate milk,
+  chocolate, chicken feed and dog food. The librarian's ink sac trade refuses black dye (the slot rule of (aw)),
+  and black dye passes wicker and slat filters like the other dye powders.
+- **Changed at landing:** the draft ran `apply` from its own annotated MOD-bus `Setup` class, which Forge
+  subscribed but never called (no log line, even from a diagnostic, and the common-setup queue ran without it;
+  cause not found; BoneMealPolicy$Setup, the same pattern, runs). `BTWForgeMod.commonSetup` now enqueues it
+  (`event.enqueueWork(ModernSpellingRecipes::apply)`, BTWForgeMod.java:116-118), the Setup class is gone, and
+  `apply` WARNs when no spelling is registered (ModernSpellingRecipes.java:76) instead of returning silently.
+- **1.5.2 subtype stacking** (dye3 question Q2, option A): `isItemDamaged` is false for an item that declares
+  subtypes and has no durability (Modern-Common ItemStack.java:111-120), 1.5.2 parity for every subtyped item.
+  Items without the subtype flag keep `damage > 0` until the setHasSubtypes audit, because FC's merge would not
+  compare their damage.
+- Comments in RecipeBridge, WorkbenchFallback, ItemDye and MerchantRecipeList. Unchanged: FC code.
+
+**Verification.** Record, stage BDD (2026-10-20):
+- P-DYE3 60/60 (HEAD 35/60). The first full stage read 50/60, the plan's "twins left out" signature, which exposed
+  the Setup class that never ran.
+- P-DYE3Q2 10/10; 6/10 in the ablation without the isItemDamaged hunk (the plan's "now" column).
+- Log: `[MODERN-DYES] colour twins for the 1.20.1 dye spellings {351=[0, 3, 4, 15]}`, then crafting +12 (8
+  one-colour recipes kept with the 4.B item), Cauldron +9 (1 kept), anvil and CauldronStoked +0 (1 kept each),
+  Crucible, CrucibleStoked and MillStone +0.
+- P-RV census: `sweep ns minecraft total=708 ... fail=27` (fu_runs/INV/BDD_after2/P-RV.txt and C_after/P-RV.txt; 32
+  in fu_runs/INV/cur/P-RV.txt, before this change); `sweep fc total=675 ... fail=0` (663 before: the 12 new grid
+  twins). All 25 regression plans SAME, P-LEAF-V 32/32 and P-LEAF-DT 10/10 included.
+
+**Caveats.**
+- Dyes saved in FC storage before the update read back as the ink sac, cocoa or lapis (R1: their identity was never
+  stored). An older jar falls back to item 351 with {Damage:n} (R2).
+- Pre-existing, now extended to the modern dyes by the twins: in the 2x2 grid FC colour recipes accept a candle,
+  wool, vase or wool slab of any colour, because fc_recipe ingredients match by item only (R11; the general cure is
+  queued as Q5).
+- The entity colour paths (sheep, wolf collars, windmills) are checked by code reading only (Q3). Open: Q4, cocoa
+  powder versus cocoa beans.
+- The isItemDamaged divergence of (aw) now covers only items without the subtype flag; the setHasSubtypes audit
+  stays queued.
+
+## 2026-10-21 (bd) Placement validity: FC placement follows 4.B's rules (I-2)
+
+**Symptom.** FC's block placement (Stage 2 and the item step) checked almost nothing:
+- An FC-route block went into a solid or non-replaceable cell: on 2026-10-18 a rerun of (at)'s removed-content plan
+  "placed" a tripwire hook inside the grass block it was used against, and FC placement overwrote flowers, torches,
+  rails and redstone dust in the target cell.
+- No 1.5.2 or FC `canPlaceBlockOnSide` rule ran: poppies and dandelions went onto stone, slabs and cobblestone
+  (triage CF2-P8a), and hooks onto any face of any support.
+- Items and XP orbs blocked placement ((ak) caveat), while the two-argument checkNoEntityCollision always answered
+  true, so FC windmills and water wheels went up through mobs and players.
+- A refused FC placement fell through to 1.20.1's BlockItem, which placed the block anyway; the oak door was used
+  up with nothing placed; vanilla-route stairs, doors, beds, gates and observers came out reversed; falling sand
+  deleted rails; FC-placed logs got no axis; an FC oak trapdoor or fence gate placed against a live signal stayed
+  closed.
+- Found by the proof gate (record, stage head): the facing rewrite read the held stack at RETURN, which is empty
+  after the last item, so a block placed from the last item of a stack was never rotated: facing depended on the
+  stack size.
+- Before wave C: P-PLACE 8/29 (GAP 0/19).
+
+**Root cause.**
+- WorldBridge.canPlaceEntityOnSide only asked whether any entity stood in the full cell (unchanged since 520e554);
+  1.5.2's World.canPlaceEntityOnSide (vanilla/server World.java:3377-3407) also needs a free or replaceable target
+  and the block's `canPlaceBlockOnSide`, and counts only entities that block building. The two-argument
+  checkNoEntityCollision was a stub.
+- Modern-Common bases lacked 1.5.2 placement hooks their FC subclasses inherit (BlockTripWireSource's
+  canPlaceBlockOnSide, canPlaceBlockAt and onBlockPlaced; BlockLog.onBlockPlaced; more are queued).
+- A Stage-2 refusal was not final, and the facing rewrite was not tied to the cell FC placed.
+
+**Fix (general rules).** INTEGRATIONS.md #040, tag `placement_validity`:
+- `WorldBridge.canPlaceEntityOnSide` (WorldBridge.java:1957) is 1.5.2's rule: a free or replaceable target, the
+  entity check, then `canPlaceBlockOnSide`; a throw refuses. The placing player counts in the entity check, as
+  4.B's client pre-check did (review fix 1), so buckets, repeaters, urns and stakes cannot go into the player's own
+  space.
+- `checkNoEntityCollision` (:1877, two-argument :1896) follows 1.5.2: only entities that block building count
+  (1.5.2's preventEntitySpawning) and spectators are skipped, so items and XP orbs no longer obstruct, and mobs and
+  players stop windmills and water wheels.
+- The tripwire hook codec (direction | 4 attached | 8 powered; :533-542, :809-818); `isMetaFullyDerived` covers the
+  hook (:284-300), and a fully derived block never reads the metadata overlay, so a stale entry is dropped
+  (:235-237, review fix 3).
+- Modern-Common base ports: BlockTripWireSource's canPlaceBlockOnSide, canPlaceBlockAt and onBlockPlaced
+  (BlockTripWireSource.java:32-60), and BlockLog.onBlockPlaced, the axis from the clicked face
+  (BlockLog.java:26-35).
+- ProxyBlock.tryPlaceHeldItem declines the oak door (FC item 324) and leaves it to 1.20.1's DoorItem until the door
+  codec exists (:667). After FC runs, it records PLACED with the cell that changed into the held block, or REFUSED,
+  but only for a player who may build (:698-701, review fix 2: an adventure-mode refusal records nothing, so
+  1.20.1's CanPlaceOn decides).
+- The `Stage2` record on the click frame of (ba) (PlayerBridge.java:331; `stage2` :396, `setStage2` :402 and :407,
+  `stage2At` :416). In ServerPlayerGameModeMixin, a REFUSED record at the clicked block makes the item step resend
+  the held slot, close the frame and return FAIL (:284-285, review fix 7), so 1.20.1 places nothing;
+  `btw$afterUseItemOn` acts only on PLACED, on the placed cell: the facing rewrite never touches a hook (review
+  fix 4) and runs only if the new facing survives, and a trapdoor or fence gate placed against a live signal then
+  opens (G2).
+- PlayerBridge: `syncFromReal` copies the swimming state into FC's `inWater` (:213-217), and `canPlayerEdit`
+  answers a riding player from the real player (:828-838), so 4.B's mid-air rule does not refuse a swimming or
+  riding player.
+- Unchanged: FC code.
+
+**Verification.** Record, stage C (2026-10-21), run folder fu_runs/INV/C_after:
+- P-PLACE 27/29, GATE C OK (8/29 before; the two KNOWN rows fail as labelled). P8-1 to P8-3 (a poppy on stone and
+  on a smooth stone slab, a dandelion on cobblestone) are refused; P8-4 (deepslate, the vanilla route) and P8-5 (a
+  poppy on grass) are controls. P-PLACE-C (joined client) GATE C OK, the client hand `minecraft:tripwire_hook x1`.
+- The place sweeps run to the end (1440 -> 4172 lines, 0 THREW). Of the 1436 lines both runs have, 52 changed, each
+  by a 1.5.2 rule (fu_runs/C/placesweep.diff.txt): logs on a north face become `axis=z`; on stone's top, saplings,
+  grass, fern, dead bush, every flower, mushrooms, ladder and cactus are refused; on a north face over grass, dead
+  bush, cactus and mushrooms are refused; twisting vines' age (random) and the lily pad's reply code change with no
+  block either way.
+- Every other plan SAME with identical output values (29 plans); the clients placeconsume, windmill and holduse
+  SAME.
+- The stack-size finding is gone by construction: the rewrite acts on the cell PLACED records and never reads the
+  held stack.
+
+**Caveats.**
+- KNOWN H4: glass counts as a normal cube for FC placement (Modern-Common Block.isNormalCube(20) is true; decision
+  7(b) queued). KNOWN H14: FC-route stairs still face reversed (decision 6(c) queued).
+- Queued: sneak placement uses 1.20.1 rules (8(b)); FC placements post no EntityPlaceEvent (9(b)); FC-route
+  trapdoors take meta 0 (look-based facing, bottom half) until decision 3 stage 2; an FC-placed hook's attached
+  state waits for a neighbour update (4(b')); the other Modern-Common bases that lack 1.5.2 placement hooks
+  (button, lever, vine, the piston parts, cake, chest, door, fence gate, flower pot, redstone wire, cocoa, wood
+  slab, quartz, trapdoor) wait for decision 3.
+- Other mods' fake players keep 4.B's mid-air rule (maintainer, 2026-10-20): a never-ticked fake player that calls
+  `useItemOn` is refused on FC-modelled targets, and REFUSED is final. Create's deployer calls `useOn` directly and
+  is not affected.
+- Not run (I-2.report.md:160-169): placing while swimming or riding; the placing player in the entity check with a
+  real player; adventure mode and CanPlaceOn; a world saved before this change with an FC-placed hook; other mods'
+  fake players; how much the 1.5.2 entity rule now refuses for windmills, spawns and falling blocks.
+- Closes (at)'s tripwire-hook caveat and corrects its verification note, and closes (ak)'s item-obstruction caveat;
+  (ap)'s ItemBlock note is annotated too.
+
+## 2026-10-21 (be) Hook ownership: beds, anvil, golems, enchanting table, fence gates, farmland (I-3)
+
+**Symptom (maintainer rulings of 2026-10-19: beds let players sleep but never set the spawn (ruling 3); doors,
+trapdoors and fence gates keep 1.20.1 redstone (ruling 4)).** The port ran FC's 1.5.2 block hooks only from the
+1.20.1 base bodies (BlockBehaviorMixin, BlockMixin), so whether FC ran depended on 1.20.1's class layout: 231
+override-without-super pairs bypassed FC, 108 of them hooks 4.B changed, and nothing could say that FC replaces
+1.20.1 or that 1.20.1 owns a hook FC declares. In play:
+- Breaking a beacon or ender chest crashed or lost the block, because FC's breakBlock cast the TileEntityBridge it
+  was handed; TNT next to a beacon stopped the server (P-HOOK-CRASH: `TileEntityBridge cannot be cast to
+  FCTileEntityBeacon`).
+- A night bed click threw a ClassCastException in `PlayerMixin.btw$disableBeds` after the bed had already set the
+  spawn, and a day click set the spawn; nobody could sleep (triage CF2-U1).
+- The anvil opened 1.20.1's repair menu instead of BTW's 3x3 crafting station; iron and snow golems could be built
+  from a pumpkin; FCGameplayBridge cancelled the enchanting table; fence gates did not notify their neighbours;
+  farmland was trampled by two rolls (1.20.1's, then FC's).
+- Before wave C: P-HOOK 20/36.
+
+**Root cause.** No hook had an owner: the FC call sat in the base bodies, reached only where the 1.20.1 class does
+not override the hook or calls super; FC's block-entity bodies ran on 1.20.1 block entities; the bed veto threw.
+
+**Fix (general rules).** INTEGRATIONS.md #036 (tag `hook_ownership`) and #037 (tag `beds_sleep_no_spawn`):
+- **One owner per hook per state** (`HookPolicy`, HookPolicy.java:113, shaped like TickPolicy): ten hooks (USE,
+  ATTACK, PLACE, REMOVE, NEIGHBOR, INSIDE, SIGNAL, STEP, FALL, RESIST), two bits each: UNDECIDED (the executors
+  keep their dynamic lookup), NOTIFY (FC runs where the 1.20.1 chain reaches the base body), FC (FC replaces 1.20.1
+  on the server, enforced for USE and PLACE) and VANILLA (FC's block never runs for the hook). `decide` (:216) is
+  cached on the state at `initCache` TAIL by the new BlockStateHookMixin (priority 1100), which also enforces FC
+  rows with cancellable HEAD injects on the `use` and `onPlace` forwarders.
+- **Rules, in order:** (1) FC not ready, a ProxyBlock or legacy id 0: no decision; (2) a RemovedContent T1 block:
+  VANILLA; (3) the block-entity guard: USE and REMOVE of a state whose FC block is a `btw.modern.BlockContainer`
+  are VANILLA (`isTeGuarded` :272), because its block entity is always 1.20.1's; (4) RULED and ADAPTER rows,
+  permanent (`ruledRule` :277); (5) PENDING rows, VANILLA until their metadata codec lands; (6) EQUIVALENT (every
+  FallingBlock's PLACE): NOTIFY; (7) the general rule: FC if the 1.20.1 class overrides the hook and the FC class
+  declares it in FC code, else NOTIFY. RESIST stays UNDECIDED until the explosions phase.
+- **Rows:** RULED(3), beds USE (ruling 3); RULED(4), door, trapdoor and fence-gate NEIGHBOR (64, 71, 96, 107;
+  ruling 4); RULED(5), NEIGHBOR of every `VanillaPairDrops.isRuled` block ((bb); BD's recommendation, pending its
+  question Q7); ADAPTER(D16b), fence-gate USE: the new FenceGateBlockMixin adds 4.B's neighbour notify at the
+  RETURN of `use` and keeps 1.20.1's sounds and game event; ADAPTER(D9b), farmland FALL: FarmBlockMixin lowers the
+  fall distance passed to `ForgeHooks.onFarmlandTrample` by 0.25 (FarmBlockMixin.java:79-88), so one roll uses
+  4.B's 0.75 threshold. The general rule gives FC the three anvils' USE (BTW's 3x3 crafting station; an
+  empty-handed sneak-click is left to 1.20.1's AnvilMenu) and the carved pumpkin's and jack o'lantern's PLACE (no
+  golems from a pumpkin; a jack o'lantern placed from now on goes out next to water).
+- **Executors** (BlockBehaviorMixin, BlockMixin): each is gated on the owner, and every FC call is in a try/catch.
+  An FC throw answers 1.20.1's result (the anvil then opens AnvilMenu), except on an FC-owned PLACE, which still
+  cancels so golems stay blocked; a throw on a click discards FC's pending inventory edits ((az)). The USE executor
+  (`HookPolicy.activate` :388) runs Stage 1 only under the owner and the block-entity guard; Stage 2, the held FC
+  item, always follows where the base body is reached, so a VANILLA USE owner drops Stage 1 only (review m2: a
+  BlockItem clicked against a spawner, skull, end portal or removed block places through FC's ItemBlock and the
+  rules of (bd)). `runFcOwnedUse` (:463) and `runFcOwnedPlace` (:483) serve the FC rows.
+- Latent hook-audit findings fixed: H3, `attack` now gets a synced PlayerBridge (it had a null player); H4, REMOVE
+  passes the derived metadata (`deriveVanillaMetadata`), not 0.
+- **Beds** (#037): `PlayerMixin.btw$disableBeds` is deleted. The new `BedSpawnPolicy` (BedSpawnPolicy.java:51)
+  vetoes every non-forced bed spawn through Forge's PlayerSetSpawnEvent, and
+  ServerPlayerMixin.btw$fcHostilesPreventRest (ServerPlayerMixin.java:343-347) answers NOT_SAFE when an FC hostile
+  is in 1.20.1's monster box (FC hostiles are proxies, never Monster). 1.20.1 sleep, the night skip, its messages
+  and the Nether and End explosion stay; the night skip advances world time, so FC's clocks, the moon phase, gloom
+  nights and Serene Seasons' calendar move with it.
+- FCGameplayBridge's enchanting-table cancel is deleted (R16): the table works. WorldGamerulesHandler: javadoc only
+  (doInsomnia stays false).
+- **Self-audit** `[SELF-AUDIT/hook]` (BridgeSelfAudit.auditHookPolicy, :291, run after the tick audit, :60) WARNs
+  on (a) an unexpected FC pair, (b) a block-entity-guarded FC hook other than the six known gaps (those log at
+  INFO), (c) cached owners that differ from `decide`, (d) a RULED or ADAPTER row whose legacy id drifted
+  (`RULED_IDS` :191), (e) an expected FC row (`EXPECTED_FC` :203) that no block carries.
+- Unchanged: FC code; door, trapdoor and gate redstone, 1.20.1's before and after, now by an explicit row.
+
+**Verification.** Record, stage C (2026-10-21), run folder fu_runs/INV/C_after:
+- Build: Mixin config OK (54 entries); the refmap carries BlockStateHookMixin, FenceGateBlockMixin and
+  `startSleepInBed`.
+- P-HOOK 34/36, GATE C OK (20/36 before wave C; the two FAILs are the INVERTED rows P0b and P0c, which fail once
+  fixed); P-HOOK-CRASH 1/1 (it crashed before), smoke 4/4 after it; P-BED-C (joined client) GATE C OK: the night is
+  skipped and the bed sets no spawn. No ClassCastException, "invalid for ticking" or "Failed to handle packet" in
+  the P-HOOK or bed-client server logs.
+- `[SELF-AUDIT/hook] 242 blocks, 5 FC-owned and 182 VANILLA hook pairs, rows {ADAPTER(D16b)=[107],
+  ADAPTER(D9b)=[60], RULED(3)=[26], RULED(4)=[64, 71, 96, 107], RULED(5)=[26]}, 6 known block-entity gaps, 0
+  warnings (0 expected)`.
+- The place sweeps no longer die on the ender-chest ClassCastException ((bd): 0 THREW). Every other plan SAME.
+
+**Caveats.**
+- PENDING rows stay 1.20.1's until hook phase P4 brings their codec: door USE (64, 71), the cake's bites (92), the
+  crafting table (58, decision D12), the flower pot (140) and the detector rail's INSIDE (28).
+- The block-entity guard keys on the FC class alone and never lifts by itself; it must narrow when Phase 4 bridges
+  FC tile entities. Until then the note block and furnace USE and the ender chest and beacon USE and REMOVE are
+  1.20.1's (the six known gaps).
+- RULED(5) waits for the maintainer's answer to BD's Q7; dropping it is one line in `ruledRule` and one `RULED_IDS`
+  entry.
+- Beds: a modded bed that reports neither `#minecraft:beds` nor `isBed` still sets the spawn; a forced spawn on a
+  bed (`/spawnpoint`) is kept; a bed spawn set before the update is used for one more respawn. BTW 4.B's random
+  hardcore respawn is not ported (triage CF2-U1-HS): respawns go to the world spawn or a charged respawn anchor.
+- Golems: only golems built from a pumpkin or jack o'lantern are blocked; villager-spawned iron golems are
+  untouched. No row covers golems through `/setblock` or a dispenser, or review m2's BlockItem routing.
+
+## 2026-10-21 (bf) Lava meets water by 4.B's rules (I-4)
+
+**Symptom.** Lava meeting water followed 1.20.1: Forge's lava+water interaction turned any touching lava into
+obsidian (a source) or cobblestone, lava flowing down onto water made stone, and water flowed into lava 4/9 high or
+more. 4.B hardens a source into obsidian, and flowing lava of metadata 1-4 (within two blocks of its source, four
+in the Nether) and lava flowing down onto water into a drop-less lava pillow; thinner and falling lava stays lava,
+and no fluid displaces lava. (as) listed liquid hardening among the open hook families. HEAD: P-HOOK P3a, P3b, P3c,
+P3e and P3f fail.
+
+**Root cause.** 4.B's rules live in 1.5.2 BlockFluid and BlockFlowing (vanilla/server BlockFluid.java:303-357,
+BlockFlowing.java:167-178, :443-447). The port's lava is 1.20.1's LavaFluid with Forge's FluidInteractionRegistry,
+and LavaFluidMixin covered only the random tick ((as)).
+
+**Fix (general rules).** Part of INTEGRATIONS.md #036, tag `hook_ownership`; no rebalance.
+- `LavaRules` (new, LavaRules.java:73): `contactRule` (:105) wraps Forge's own lava+water test as
+  `hardensOnContact(lava) && water`; `hardensOnContact` (:130) is true for a source, or for non-falling lava with
+  amount 4 or more, which is 4.B's metadata 1-4 (level = 8 - amount). A source becomes obsidian and other hardening
+  lava the pillow, found through `FcRefs.block("fcBlockLavaPillow")`; if it does not resolve, the cell gets
+  1.20.1's cobblestone or stone and one WARN. It never throws. Cobblestone and stone generators now make pillows.
+- `FluidInteractionRegistryMixin` (new, `remap = false`): a static `@ModifyArg` on the first `addInteraction` call
+  in `<clinit>` (ordinal 0, index 1; FluidInteractionRegistryMixin.java:46-52) gates Forge's built-in entry in
+  place, keeping the interaction order, basalt and other mods' lava interactions; a declined contact still gets
+  LiquidBlock's flow tick.
+- `LavaFluidMixin`: a `@ModifyArg` in `spreadTo` on argument 3 of `ForgeEventFactory.fireFluidPlaceBlockEvent`
+  (`remap = false` on the `@At`; LavaFluidMixin.java:90-91) places the pillow where 1.20.1 places stone, and a HEAD
+  inject on `canBeReplacedWith` (`btw$noFluidDisplacesLava`) answers false, 1.5.2's rule that no fluid displaces
+  lava. A water bucket still replaces lava (BucketItem asks `canBeReplaced`). The random-tick inject of (as) is
+  unchanged.
+- Refmap facts: `spreadTo` maps to `m_6364_` and `canBeReplacedWith` to `m_5486_` (both LavaFluidMixin);
+  FluidInteractionRegistryMixin has no refmap entry (`remap = false`). On a Forge bump, re-check with javap that
+  ordinal 0 of `<clinit>` is still the lava+water entry: the code cannot see lava's two registrations trade places.
+- The `[LAVA] 4.B lava contact rule installed` INFO line is logged at the first fluid update, not at start-up:
+  `LiquidBlock.onPlace` and `neighborChanged` first load FluidInteractionRegistry.
+- It relies on (be) keeping the `onPlace` and `neighborChanged` hooks of lava (10) and water (8) NOTIFY, never
+  FC-owned; P3b, P3e and P3g would show a change. Row 5 of (as)'s tick table is unchanged.
+- The review's major finding is in: gating falling lava had opened 1.20.1's water-displaces-lava path, so a water
+  stream entering a lava fall ran down the column and was capped by a pillow. The `canBeReplacedWith` rule closes
+  it.
+
+**Verification.** Record, stage C (2026-10-21), run folder fu_runs/INV/C_after: P-HOOK P3a-P3h all pass (P3a, P3b,
+P3c, P3e and P3f flip; P3d stays; P3g, a lava fall beside water stays lava, flips; P3h, no pillow in the lava fall,
+is a control that fails without the `canBeReplacedWith` rule). The refmap carries `m_6364_` and `m_5486_`. The log
+reads `[LAVA] 4.B lava contact rule installed on Forge's lava+water interaction: source -> obsidian, flowing meta
+1-4 -> FC lava pillow, meta 5-7 and falling lava keep flowing`, with no other `[LAVA]` line.
+
+**Caveats.**
+- 4.B fizzed whenever lava touched water, even when nothing hardened (vanilla/server BlockFluid.java:353); the fizz is
+  not reproduced.
+- Breaking a pillow, now common for the first time, runs through ProxyBlock.onRemove to FC's breakBlock (it should
+  release lava when no water is beside or above it, and drop nothing); no plan exercises it.

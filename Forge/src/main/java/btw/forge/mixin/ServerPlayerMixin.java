@@ -2,12 +2,18 @@ package btw.forge.mixin;
 
 import btw.forge.BTWNetwork;
 import btw.forge.PlayerBridge;
+import btw.forge.ProxyMob;
 import btw.modern.ChunkCoordinates;
+import com.mojang.datafixers.util.Either;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Unit;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -313,6 +319,43 @@ public abstract class ServerPlayerMixin {
         if (pb.m_HardcoreSpawnChunk != null) {
             // FC spawn points are always forced (beacon validation is separate)
             cir.setReturnValue(true);
+        }
+    }
+
+    // =========================================================================
+    // Beds: FC hostiles prevent rest (beds_sleep_no_spawn)
+    // =========================================================================
+
+    /**
+     * 1.20.1's NOT_SAFE test counts {@code Monster} entities within +/-8, +/-5, +/-8 of the bed (ServerPlayer.java:857-867),
+     * but every FC hostile is a {@link ProxyMob}, which extends Mob, not Monster (ProxyMob.java:24), so a player could
+     * sleep beside an FC zombie. 1.5.2 refused sleep for any EntityMob in the same box (vanilla/server
+     * EntityPlayer.java:1410-1414); 4.B removed sleeping, so the gap shows only now that beds sleep (ruling 3). The
+     * class rule is the one Modern-Common keeps: zombie, creeper, spider, silverfish and pig zombie are EntityMob and
+     * count; slime and magma cube (EntityLiving) and ghast (EntityFlying) do not.
+     *
+     * <p>Injected just before the super call (:869), after the time check (:854) and after 1.20.1's own Monster check,
+     * so the refusal messages keep vanilla's order; creative players are exempt, as at :857. A PlayerSleepInBedEvent
+     * listener was rejected: it fires at :842, before the range, obstruction and time checks, so a daytime click would
+     * say "not_safe". Never throws (class rule above): a failure is logged once and the player sleeps as in 1.20.1.
+     * ProxyMob.getFcEntity syncs the FC mob, on a sleep attempt only.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): beds_sleep_no_spawn: FC hostiles are ProxyMob (Mob), never Monster (ServerPlayer.java:857-867); 1.5.2 counted EntityMob in the same box (vanilla/server EntityPlayer.java:1410-1414)
+    @Inject(method = "startSleepInBed", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/player/Player;startSleepInBed(Lnet/minecraft/core/BlockPos;)Lcom/mojang/datafixers/util/Either;"),
+            cancellable = true, require = 1)
+    private void btw$fcHostilesPreventRest(BlockPos pos, CallbackInfoReturnable<Either<Player.BedSleepingProblem, Unit>> cir) {
+        ServerPlayer self = (ServerPlayer) (Object) this;
+        if (self.isCreative()) return;                                             // as :857
+        try {
+            Vec3 c = Vec3.atBottomCenterOf(pos);                                    // :860
+            AABB box = new AABB(c.x - 8.0D, c.y - 5.0D, c.z - 8.0D, c.x + 8.0D, c.y + 5.0D, c.z + 8.0D); // :861
+            if (!self.level().getEntitiesOfClass(ProxyMob.class, box,
+                    m -> m.isAlive() && m.getFcEntity() instanceof btw.modern.EntityMob).isEmpty()) {  // ProxyMob.java:109
+                cir.setReturnValue(Either.left(Player.BedSleepingProblem.NOT_SAFE));
+            }
+        } catch (Throwable t) {
+            btw$logFailureOnce("sleep rest check", self, t);
         }
     }
 

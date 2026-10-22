@@ -14,7 +14,10 @@ import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * Startup self-audit for the BTW Forge bridge — the runtime companion to the build-time
@@ -38,6 +41,8 @@ public final class BridgeSelfAudit {
         // FCMOD-INTEGRATION(1.20.1): mod-compat: the compat data and the thermal table name BTW content by FC field; prove at launch that they still resolve
         auditCompatRefs();
         auditThermalTable();
+        // FCMOD-INTEGRATION(1.20.1): modern_woods: log2 FCBlockLog at 165, both mappings, bark and work-stump textures
+        ModernWoods.audit();
     }
 
     private static boolean tickPolicyAudited;
@@ -51,7 +56,11 @@ public final class BridgeSelfAudit {
         if (tickPolicyAudited) return;
         tickPolicyAudited = true;
         auditTickPolicy();
+        // FCMOD-INTEGRATION(1.20.1): hook_ownership: owner and rule per managed block and hook, RULED(3)/(4)/(5) and ADAPTER rows, unclassified FC pairs, lost expected FC rows
+        auditHookPolicy();
         auditTwins();
+        // FCMOD-INTEGRATION(1.20.1): vanilla_pair_drops: the beds and doors 1.20.1 harvests, and the FC drop ids routed to 1.20.1 loot
+        VanillaPairDrops.audit();
         auditLightPolicy();
     }
 
@@ -247,6 +256,165 @@ public final class BridgeSelfAudit {
             case TickPolicy.PACED -> "PACED";
             default -> "VANILLA";
         };
+    }
+
+    /**
+     * Block-entity-guarded hooks FC declares in FC code, accepted until FC tile entities are bridged onto 1.20.1 block
+     * entities (hook-ownership D7(a), Phase 4), reported at INFO: legacy id -&gt; HookPolicy hook mask. Note block USE
+     * (Common FCBlockNote.java:36), furnace USE (Client FCBlockFurnace.java:84), ender chest USE and REMOVE (Client
+     * FCBlockEnderChest.java:39, :104), beacon USE and REMOVE (Client FCBlockBeacon.java:69, :42).
+     */
+    private static final Map<Integer, Integer> KNOWN_TE_GAPS = Map.of(
+            25, 1 << HookPolicy.USE,
+            61, 1 << HookPolicy.USE,
+            130, (1 << HookPolicy.USE) | (1 << HookPolicy.REMOVE),
+            138, (1 << HookPolicy.USE) | (1 << HookPolicy.REMOVE));
+
+    /**
+     * Hook-ownership self-audit ({@link HookPolicy}, hook_ownership): one line per managed block with the owner and
+     * rule of every hook other than the plain general NOTIFY (RESIST, UNDECIDED until Phase 5, is left out), and a
+     * summary. WARNs on
+     * (a) a pair the general rule hands to FC that is not an expected FC row (the anvils' USE, the carved pumpkin's
+     *     and the jack o'lantern's PLACE): an override plus an FC-declared hook nobody classified. The reflection rule
+     *     cannot see a super call, so classify it (EQUIVALENT, PENDING, RULED) or confirm it as an FC row;
+     * (b) a block-entity-guarded hook FC declares in FC code, other than {@link #KNOWN_TE_GAPS} (INFO);
+     * (c) a state whose cached owners differ from HookPolicy.decide (BlockStateHookMixin not applied, or the answer
+     *     changed after the bake), or states of one block decided differently;
+     * (d) a RULED or ADAPTER row on a block that no longer maps to the legacy id its ruling names, or a ruling's id
+     *     with no such row (hook delta B9; {@link HookPolicy#RULED_IDS});
+     * (e) an expected FC row ({@link HookPolicy#EXPECTED_FC}) that no block of its legacy id carries: an unresolved
+     *     1.20.1 method name or a drifted FC signature turned it back to NOTIFY (no golem block, no FC anvil).
+     * Expected: {@code 0 warnings}, with RULED(3) on the 16 beds' USE and RULED(4) on OAK_DOOR, IRON_DOOR,
+     * OAK_TRAPDOOR and OAK_FENCE_GATE NEIGHBOR, and {@code 6 known block-entity gaps} on 4 blocks (counted per block
+     * and hook: note and furnace USE, ender chest and beacon USE and REMOVE).
+     */
+    private static void auditHookPolicy() {
+        if (!BTWLifecycle.isFcReady()) {
+            LOGGER.warn("[SELF-AUDIT/hook] FC is not initialised; every hook keeps today's lookup (UNDECIDED)");
+            return;
+        }
+        int blocks = 0, fcPairs = 0, vanillaPairs = 0, teGaps = 0, warnings = 0;
+        Map<String, Set<Integer>> seenRuled = new TreeMap<>();
+        // legacy id -> mask of the hooks some block of that id has FC-owned, for (e)
+        Map<Integer, Integer> seenFc = new TreeMap<>();
+        for (Block b : ForgeRegistries.BLOCKS) {
+            if (b instanceof ProxyBlock || ProxyRegistry.getFcBlock(b) == null) continue;
+            Object key = ForgeRegistries.BLOCKS.getKey(b);
+            try {
+                int id = ProxyRegistry.getBlockId(b);
+                HookPolicy.Decision first = null;
+                boolean cacheMismatch = false, varies = false;
+                for (BlockState s : b.getStateDefinition().getPossibleStates()) {
+                    HookPolicy.Decision d = HookPolicy.decide(s);
+                    if (HookPolicy.cachedOwners(s) != (d == null ? 0 : d.owners())) cacheMismatch = true;
+                    if (d == null) continue;
+                    if (first == null) first = d;
+                    else if (d.owners() != first.owners()) varies = true;
+                }
+                if (first == null) {
+                    LOGGER.warn("[SELF-AUDIT/hook] {} is FC-mapped but HookPolicy left it unmanaged", key);
+                    warnings++;
+                    continue;
+                }
+                blocks++;
+                btw.modern.Block fc = ProxyRegistry.getFcBlock(b);
+                StringBuilder rows = new StringBuilder();
+                for (int h = 0; h < HookPolicy.HOOKS; h++) {
+                    int owner = first.owner(h);
+                    String rule = first.rule(h);
+                    if (owner == HookPolicy.FC) {
+                        fcPairs++;
+                        seenFc.merge(id, 1 << h, (x, y) -> x | y);
+                    }
+                    if (owner == HookPolicy.VANILLA) vanillaPairs++;
+                    if (rule.startsWith("RULED(") || rule.startsWith("ADAPTER(")) {
+                        seenRuled.computeIfAbsent(rule, k -> new TreeSet<>()).add(id);
+                    }
+                    if (owner == HookPolicy.FC && "general".equals(rule) && !HookPolicy.isExpectedFc(id, h)) {
+                        LOGGER.warn("[SELF-AUDIT/hook] (a) {} (id {}, {}): the general rule hands {} to FC ({} overrides "
+                                + "it, {} declares it) but no row expects it: classify it in HookPolicy", key, id,
+                                b.getClass().getName(), HookPolicy.hookName(h), b.getClass().getSimpleName(),
+                                fc.getClass().getSimpleName());
+                        warnings++;
+                    }
+                    if ("te-guard".equals(rule) && HookPolicy.fcDeclares(fc.getClass(), h)) {
+                        Integer known = KNOWN_TE_GAPS.get(id);
+                        if (known != null && (known & (1 << h)) != 0) {
+                            teGaps++;
+                            LOGGER.info("[SELF-AUDIT/hook] {} (id {}): {}.{} stays 1.20.1's until its block entity is "
+                                    + "bridged (Phase 4)", key, id, fc.getClass().getSimpleName(), HookPolicy.hookName(h));
+                        } else {
+                            LOGGER.warn("[SELF-AUDIT/hook] (b) {} (id {}): {} declares {} on a 1.20.1 block entity; the "
+                                    + "block-entity guard keeps it from running", key, id, fc.getClass().getSimpleName(),
+                                    HookPolicy.hookName(h));
+                            warnings++;
+                        }
+                    }
+                    if (h == HookPolicy.RESIST || (owner == HookPolicy.NOTIFY && "general".equals(rule))) continue;
+                    rows.append(' ').append(HookPolicy.hookName(h)).append('=')
+                            .append(HookPolicy.ownerName(owner)).append('[').append(rule).append(']');
+                }
+                LOGGER.info("[SELF-AUDIT/hook] {} id={}{} rest=NOTIFY[general]{}", key, id, rows,
+                        varies ? " (states differ)" : "");
+                if (cacheMismatch) {
+                    LOGGER.warn("[SELF-AUDIT/hook] (c) {} (id {}): a cached hook owner differs from HookPolicy.decide "
+                            + "(BlockStateHookMixin not applied?)", key, id);
+                    warnings++;
+                }
+                if (varies) {
+                    LOGGER.warn("[SELF-AUDIT/hook] (c) {} (id {}): its states have different hook owners; the line above "
+                            + "shows the first", key, id);
+                    warnings++;
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("[SELF-AUDIT/hook] could not audit {}", key, t);
+                warnings++;
+            }
+        }
+
+        // (d) every RULED / ADAPTER label covers exactly the legacy ids its ruling names (delta B9)
+        for (Map.Entry<String, Set<Integer>> e : new TreeMap<>(HookPolicy.RULED_IDS).entrySet()) {
+            Set<Integer> seen = seenRuled.getOrDefault(e.getKey(), Set.of());
+            for (int id : seen) {
+                if (!e.getValue().contains(id)) {
+                    LOGGER.warn("[SELF-AUDIT/hook] (d) {} applies to legacy id {}, which its ruling does not name "
+                            + "(expected {}): a mapping changed; confirm the ruling covers it", e.getKey(), id,
+                            e.getValue());
+                    warnings++;
+                }
+            }
+            for (int id : e.getValue()) {
+                if (!seen.contains(id)) {
+                    LOGGER.warn("[SELF-AUDIT/hook] (d) {}: no block of legacy id {} carries the row any more (a ruled "
+                            + "state no longer maps to its id); FC may own that hook again", e.getKey(), id);
+                    warnings++;
+                }
+            }
+        }
+        for (String label : seenRuled.keySet()) {
+            if (!HookPolicy.RULED_IDS.containsKey(label)) {
+                LOGGER.warn("[SELF-AUDIT/hook] (d) row {} has no entry in HookPolicy.RULED_IDS", label);
+                warnings++;
+            }
+        }
+
+        // (e) every expected FC row is carried by some block of its legacy id: a 1.20.1 method name HookPolicy could
+        // not resolve (no class then counts as overriding it) or a drifted FcSigs signature would hand the hook back
+        // to NOTIFY without any other warning
+        for (Map.Entry<Integer, Integer> e : new TreeMap<>(HookPolicy.EXPECTED_FC).entrySet()) {
+            int missing = e.getValue() & ~seenFc.getOrDefault(e.getKey(), 0);
+            for (int h = 0; h < HookPolicy.HOOKS; h++) {
+                if ((missing & (1 << h)) != 0) {
+                    LOGGER.warn("[SELF-AUDIT/hook] (e) no block of legacy id {} has an FC-owned {}: the expected FC "
+                            + "row is lost (an unresolved 1.20.1 method or a drifted FC signature?) and 1.20.1 runs "
+                            + "there", e.getKey(), HookPolicy.hookName(h));
+                    warnings++;
+                }
+            }
+        }
+
+        LOGGER.info("[SELF-AUDIT/hook] {} blocks, {} FC-owned and {} VANILLA hook pairs, rows {}, {} known block-entity "
+                + "gaps, {} warnings (0 expected)", blocks, fcPairs, vanillaPairs, seenRuled, teGaps, warnings);
     }
 
     /**

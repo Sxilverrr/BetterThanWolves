@@ -109,6 +109,13 @@ public class ItemStack {
     }
 
     public boolean isItemDamaged() {
+        // FCMOD-INTEGRATION(1.20.1): modern_dyes: 1.5.2 counts damage only on an item with durability (vanilla/server
+        // ItemStack.java:239-242). On an item that declares subtypes and has none, the damage is its subtype: FC merges
+        // only an undamaged source (FCUtilsInventory.java:347, :538) and tells subtypes apart by damage (CanStacksMerge
+        // :405-413), so this is 1.5.2 parity for them, and dyes, FC wool, candles, vases and slabs stack in FC hoppers
+        // and chests again (INTEGRATIONS #038). Items without the subtype flag keep damage > 0 until the
+        // setHasSubtypes audit, because FC's merge would not compare their damage.
+        if (this.getHasSubtypes() && this.getMaxDamage() == 0) return false;
         return this.itemDamage > 0;
     }
 

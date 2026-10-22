@@ -274,16 +274,16 @@ public class RecipeBridge {
                 && (id.getPath().startsWith(CRAFTING_PREFIX) || id.getPath().startsWith(SMELTING_PREFIX));
     }
 
-    /** canonical 1.20.1 item -> the 1.20.1 item FC reads as the same 1.5.2 subtype; built once, after FC init. */
+    /** canonical 1.20.1 item -> its modern spelling (same 1.5.2 subtype, one-way); built once, after FC init. */
     private static volatile Map<net.minecraft.world.item.Item, net.minecraft.world.item.Item> legacyAliases;
 
     /**
-     * The 1.20.1 item that FC cannot tell apart from {@code canonical}, or null. Both convert to the same 1.5.2
-     * (id, damage), and {@code canonical} is the one an FC stack converts back to (ItemStackHelper.toMcStack). These
-     * are LegacyVariants' modern-only spellings of a 1.5.2 subtype: the black, brown, blue and white dye items for ink
-     * sac, cocoa beans, lapis and bone meal (1.5.2 dye 0/3/4/15, ItemDye.java:19), the stone slab for the smooth stone
-     * slab (44:0) and smooth sandstone for cut sandstone (24:2). Lossy collapses (every modern flower onto the rose, the
-     * 16 bed colours onto one bed) are deliberately not aliases: those items are not the same 1.5.2 thing.
+     * The modern spelling 1.20.1 recipes want for the 4.B subtype whose FC stacks convert back to {@code canonical}
+     * (ItemStackHelper.toMcStack), or null; one-way. These are LegacyVariants' modern-only spellings of a 1.5.2
+     * subtype: the black, brown, blue and white dye items for ink sac, cocoa beans, lapis and bone meal (1.5.2 dye
+     * 0/3/4/15, ItemDye.java:19; each dye keeps its own FC stack, 351:256/259/260/271, and never reads as the 4.B item,
+     * which still stands in for it, as in 4.B), the stone slab for the smooth stone slab (44:0) and smooth sandstone
+     * for cut sandstone (24:2). Lossy collapses (modern flowers onto the rose, the 16 beds onto one) are not aliases.
      */
     // FCMOD-INTEGRATION(1.20.1): recipes: the FC workbench fallback retries a grid with these spellings (INTEGRATIONS #025)
     public static net.minecraft.world.item.Item legacyAlias(net.minecraft.world.item.Item canonical) {
@@ -303,9 +303,9 @@ public class RecipeBridge {
             for (net.minecraft.world.item.Item item : BuiltInRegistries.ITEM) {
                 int[] legacy = LegacyVariants.toLegacy(item);
                 if (legacy == null || legacy[0] <= 0 || legacy[0] == LegacyVariants.SPAWN_EGG_ID) continue;
-                // the item an FC stack of that subtype converts back to (toMcStack never allocates a headless id)
+                // the base subtype's FC -> MC pick (white dye 351:271 -> bone meal); toMcStack makes no headless id
                 net.minecraft.world.item.Item canonical = ItemStackHelper.toMcStack(
-                        new btw.modern.ItemStack(legacy[0], 1, legacy[1])).getItem();
+                        new btw.modern.ItemStack(legacy[0], 1, LegacyVariants.baseSubtype(legacy[1]))).getItem();
                 if (canonical == null || canonical == net.minecraft.world.item.Items.AIR || canonical == item) continue;
                 out.putIfAbsent(canonical, item); // registry order: deterministic
             }

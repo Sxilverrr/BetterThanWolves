@@ -41,7 +41,7 @@ java {
     }
 }
 
-// Define source sets BEFORE minecraft {} so 'fc' is available in mods {} block
+// Define source sets BEFORE minecraft {} so 'fc' and 'devModernCommon' are available in mods {} block
 sourceSets {
     main {
         java.srcDirs = ['src/main/java']
@@ -55,6 +55,15 @@ sourceSets {
     // FC source set — holds remapped FC class files so ForgeGradle's
     // TRANSFORMER classloader includes them in the mod's module layer.
     fc {
+        resources.srcDirs = []
+    }
+    // FCMOD-INTEGRATION(1.20.1): dev-run: the dev view of Modern-Common. syncDevModernCommon fills its classes
+    // dir with Modern-Common's output minus the shadow list (modernCommonRuntime, the copySpec the jar uses), and
+    // the dev runs load it instead of Modern-Common's own output, which only :Modern-Common:compileJava writes.
+    // Both srcDirs are empty, so its compile and resources tasks are always NO-SOURCE, and ForgeGradle's
+    // makeSrcDirs (Utils.java:399-404) creates no Forge/src/devModernCommon.
+    devModernCommon {
+        java.srcDirs = []
         resources.srcDirs = []
     }
 }
@@ -90,13 +99,16 @@ minecraft {
                     source project(':Api').sourceSets.main
                     // Dev class precedence: securejarhandler's UnionFileSystem searches these
                     // sources in REVERSE declaration order (UnionFileSystem.java:124-127, "later
-                    // elements are first in search order"), so Modern-Common, declared last,
-                    // wins every btw.modern collision with fc. Frozen classes that must win
-                    // (Entity hierarchy, AI/path helpers, ...) are deleted from Modern-Common's
-                    // output by removeModernCommonShadowedClasses. The jar block applies the same
-                    // rule. Do not reorder without re-checking both.
+                    // elements are first in search order"), so devModernCommon, declared last,
+                    // wins every btw.modern collision with fc. It is Modern-Common's output minus
+                    // the shadow list (syncDevModernCommon, with the jar's own copySpec
+                    // modernCommonRuntime), so the frozen classes that must win (Entity hierarchy,
+                    // AI/path helpers, ...) exist only in fc, exactly as in the jar. Never list
+                    // project(':Modern-Common').sourceSets.main here: the mods{} order guard
+                    // (afterEvaluate, below syncDevModernCommon) fails the build if a run does, or
+                    // if devModernCommon does not come after fc.
                     source sourceSets.fc
-                    source project(':Modern-Common').sourceSets.main
+                    source sourceSets.devModernCommon
                 }
             }
         }
@@ -115,10 +127,10 @@ minecraft {
                     source sourceSets.main
                     source project(':Api').sourceSets.main
                     // Dev class precedence: same order and rule as the server run above
-                    // (reverse search order -> Modern-Common wins unless the class was
-                    // deleted by removeModernCommonShadowedClasses; the jar matches).
+                    // (reverse search order -> devModernCommon wins unless the class is on the
+                    // shadow list, which keeps it out of that copy; the jar matches).
                     source sourceSets.fc
-                    source project(':Modern-Common').sourceSets.main
+                    source sourceSets.devModernCommon
                 }
             }
         }
@@ -144,7 +156,7 @@ minecraft {
                     source project(':Api').sourceSets.main
                     // Same order and precedence rule as the server/client runs above.
                     source sourceSets.fc
-                    source project(':Modern-Common').sourceSets.main
+                    source sourceSets.devModernCommon
                 }
             }
         }
@@ -205,15 +217,16 @@ task remapFcCode(type: ShadowJar) {
         include 'net/minecraft/src/IEntitySelector*.class'
         // FC's vanilla 1.5.2 Entity — has the canonical moveEntity
         // collision-clip + step-up + updateFallState that we need.
-        // Modern-Common's Entity stub is deleted post-compile by
-        // removeModernCommonShadowedClasses so the vanilla version wins.
+        // Modern-Common's Entity stub is on the shadow list (modernCommonRuntime,
+        // kept out of the jar and of the dev view) so the vanilla version wins.
         //
         // EntityLiving is ALSO swapped so that vanilla's real
         // writeEntityToNBT / readEntityFromNBT actually persist health,
         // motion, combat state, etc. A no-op stub would make the NBT
         // save path "succeed" but silently lose state on load.
         // Access-level conflicts (protected fields accessed cross-class)
-        // are fixed by openUpEntityAccess running ASM promotion.
+        // are fixed by openUpEntityAccess running ASM promotion (an action of
+        // extractFcClasses, after its Sync).
         //
         // NOT swapped:
         //   - AxisAlignedBB: vanilla has PROTECTED constructor, FC code
@@ -376,9 +389,9 @@ task remapFcCode(type: ShadowJar) {
         // NOTE: the nine Container* below plus InventoryMerchant, SlotMerchantResult,
         // SlotCrafting, IMerchant, IEntitySelector, EntityAIBase and
         // EntityAIControlledByPlayer also exist in Modern-Common and are NOT on the
-        // shadow lists, so Modern-Common's copies win in dev AND in the jar (jar{}
+        // shadow list, so Modern-Common's copies win in dev AND in the jar (jar{}
         // "Class precedence"); these frozen copies ship nowhere. Shadow-list a class
-        // (both lists) to make its frozen copy win.
+        // (one exclude line in modernCommonRuntime) to make its frozen copy win.
         include 'net/minecraft/src/ContainerMerchant.class'
         include 'net/minecraft/src/ContainerFurnace.class'
         include 'net/minecraft/src/ContainerDispenser.class'
@@ -745,75 +758,166 @@ tasks.matching { it.name.startsWith('prepareRun') || it.name.startsWith('run') |
 }
 
 // ------------------------------------------------------------------
-// Delete from Modern-Common's build output the stubs that the frozen 1.5.2 (fc)
-// classes must replace, so dev runs bind the fc versions. Needed because
-// securejarhandler searches mods{} sources in reverse declaration order:
-// Modern-Common (declared last) would otherwise shadow fc for every btw.modern
-// collision. This list MUST equal the jar's Modern-Common exclude list. Anything
-// not listed resolves to Modern-Common in BOTH dev and jar. AxisAlignedBB is
-// deliberately absent (the vanilla ctor is protected).
+// The shadow list: the Modern-Common stubs that the frozen 1.5.2 (fc) classes
+// must replace. Modern-Common wins every other btw.modern collision, in the jar
+// (its child spec is walked before fc's under EXCLUDE, jar { } "Class precedence")
+// and in dev runs (securejarhandler searches mods{} sources in reverse declaration
+// order). ONE copySpec, shared by the dist jar (`with modernCommonRuntime`) and the
+// dev view (syncDevModernCommon), so dev and jar cannot drift. Anything not listed
+// resolves to Modern-Common in BOTH dev and jar. AxisAlignedBB is deliberately
+// absent (the vanilla ctor is protected). Keep one literal exclude of a
+// btw/modern/<Name>.class path per line: tools/LinkAudit.java reads the list from
+// this file with a regex (so never quote such a line in a comment).
 //
 // FC's vanilla 1.5.2 Entity has the full moveEntity collision-clip
 // algorithm. We deliberately use it instead of porting/stubbing.
 // ------------------------------------------------------------------
-task removeModernCommonShadowedClasses {
-    dependsOn ':Modern-Common:compileJava'
+def modernCommonRuntime = copySpec {
+    from(project(':Modern-Common').sourceSets.main.output)
+    exclude 'btw/api/**'
+    // Let vanilla versions win for classes with MATCHING constructors
+    // and better implementations. Keep Modern-Common's versions only for
+    // classes where the bridge uses a different constructor signature
+    // (e.g. EntitySenses no-arg; vanilla needs an entity arg). NOTE:
+    // EntityLookHelper is NOT kept here — the runtime EntityLiving is FC's
+    // (Modern-Common's EntityLiving is excluded below), and it calls
+    // new EntityLookHelper(this); Modern-Common's look helper is an empty
+    // stub, so FC's real one must win.
+    exclude 'btw/modern/PathNavigate.class'
+    exclude 'btw/modern/PathEntity.class'
+    exclude 'btw/modern/PathPoint.class'
+    exclude 'btw/modern/PathFinder.class'
+    exclude 'btw/modern/EntityMoveHelper.class'
+    exclude 'btw/modern/EntityJumpHelper.class'
+    // Frozen EntityTameable's field initializer news EntityAISit(EntityTameable);
+    // the Modern-Common shim only has an (EntityLiving) ctor, so every FC wolf
+    // construction threw NoSuchMethodError (silently caught — wolves were inert
+    // husks). The real 1.5.2 EntityAISit is already in the remap via EntityAI*.
+    exclude 'btw/modern/EntityAISit.class'
+    // FC's vanilla 1.5.2 Entity/EntityLiving own collision and
+    // mob state. Exclude Modern-Common's stubs so FC's versions
+    // win in the JAR. Access-level issues are resolved by ASM
+    // promotion in openUpEntityAccess. AxisAlignedBB stays
+    // Modern-Common because vanilla's constructor is protected.
+    exclude 'btw/modern/Entity.class'
+    exclude 'btw/modern/EntityLiving.class'
+    exclude 'btw/modern/EntityCreature.class'
+    exclude 'btw/modern/EntityMob.class'
+    exclude 'btw/modern/EntityAgeable.class'
+    exclude 'btw/modern/EntityAnimal.class'
+    exclude 'btw/modern/EntityPig.class'
+    exclude 'btw/modern/EntityCow.class'
+    exclude 'btw/modern/EntitySheep.class'
+    exclude 'btw/modern/EntityChicken.class'
+    exclude 'btw/modern/EntityWolf.class'
+    exclude 'btw/modern/EntityOcelot.class'
+    exclude 'btw/modern/EntityMooshroom.class'
+    exclude 'btw/modern/EntityVillager.class'
+    exclude 'btw/modern/EntityZombie.class'
+    exclude 'btw/modern/EntitySkeleton.class'
+    exclude 'btw/modern/EntityCreeper.class'
+    exclude 'btw/modern/EntityEnderman.class'
+    exclude 'btw/modern/EntitySpider.class'
+    exclude 'btw/modern/EntityCaveSpider.class'
+    exclude 'btw/modern/EntityWitch.class'
+    exclude 'btw/modern/EntityPigZombie.class'
+    exclude 'btw/modern/EntityWither.class'
+    exclude 'btw/modern/EntitySlime.class'
+    exclude 'btw/modern/EntityMagmaCube.class'
+    exclude 'btw/modern/EntityGhast.class'
+    exclude 'btw/modern/EntityBlaze.class'
+    exclude 'btw/modern/EntitySilverfish.class'
+    exclude 'btw/modern/EntityBat.class'
+    exclude 'btw/modern/EntitySquid.class'
+    exclude 'btw/modern/EntitySnowman.class'
+    exclude 'btw/modern/EntityIronGolem.class'
+    exclude 'btw/modern/EntityAmbientCreature.class'
+    exclude 'btw/modern/EntityWaterMob.class'
+    exclude 'btw/modern/EntityGolem.class'
+    exclude 'btw/modern/EntityFlying.class'
+    exclude 'btw/modern/EntityTameable.class'
+    exclude 'btw/modern/EntityArrow.class'
+    exclude 'btw/modern/EntityBoat.class'
+    exclude 'btw/modern/EntityFX.class'
+    exclude 'btw/modern/EntityFallingSand.class'
+    exclude 'btw/modern/EntityFireball.class'
+    exclude 'btw/modern/EntityFishHook.class'
+    exclude 'btw/modern/EntityItem.class'
+    exclude 'btw/modern/EntityMinecart.class'
+    exclude 'btw/modern/EntityMinecartHopper.class'
+    exclude 'btw/modern/EntityPainting.class'
+    exclude 'btw/modern/EntityTNTPrimed.class'
+    exclude 'btw/modern/EntityThrowable.class'
+    exclude 'btw/modern/EntityWeatherEffect.class'
+    exclude 'btw/modern/EntityXPOrb.class'
+    // FCEntityLightningBolt: no frozen copy since the 2026-10-10 regeneration (the
+    // live class is net.minecraft.src.btw.entity.FCEntityLightningBolt). Modern-Common's
+    // copy is a dead stub nothing links to, kept out of the jar (and the dev view).
+    exclude 'btw/modern/FCEntityLightningBolt.class'
+    // Reconciled with the former dev-only list (removeModernCommonShadowedClasses): these collide
+    // and the FC version is authoritative, but were previously only deleted
+    // in dev — so the Modern-Common stub shipped in the jar and shadowed FC
+    // in PROD ONLY. The projectile entities, RandomPositionGenerator (AI), and
+    // EntityLookHelper (whose Modern-Common version is an empty stub while FC's
+    // EntityLiving calls new EntityLookHelper(this)). ChunkCache left this list:
+    // the frozen copy is no longer merged and Modern-Common's port ships.
+    exclude 'btw/modern/EntityEgg.class'
+    exclude 'btw/modern/EntityLargeFireball.class'
+    exclude 'btw/modern/EntityWitherSkull.class'
+    exclude 'btw/modern/RandomPositionGenerator.class'
+    exclude 'btw/modern/EntityLookHelper.class'
+    // Model rendering: real 1.5.2 classes replace stubs for correct UVs
+    // (a self-contained cluster: ModelRenderer, single-sourced, uses the 10-arg ModelBox ctor both copies share)
+    exclude 'btw/modern/ModelBox.class'
+    exclude 'btw/modern/TexturedQuad.class'
+    exclude 'btw/modern/PositionTextureVertex.class'
+}
+
+// FCMOD-INTEGRATION(1.20.1): dev-run: the dev view of Modern-Common (sourceSets.devModernCommon), the declared
+// output of exactly one task. It replaces removeModernCommonShadowedClasses, which deleted the listed stubs from
+// Modern-Common's own build output: an undeclared write into :Modern-Common:compileJava's output dir. A build that
+// noticed it re-ran that compile non-incrementally and rewrote the whole dir under a live server (NoClassDefFoundError
+// btw/modern/DataWatcher, a class never listed); a build that missed it, or a -x list that skipped the compile, left
+// :Forge:compileJava and :Modern-Common:jar reading the stripped dir ("cannot access btw.modern.EntityLiving").
+// Nothing in this project writes Modern-Common's output now. The sentinel is the dev half of the jar's
+// class-precedence guard (after the jar { } block).
+def devModernCommonDir = sourceSets.devModernCommon.output.classesDirs.files.first()
+task syncDevModernCommon(type: Sync) {
+    description = 'Copies Modern-Common output minus the shadow list (modernCommonRuntime) into the dev view'
+    with modernCommonRuntime
+    into devModernCommonDir
     doLast {
-        def base = file("${project(':Modern-Common').buildDir}/classes/java/main/btw/modern")
-        ['Entity.class', 'EntityLiving.class', 'EntityCreature.class', 'EntityMob.class',
-         'EntityAgeable.class', 'EntityAnimal.class',
-         // Concrete mob/animal classes — see remapFcCode for the rationale
-         // (vanilla 1.5.2 EntityAgeable's m_fAdultWidth=-1 sentinel must be
-         // overwritten by setSize from the subclass constructor).
-         'EntityPig.class', 'EntityCow.class', 'EntitySheep.class',
-         'EntityChicken.class', 'EntityWolf.class', 'EntityOcelot.class',
-         'EntityMooshroom.class', 'EntityVillager.class',
-         'EntityZombie.class', 'EntitySkeleton.class', 'EntityCreeper.class',
-         'EntityEnderman.class', 'EntitySpider.class', 'EntityCaveSpider.class',
-         'EntityWitch.class', 'EntityPigZombie.class', 'EntityWither.class',
-         'EntitySlime.class', 'EntityMagmaCube.class', 'EntityGhast.class',
-         'EntityBlaze.class', 'EntitySilverfish.class',
-         'EntityBat.class', 'EntitySquid.class',
-         'EntitySnowman.class', 'EntityIronGolem.class',
-         'EntityAmbientCreature.class', 'EntityWaterMob.class',
-         'EntityGolem.class', 'EntityFlying.class', 'EntityTameable.class',
-         'EntityArrow.class', 'EntityBoat.class', 'EntityFX.class', 'EntityFallingSand.class',
-         'EntityFireball.class', 'EntityFishHook.class', 'EntityItem.class', 'EntityMinecart.class',
-         'EntityMinecartHopper.class',
-         'EntityPainting.class', 'EntityTNTPrimed.class', 'EntityThrowable.class',
-         'EntityWeatherEffect.class', 'EntityXPOrb.class',
-         // FCEntityLightningBolt: no frozen copy since the 2026-10-10 regeneration; the
-         // Modern-Common stub is dead (see the matching jar exclude) and is deleted here.
-         'FCEntityLightningBolt.class',
-         // Movement / AI / pathfinding helpers — these are in the remap
-         // include list AND excluded from the dist jar, but Modern-Common's
-         // stubs are still on the dev classpath, where Modern-Common wins
-         // collisions (reverse search order), so we delete the stubs here too.
-         'PathNavigate.class', 'PathEntity.class', 'PathPoint.class',
-         'PathFinder.class', 'RandomPositionGenerator.class',
-         'EntityMoveHelper.class', 'EntityJumpHelper.class',
-         'EntityLookHelper.class',
-         // Frozen EntityTameable needs the real EntityAISit(EntityTameable) ctor
-         'EntityAISit.class',
-         // Projectile classes already remapped but stub still on dev classpath
-         // (EntityLightningBolt removed: Modern-Common has no such class — the
-         // entry was a no-op; btw.modern.EntityLightningBolt comes only from fc)
-         'EntityLargeFireball.class', 'EntityWitherSkull.class',
-         'EntityEgg.class',
-         // (ChunkCache is no longer listed: there is no frozen copy, Modern-Common's
-         // build-range port is the only one, in dev and in the jar.)
-         // Model rendering: the dist jar already excludes these so FC's real
-         // 1.5.2 versions win (correct UVs). Delete the Modern-Common stubs in
-         // dev too so dev matches the jar's class binding. ModelBox/TexturedQuad/
-         // PositionTextureVertex are a self-contained cluster; ModelRenderer (the
-         // only boundary, single-sourced) uses the 10-arg ModelBox ctor that both
-         // versions share — the jar already binds MC ModelRenderer to FC ModelBox.
-         'ModelBox.class', 'TexturedQuad.class', 'PositionTextureVertex.class'].each { name ->
-            def f = file("$base/$name")
-            if (f.exists()) {
-                logger.lifecycle("Removing Modern-Common shadowed class: $name")
-                f.delete()
-            }
+        boolean chestPresent = new File(devModernCommonDir, 'btw/modern/ContainerChest.class').isFile()
+        boolean entityPresent = new File(devModernCommonDir, 'btw/modern/Entity.class').exists()
+        if (!chestPresent || entityPresent) {
+            throw new GradleException("Dev class precedence drifted in ${devModernCommonDir}: ContainerChest.class " +
+                "${chestPresent ? 'present' : 'MISSING'}, Entity.class ${entityPresent ? 'PRESENT' : 'absent'}. The dev " +
+                "view must be Modern-Common minus the shadow list (modernCommonRuntime), exactly as the jar binds it.")
+        }
+        logger.lifecycle("Dev class precedence OK (ContainerChest = Modern-Common, Entity = fc)")
+    }
+}
+// ForgeGradle makes every run task and prepareRun*Compile depend on the classes task of each mods{} source
+// (RunConfigGenerator.java:223-230), so this puts the sync in front of every dev run; the prepareRun*/run*
+// wiring after the ASM passes also covers prepareRun*, which IntelliJ runs before launch.
+tasks.named(sourceSets.devModernCommon.classesTaskName).configure {
+    dependsOn syncDevModernCommon
+}
+
+// FCMOD-INTEGRATION(1.20.1): dev-run: mods{} order guard, the configuration-time half of the dev class-precedence
+// check. Every run must list sourceSets.fc and, after it, sourceSets.devModernCommon (reverse search order: the
+// later source wins), and never Modern-Common's own main output, which holds every stub and would beat fc on the
+// shadow-listed classes too.
+afterEvaluate {
+    def modernCommonMain = project(':Modern-Common').sourceSets.main
+    minecraft.runs.each { runConfig ->
+        List modSources = runConfig.mods.collectMany { it.sources }
+        int fcIndex = modSources.indexOf(sourceSets.fc)
+        int devIndex = modSources.indexOf(sourceSets.devModernCommon)
+        if (modSources.contains(modernCommonMain) || fcIndex < 0 || devIndex < fcIndex) {
+            throw new GradleException("Dev class precedence: run '${runConfig.name}' lists mod sources " +
+                "${modSources*.name}. It must list sourceSets.fc, then sourceSets.devModernCommon, and never " +
+                "project(':Modern-Common').sourceSets.main (see the server run's mods{} comment).")
         }
     }
 }
@@ -836,11 +940,11 @@ task removeModernCommonShadowedClasses {
 //
 // The fix is to promote all Entity fields and methods to `public` via
 // ASM, so the protected-access verifier check doesn't apply. This runs
-// AFTER extractFcClasses so it operates on the remapped btw/modern/Entity.class.
+// inside extractFcClasses, after its Sync and the other three passes, so it
+// operates on the remapped btw/modern/Entity.class (wiring after
+// extendFcTreeBuildRange below).
 // ------------------------------------------------------------------
-task openUpEntityAccess {
-    dependsOn extractFcClasses
-    doLast {
+def openUpEntityAccess = {
         ['Entity.class', 'EntityLiving.class', 'EntityCreature.class', 'EntityMob.class',
          'EntityAgeable.class', 'EntityAnimal.class',
          // Concrete mob/animal classes — see remapFcCode for the rationale
@@ -904,7 +1008,6 @@ task openUpEntityAccess {
             classFile.bytes = writer.toByteArray()
             logger.lifecycle("Patched ${classFile.name}: all fields/methods promoted to public")
         }
-    }
 }
 
 // ------------------------------------------------------------------
@@ -940,9 +1043,7 @@ task openUpEntityAccess {
 // overrides (dead code). The LIVE net.minecraft.src.btw.entity Client
 // variants have the same narrow overrides; pass (c) widens those.
 // ------------------------------------------------------------------
-task widenFcHookDescriptors {
-    dependsOn extractFcClasses
-    doLast {
+def widenFcHookDescriptors = {
         def hookNames = ['OnKickedByCow', 'OnFlungBySquidTentacle',
                          'OnStruckByLightning', 'OnHeadCrabbedBySquid'] as Set
         def narrowDesc = ~/\(Lbtw\/modern\/FCEntity[^;]*;\)V/
@@ -1118,9 +1219,7 @@ task widenFcHookDescriptors {
                 logger.lifecycle("Rewrote narrow FC hook call site(s) in ${f.name}")
             }
         }
-    }
 }
-openUpEntityAccess.dependsOn widenFcHookDescriptors
 
 // ------------------------------------------------------------------
 // ASM bytecode patch #3: let the frozen 1.5.2 pathfinder work below y=0.
@@ -1155,10 +1254,7 @@ openUpEntityAccess.dependsOn widenFcHookDescriptors
 // alone. Any other bytecode shape fails the build instead of silently shipping the 1.5.2
 // bounds.
 // ------------------------------------------------------------------
-task extendFcPathingBuildRange {
-    dependsOn extractFcClasses
-    mustRunAfter widenFcHookDescriptors
-    doLast {
+def extendFcPathingBuildRange = {
         def fcModern = file("${buildDir}/classes/java/fc/btw/modern")
         String minHeightName = 'getFcMinBuildHeight'
         String safePointDesc = '(Lbtw/modern/Entity;IIILbtw/modern/PathPoint;I)Lbtw/modern/PathPoint;'
@@ -1319,9 +1415,7 @@ task extendFcPathingBuildRange {
                     "${expected} (all y casts, see the comment above). Re-check the frozen class against javap.")
             }
         }
-    }
 }
-openUpEntityAccess.dependsOn extendFcPathingBuildRange
 
 // ------------------------------------------------------------------
 // FC tree generators: 1.5.2 build range -> the level's build range.
@@ -1342,10 +1436,7 @@ openUpEntityAccess.dependsOn extendFcPathingBuildRange
 // existing frames stay valid with ClassWriter(0); max stack grows by at most 1. Idempotent
 // (an already-patched method is detected); any other bytecode shape fails the build.
 // ------------------------------------------------------------------
-task extendFcTreeBuildRange {
-    dependsOn extractFcClasses
-    mustRunAfter widenFcHookDescriptors
-    doLast {
+def extendFcTreeBuildRange = {
         def fcUtil = file("${buildDir}/classes/java/fc/net/minecraft/src/btw/util")
         String gen5 = '(Lbtw/modern/World;Ljava/util/Random;III)Z'
         // class -> [method, desc, world slot, j slot, expected 256 tops]
@@ -1479,30 +1570,29 @@ task extendFcTreeBuildRange {
                 classFile.bytes = writer.toByteArray()
             }
         }
-    }
 }
-openUpEntityAccess.dependsOn extendFcTreeBuildRange
 
-tasks.matching { it.name.startsWith('prepareRun') || it.name.startsWith('run') || it.name == 'classes' || it.name == 'jar' }.configureEach {
-    dependsOn openUpEntityAccess
-}
-// IMPORTANT: removeModernCommonShadowedClasses is DESTRUCTIVE — it deletes
-// .class files from Modern-Common's *shared* compile output. It must be
-// wired ONLY to the dev-run tasks (prepareRun*/run*), where securejarhandler
-// resolves duplicate btw.modern.* classes Modern-Common-first (reverse
-// mods{} source order) and the physical deletion is the only way to make the
-// FC remapped versions win.
-//
-// It must NOT be wired to `classes` or `jar`: the `jar` task already
-// excludes every shadowed class from Modern-Common's output AND pulls the
-// FC versions from sourceSets.fc.output (see the jar { } block), so the
-// JAR is correct without the deletion. Wiring it to `classes`/`jar`
-// previously corrupted Modern-Common's output during the publish path —
-// a subsequent :Forge:compileJava then failed with 200+
-// "cannot access btw.modern.EntityLiving" errors because Modern-Common
-// was "up-to-date" and never regenerated the deleted stubs.
+// FCMOD-INTEGRATION(1.20.1): dev-run: build/classes/java/fc has exactly one writer, extractFcClasses. The four ASM
+// passes above (closures that keep their former task names) run as its actions, after the Sync, in the order the
+// former tasks executed: widen, pathing, tree, then openUp (whose dependsOn chain made it last). Gradle records
+// a task's outputs after all of its actions, so the patched bytes are the recorded state, and a build with
+// unchanged inputs leaves the dir UP-TO-DATE and untouched while a dev run has it loaded. As separate tasks with
+// no declared outputs they patched a dir another task owned, on every build (openUpEntityAccess rewrote 71 loaded
+// classes each time). No other task may write build/classes/java/fc: add a new pass here, as another doLast.
+// Every consumer already depends on extractFcClasses (prepareRun*, run* and classes next to that task; the jar's
+// own dependsOn).
+extractFcClasses.doLast { widenFcHookDescriptors() }
+extractFcClasses.doLast { extendFcPathingBuildRange() }
+extractFcClasses.doLast { extendFcTreeBuildRange() }
+extractFcClasses.doLast { openUpEntityAccess() }
+
+// FCMOD-INTEGRATION(1.20.1): dev-run: every dev run loads the dev view of Modern-Common. The classes-task
+// dependsOn next to syncDevModernCommon covers the run and prepareRun*Compile tasks; this also covers
+// prepareRun*, which IntelliJ runs before launch without the classes tasks (IntellijRunGenerator.java:176-179).
+// syncDevModernCommon writes only its own dir, never Modern-Common's output, so unlike the old
+// removeModernCommonShadowedClasses it is safe on any task.
 tasks.matching { it.name.startsWith('prepareRun') || it.name.startsWith('run') }.configureEach {
-    dependsOn removeModernCommonShadowedClasses
+    dependsOn syncDevModernCommon
 }
 
 // ------------------------------------------------------------------
@@ -1538,115 +1628,19 @@ jar {
     // ---- Class precedence (MUST match dev runs) --------------------------
     // DuplicatesStrategy.EXCLUDE keeps the FIRST copy Gradle visits. Gradle 8.9
     // walks a spec's OWN sources (`from x`) before its CHILD specs
-    // (`from(x) { ... }`), and children in declaration order
-    // (DefaultCopySpec$DefaultCopySpecResolver.walk; addChild appends). Walk order:
+    // (`from(x) { ... }` and `with spec`, both appended by addChildSpec), and children
+    // in declaration order (DefaultCopySpec$DefaultCopySpecResolver.walk). Walk order:
     //   1. Forge main output (own source from the java plugin; btw/forge + resources)
-    //   2. Modern-Common child (minus the shadow list below)
+    //   2. modernCommonRuntime child (Modern-Common minus the shadow list)
     //   3. fc child (frozen 1.5.2 + relocated FC classes)
     //   4. Api child (btw/api/** excluded -> contributes nothing)
     // So for every btw.modern collision Modern-Common wins UNLESS the class is on
-    // the shadow list below. Then only the frozen fc copy exists. Dev runs use the
-    // same rule: securejarhandler searches mods{} sources in reverse declaration
-    // order and removeModernCommonShadowedClasses deletes exactly this list. Keep the
-    // two lists identical (tools/LinkAudit.java reports drift).
-    from(project(':Modern-Common').sourceSets.main.output) {
-        exclude 'btw/api/**'
-        // Let vanilla versions win for classes with MATCHING constructors
-        // and better implementations. Keep Modern-Common's versions only for
-        // classes where the bridge uses a different constructor signature
-        // (e.g. EntitySenses no-arg; vanilla needs an entity arg). NOTE:
-        // EntityLookHelper is NOT kept here — the runtime EntityLiving is FC's
-        // (Modern-Common's EntityLiving is excluded below), and it calls
-        // new EntityLookHelper(this); Modern-Common's look helper is an empty
-        // stub, so FC's real one must win.
-        exclude 'btw/modern/PathNavigate.class'
-        exclude 'btw/modern/PathEntity.class'
-        exclude 'btw/modern/PathPoint.class'
-        exclude 'btw/modern/PathFinder.class'
-        exclude 'btw/modern/EntityMoveHelper.class'
-        exclude 'btw/modern/EntityJumpHelper.class'
-        // Frozen EntityTameable's field initializer news EntityAISit(EntityTameable);
-        // the Modern-Common shim only has an (EntityLiving) ctor, so every FC wolf
-        // construction threw NoSuchMethodError (silently caught — wolves were inert
-        // husks). The real 1.5.2 EntityAISit is already in the remap via EntityAI*.
-        exclude 'btw/modern/EntityAISit.class'
-        // FC's vanilla 1.5.2 Entity/EntityLiving own collision and
-        // mob state. Exclude Modern-Common's stubs so FC's versions
-        // win in the JAR. Access-level issues are resolved by ASM
-        // promotion in openUpEntityAccess. AxisAlignedBB stays
-        // Modern-Common because vanilla's constructor is protected.
-        exclude 'btw/modern/Entity.class'
-        exclude 'btw/modern/EntityLiving.class'
-        exclude 'btw/modern/EntityCreature.class'
-        exclude 'btw/modern/EntityMob.class'
-        exclude 'btw/modern/EntityAgeable.class'
-        exclude 'btw/modern/EntityAnimal.class'
-        exclude 'btw/modern/EntityPig.class'
-        exclude 'btw/modern/EntityCow.class'
-        exclude 'btw/modern/EntitySheep.class'
-        exclude 'btw/modern/EntityChicken.class'
-        exclude 'btw/modern/EntityWolf.class'
-        exclude 'btw/modern/EntityOcelot.class'
-        exclude 'btw/modern/EntityMooshroom.class'
-        exclude 'btw/modern/EntityVillager.class'
-        exclude 'btw/modern/EntityZombie.class'
-        exclude 'btw/modern/EntitySkeleton.class'
-        exclude 'btw/modern/EntityCreeper.class'
-        exclude 'btw/modern/EntityEnderman.class'
-        exclude 'btw/modern/EntitySpider.class'
-        exclude 'btw/modern/EntityCaveSpider.class'
-        exclude 'btw/modern/EntityWitch.class'
-        exclude 'btw/modern/EntityPigZombie.class'
-        exclude 'btw/modern/EntityWither.class'
-        exclude 'btw/modern/EntitySlime.class'
-        exclude 'btw/modern/EntityMagmaCube.class'
-        exclude 'btw/modern/EntityGhast.class'
-        exclude 'btw/modern/EntityBlaze.class'
-        exclude 'btw/modern/EntitySilverfish.class'
-        exclude 'btw/modern/EntityBat.class'
-        exclude 'btw/modern/EntitySquid.class'
-        exclude 'btw/modern/EntitySnowman.class'
-        exclude 'btw/modern/EntityIronGolem.class'
-        exclude 'btw/modern/EntityAmbientCreature.class'
-        exclude 'btw/modern/EntityWaterMob.class'
-        exclude 'btw/modern/EntityGolem.class'
-        exclude 'btw/modern/EntityFlying.class'
-        exclude 'btw/modern/EntityTameable.class'
-        exclude 'btw/modern/EntityArrow.class'
-        exclude 'btw/modern/EntityBoat.class'
-        exclude 'btw/modern/EntityFX.class'
-        exclude 'btw/modern/EntityFallingSand.class'
-        exclude 'btw/modern/EntityFireball.class'
-        exclude 'btw/modern/EntityFishHook.class'
-        exclude 'btw/modern/EntityItem.class'
-        exclude 'btw/modern/EntityMinecart.class'
-        exclude 'btw/modern/EntityMinecartHopper.class'
-        exclude 'btw/modern/EntityPainting.class'
-        exclude 'btw/modern/EntityTNTPrimed.class'
-        exclude 'btw/modern/EntityThrowable.class'
-        exclude 'btw/modern/EntityWeatherEffect.class'
-        exclude 'btw/modern/EntityXPOrb.class'
-        // FCEntityLightningBolt: no frozen copy since the 2026-10-10 regeneration (the
-        // live class is net.minecraft.src.btw.entity.FCEntityLightningBolt). Modern-Common's
-        // copy is a dead stub nothing links to, kept out of the jar (and deleted in dev).
-        exclude 'btw/modern/FCEntityLightningBolt.class'
-        // Reconcile with removeModernCommonShadowedClasses (dev): these collide
-        // and the FC version is authoritative, but were previously only deleted
-        // in dev — so the Modern-Common stub shipped in the jar and shadowed FC
-        // in PROD ONLY. The projectile entities, RandomPositionGenerator (AI), and
-        // EntityLookHelper (whose Modern-Common version is an empty stub while FC's
-        // EntityLiving calls new EntityLookHelper(this)). ChunkCache left this list:
-        // the frozen copy is no longer merged and Modern-Common's port ships.
-        exclude 'btw/modern/EntityEgg.class'
-        exclude 'btw/modern/EntityLargeFireball.class'
-        exclude 'btw/modern/EntityWitherSkull.class'
-        exclude 'btw/modern/RandomPositionGenerator.class'
-        exclude 'btw/modern/EntityLookHelper.class'
-        // Model rendering: real 1.5.2 classes replace stubs for correct UVs
-        exclude 'btw/modern/ModelBox.class'
-        exclude 'btw/modern/TexturedQuad.class'
-        exclude 'btw/modern/PositionTextureVertex.class'
-    }
+    // the shadow list (modernCommonRuntime's excludes). Then only the frozen fc copy
+    // exists. Dev runs use the same rule: securejarhandler searches mods{} sources in
+    // reverse declaration order, and their last source, devModernCommon, is
+    // syncDevModernCommon's copy of this same copySpec, so the two cannot drift
+    // (tools/LinkAudit.java checks the dev copy and the jar).
+    with modernCommonRuntime
 
     // FC classes: a CHILD spec declared AFTER Modern-Common, so it loses every
     // collision the shadow list does not hand to it. NEVER collapse this to
@@ -1694,7 +1688,8 @@ tasks.named('jar').configure {
 //  - Entity: shadow-listed, so the jar copy must be the frozen fc one.
 // If you ever shadow-list ContainerChest, pick another non-listed collision.
 // Runs in jar.doLast, before ForgeGradle's reobfJar rewrites the archive; the fc
-// Entity.class compared against is already ASM-patched (jar dependsOn openUpEntityAccess).
+// Entity.class compared against is already ASM-patched (jar dependsOn extractFcClasses, whose actions include
+// the ASM passes). syncDevModernCommon's doLast checks the same two sentinels in the dev view.
 def precedenceMcClasses = project(':Modern-Common').sourceSets.main.output.classesDirs.files.first()
 def precedenceFcClasses = sourceSets.fc.output.classesDirs.files.first()
 tasks.named('jar').configure {
@@ -1711,7 +1706,7 @@ tasks.named('jar').configure {
                 if (inJar == null || !src.isFile() || !Arrays.equals(inJar, src.bytes)) {
                     throw new GradleException("Jar class precedence drifted: ${path} in ${jarFile.name} is not the " +
                         "copy from ${src}. Modern-Common must win every btw.modern collision except the shadow " +
-                        "list (jar excludes == removeModernCommonShadowedClasses), exactly as in dev runs.")
+                        "list (modernCommonRuntime, shared with syncDevModernCommon), exactly as in dev runs.")
                 }
             }
         }
@@ -2357,3 +2352,7 @@ processResources {
         }
     }
 }
+
+// Modern woods (acacia, dark oak, mangrove, cherry as FC wood types 5-8): work-stump side textures derived from FC's own
+// art and the 1.20.1 logs, checked in, rewritten only when the bytes differ. Owned by the modern-woods workstream.
+apply from: 'gradle/modern-woods.gradle'

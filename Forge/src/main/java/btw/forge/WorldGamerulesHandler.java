@@ -16,8 +16,12 @@ import org.apache.logging.log4j.Logger;
  * pillager patrols, wandering trader spawning, warden spawning, and
  * inventory retention on death.</p>
  *
- * <p><b>Conflict with FC:</b> FC assumes no phantoms (FC's sleep mechanic
- * already penalises sleep avoidance), no pillager patrols or wandering
+ * <p><b>Conflict with FC:</b> FC assumes no phantoms: 4.B has no sleep at
+ * all (FCBlockBed.onBlockActivated only prints a line, Client
+ * FCBlockBed.java:32-40), so going without sleep must cost nothing. Beds
+ * now sleep (ruling 3, beds_sleep_no_spawn: the 1.20.1 night skip, no bed
+ * spawn), but doInsomnia stays false, so skipping sleep stays free as in
+ * 4.B. FC also assumes no pillager patrols or wandering
  * traders (they drop loot / sell items that shortcut FC's progression),
  * no warden (irrelevant to FC design), and no keepInventory (FC's death
  * penalty is load-bearing).</p>

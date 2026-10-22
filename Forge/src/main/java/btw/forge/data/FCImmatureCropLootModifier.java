@@ -24,7 +24,7 @@ import java.util.function.Supplier;
 /**
  * Global Loot Modifier: an unripe crop on BTW soil drops nothing, as 4.B's crops do (1.5.2 BlockCrops
  * .dropBlockAsItemWithChance and FCBlockCrops drop produce and seeds only when fully grown: Modern-Common
- * BlockCrops.java, Server FCBlockCrops.java:52-61), whether it is broken or popped (INTEGRATIONS #026; maintainer
+ * BlockCrops.java, Server FCBlockCrops.java:55-64), whether it is broken or popped (INTEGRATIONS #026; maintainer
  * ruling: each post-1.5.2 plant takes its nearest FC relative's rules, and FC's carrot drops nothing while unripe).
  *
  * <p>Applies to every CropBlock with no FC identity id (FC's own crops drop through FC): modded crops, and the twin
@@ -37,8 +37,12 @@ import java.util.function.Supplier;
  * on grass, a plant on podzol), are unchanged.</p>
  *
  * <p>Registered as {@code betterthanwolves:immature_crop} and shipped as one modifier with no conditions
- * ({@code data/betterthanwolves/loot_modifiers/immature_crops_drop_nothing.json}, emitted by {@link FCLootOverrides}),
- * after {@code removed_content}.</p>
+ * ({@code data/betterthanwolves/loot_modifiers/immature_crops_drop_nothing.json}, emitted by {@link FCLootOverrides}).
+ * Forge applies the modifiers in the order of {@code global_loot_modifiers.json}, which GlobalLootModifierProvider
+ * writes in hash order (its HashMap, GlobalLootModifierProvider.java:40, 73), so no place relative to
+ * {@code removed_content} or {@code leaves_drop_like_fc} is promised (the generated list puts this one before
+ * {@code removed_content}). None is needed: this modifier acts only on a CropBlock's own loot, and neither of the
+ * others adds or removes crop drops.</p>
  */
 // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: unripe crops on BTW soil drop nothing, the 4.B crop rule, for modded and twin crops alike
 public class FCImmatureCropLootModifier extends LootModifier {

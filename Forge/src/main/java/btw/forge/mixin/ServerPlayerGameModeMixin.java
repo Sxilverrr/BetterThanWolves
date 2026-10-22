@@ -1,13 +1,17 @@
 package btw.forge.mixin;
 
 import btw.forge.BoneMealPolicy;
+import btw.forge.ContainerBridge;
 import btw.forge.InventoryBridge;
 import btw.forge.ItemStackHelper;
 import btw.forge.LegacyProxyItem;
 import btw.forge.PlayerBridge;
+import btw.forge.ProxyBlock;
+import btw.forge.ProxyBlockEntity;
 import btw.forge.ProxyItem;
 import btw.forge.ProxyRegistry;
 import btw.forge.WorldBridge;
+import net.minecraft.advancements.CriteriaTriggers;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.server.level.ServerLevel;
@@ -15,10 +19,13 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.ServerPlayerGameMode;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.ForgeHooks;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -35,8 +42,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * protection mods cancel and LSO thirst / Cold Sweat listen to; that call also pre-cancels for spectators, for
  * adventure players without a CanDestroy tag and for a held item whose {@code canAttackBlock} is false (a sword in
  * creative). It then honours {@code IForgeItem.onBlockStartBreak} for the held item. The same class carries two
- * more hook groups: right-click on a block ({@code useItemOn} HEAD, FC {@code onItemUse}; RETURN, the placed
- * block's facing) and right-click in air ({@code useItem}, FC {@code onItemRightClick}).</p>
+ * more hook groups: right-click on a block ({@code useItemOn}: the click frame at HEAD, FC {@code onItemUse} at
+ * 1.20.1's item step, FC's own placement finished at RETURN; seams fc_item_use_order and placement_validity, below)
+ * and right-click in air ({@code useItem}, FC {@code onItemRightClick}).</p>
  *
  * <p><b>Conflict with FC:</b> FC's harvest pipeline ({@code ItemInWorldManager.tryHarvestBlock}: FC
  * {@code canHarvestBlock}, then {@code CanConvertBlock}/{@code ConvertBlock} (log to chewed log, bark), then
@@ -50,7 +58,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *
  * <p><b>Integration pattern:</b> D (FC-extend): the FC harvest keeps its HEAD cancel and runs inside Forge's
  * contract, posting the BreakEvent and honouring {@code onBlockStartBreak} in vanilla's order, then hands FC the
- * player's game mode so FC's own 1.5.2 creative branch decides creative breaks.</p>
+ * player's game mode so FC's own 1.5.2 creative branch decides creative breaks. Exception (vanilla_pair_drops,
+ * maintainer ruling 2026-10-20): a bed or door, the blocks of {@link btw.forge.VanillaPairDrops#isRuled}, keeps
+ * 1.20.1's {@code destroyBlock} (its BreakEvent, {@code playerWillDestroy}, loot and partner pop); only FC's animal
+ * panic runs inside it ({@code btw$afterPairRemoved}).</p>
  *
  * <p><b>Rebalance:</b> none; 4.B parity plus 1.20.1's break rules. A cancelled BreakEvent (or an
  * {@code onBlockStartBreak} that claims the break) leaves the FC block in place and returns false, so
@@ -65,13 +76,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * random stream is unchanged.</p>
  *
  * <p><b>Injection strategy:</b> {@link Inject} at HEAD of {@code destroyBlock(BlockPos)}, cancellable, as before.
- * For a block with an FC identity it posts the BreakEvent and checks {@code onBlockStartBreak} first, then runs FC's
- * {@code tryHarvestBlock}. {@code GameMasterBlock} is unreachable (legacy 137, the command block, has no FC block)
- * and {@code blockActionRestricted} (Player.java:186-197) is the condition the BreakEvent pre-cancel already
- * applies, so neither is repeated. Blocks without an FC identity (post-1.5.2 blocks, twin plants, the bark and
- * stripped log forms, Dynamic Trees blocks) keep vanilla {@code destroyBlock}, which posts the event itself
- * (:229), so the event never fires twice. {@code useItemOn} and {@code useItem} are HEAD injects and
- * {@code btw$fixBlockFacing} a RETURN inject, unchanged.</p>
+ * For any other block with an FC identity it posts the BreakEvent and checks {@code onBlockStartBreak} first, then
+ * runs FC's {@code tryHarvestBlock}. {@code GameMasterBlock} is unreachable (legacy 137, the command block, has no
+ * FC block) and {@code blockActionRestricted} (Player.java:186-197) is the condition the BreakEvent pre-cancel
+ * already applies, so neither is repeated. Blocks without an FC identity (post-1.5.2 blocks, twin plants, the bark
+ * and stripped log forms, Dynamic Trees blocks) and the ruled beds and doors (vanilla_pair_drops) keep vanilla
+ * {@code destroyBlock}, which posts the event itself (:229), so the event never fires twice. For those beds and
+ * doors {@code btw$afterPairRemoved}, a RETURN inject into Forge's private {@code removeBlock(BlockPos, boolean)}
+ * (ServerPlayerGameMode.java:268-274; not obfuscated, hence {@code remap = false}), reads the removed state from
+ * its local and runs FC's animal panic after the removal and before the drops, as FC's own harvest does. It keeps
+ * no field, so a {@code destroyBlock} nested in a BreakEvent handler (vein miners) cannot clear another call's
+ * record. The {@code useItemOn} and {@code useItem} injects are separate seams (fc_item_use_order and the
+ * right-click in air, below) that this one does not touch.</p>
  *
  * <p><b>Alternative considered and rejected:</b> running the FC harvest after Forge's event, at a later point of
  * vanilla's {@code destroyBlock}: by then vanilla has removed the block and spawned its drops, and FC's
@@ -86,11 +102,27 @@ public abstract class ServerPlayerGameModeMixin {
     @Shadow protected ServerLevel level;
     @Shadow protected ServerPlayer player;
 
+    // FCMOD-INTEGRATION(1.20.1): vanilla_pair_drops: FC's animals hear a player's removal of a bed or door that 1.20.1 breaks, as in FC's own harvest (Modern-Common ItemInWorldManager.java:142-146): after the removal, before the drops
+    // Forge's private removeBlock (ServerPlayerGameMode.java:268-274) has one return; state and removed are its locals
+    // there, read per call (no field: a destroyBlock nested in a BreakEvent handler cannot clear this call's record).
+    // Not obfuscated, so remap = false. Only ruled states reach it with an FC identity (btw$destroyBlock cancels the rest).
+    @Inject(method = "removeBlock", at = @At("RETURN"), remap = false,
+            locals = org.spongepowered.asm.mixin.injection.callback.LocalCapture.CAPTURE_FAILHARD)
+    private void btw$afterPairRemoved(BlockPos pos, boolean canHarvest, CallbackInfoReturnable<Boolean> cir,
+                                      BlockState removedState, boolean removed) {
+        if (removed && btw.forge.VanillaPairDrops.isRuled(removedState)) {
+            btw.forge.VanillaPairDrops.afterPlayerBreak(player, level, pos, removedState);
+        }
+    }
+
     @Inject(method = "destroyBlock", at = @At("HEAD"), cancellable = true)
     private void btw$destroyBlock(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
         BlockState state = level.getBlockState(pos);
         btw.modern.Block fcBlock = ProxyRegistry.getFcBlock(state.getBlock());
         if (fcBlock == null) return; // Not an FC block — let vanilla handle it
+        // FCMOD-INTEGRATION(1.20.1): vanilla_pair_drops: a bed or door (one item, two cells) keeps 1.20.1's destroyBlock: its BreakEvent, playerWillDestroy (creative partner removal), loot and partner pop (maintainer ruling 2026-10-20; triage CF2-DR1, CF2-DR6)
+        // No cancel: vanilla posts the BreakEvent itself (:229); btw$afterPairRemoved runs FC's animal panic.
+        if (btw.forge.VanillaPairDrops.isRuled(state)) return;
 
         // FCMOD-INTEGRATION(1.20.1): fc_harvest_events: Forge's break contract in vanilla's order (destroyBlock:229-242) before the FC pipeline, so claim, protection and thirst handlers see FC harvests
         // onBlockBreakEvent pre-cancels spectators, adventure without CanDestroy and canAttackBlock=false (a creative
@@ -156,137 +188,235 @@ public abstract class ServerPlayerGameModeMixin {
     }
 
     // ================================================================
-    // useItemOn → FC Item.onItemUse (right-click on block)
-    // Catches vanilla items with FC replacements when used on non-ProxyBlocks.
-    // ProxyBlock.use() handles this for ProxyBlocks, but vanilla blocks don't
-    // trigger ProxyBlock.use().
+    // useItemOn: one right-click on a block (fc_item_use_order)
     // ================================================================
 
-    @Inject(method = "useItemOn", at = @At("HEAD"), cancellable = true)
-    private void btw$useItemOn(ServerPlayer serverPlayer, Level world,
-                                ItemStack mcStack, InteractionHand hand,
-                                net.minecraft.world.phys.BlockHitResult hitResult,
-                                CallbackInfoReturnable<InteractionResult> cir) {
-        if (mcStack.isEmpty() || !(world instanceof net.minecraft.server.level.ServerLevel sl)) return;
-
-        // The FC player exposes only the main hand (InventoryBridge.getCurrentItem; 1.5.2 has no off
-        // hand). The 1.20.1 client retries with the OFF hand whenever the main hand did not consume
-        // (Minecraft.startUseItem tries each hand in turn); running the off-hand item's FC onItemUse
-        // there acted on, and wrote back, the main-hand snapshot (an off-hand FC seed planted by
-        // decrementing the main-hand tool's stack). The off hand stays vanilla.
-        if (hand != InteractionHand.MAIN_HAND) return;
-
-        // BlockItems: let MC handle placement, we fix facing in the TAIL injection
-        if (mcStack.getItem() instanceof net.minecraft.world.item.BlockItem) return;
-
-        net.minecraft.core.BlockPos pos = hitResult.getBlockPos();
-
-        // Look up FC item — ProxyItems (FC non-block items like seeds, tools)
-        // and vanilla items with FC replacements (hoe, shears, etc.)
-        btw.modern.Item fcItem = null;
-        if (mcStack.getItem() instanceof btw.forge.ProxyItem) {
-            int proxyLegacyId = ProxyRegistry.getItemId(mcStack.getItem());
-            if (proxyLegacyId > 0 && proxyLegacyId < btw.modern.Item.itemsList.length) {
-                fcItem = btw.modern.Item.itemsList[proxyLegacyId];
-            }
-        } else {
-            int legacyId = ProxyRegistry.getItemId(mcStack.getItem());
-            if (legacyId > 0 && legacyId < btw.modern.Item.itemsList.length) {
-                fcItem = btw.modern.Item.itemsList[legacyId];
-            }
-        }
-        if (fcItem == null) return;
-
-        PlayerBridge fcPlayer = PlayerBridge.getOrCreate(serverPlayer);
-        fcPlayer.syncFromReal();
-        btw.modern.ItemStack fcStack = fcPlayer.getCurrentEquippedItem();
-        if (fcStack == null) return;
-
-        // FCMOD-INTEGRATION(1.20.1): bone_meal: 4.B activates the block before the held bone meal, so bone meal must not pre-empt that order here
-        // FC dye 15 is bone meal (FCItemDye.onItemUse acts on nothing else, Client FCItemDye.java:34-47). 1.5.2 runs
-        // the clicked block's onBlockActivated before the held item unless the player sneaks (vanilla/server
-        // ItemInWorldManager.java:376-407), so bone meal on a weedy plant pulls the weeds and is not used
-        // (FCBlockPlants.onBlockActivated, Client FCBlockPlants.java:84-102). Pre-empting here ran FCItemDye first,
-        // and before Forge's RightClickBlock event and the spectator check (ServerPlayerGameMode.java:323-332). Left to
-        // 1.20.1, the same order holds: blockstate.use runs FC activation, then FCItemDye (BlockBehaviorMixin.btw$use /
-        // ProxyBlock.use Stage 1 and 2), and BoneMealItem.useOn applies FC fertilizer for a sneaking player and any
-        // target without Stage 2 (BoneMealItemMixin, BoneMealPolicy.onBoneMealUseOn). 1.20.1 white dye reads as the same
-        // FC stack (LegacyVariants.java:159) and is not fertilizer, so it never runs FCItemDye here either.
-        if (BoneMealPolicy.isFcBoneMeal(fcItem, fcStack)) return;
-
-        int side = hitResult.getDirection().get3DDataValue();
-        net.minecraft.world.phys.Vec3 hitLoc = hitResult.getLocation();
-        float hitX = (float)(hitLoc.x - pos.getX());
-        float hitY = (float)(hitLoc.y - pos.getY());
-        float hitZ = (float)(hitLoc.z - pos.getZ());
-
-        // 1.5.2 ItemInWorldManager.activateBlockOrUseItem (vanilla/server ItemInWorldManager.java:394-402)
-        // restores a creative player's held stack (damage and size) around tryPlaceItemIntoWorld. 1.20.1
-        // restores only the count, around ItemStack.useOn (ServerPlayerGameMode.java:353-356), which this
-        // HEAD inject pre-empts by returning CONSUME -- so FC seeds, hoes and flint and steel used in
-        // creative were decremented/damaged and the write-back below committed it. Same restore as
-        // ProxyBlock.tryPlaceHeldItem.
-        boolean creative = serverPlayer.isCreative();
-        int damageBefore = fcStack.getItemDamage();
-        int sizeBefore = fcStack.stackSize;
-        boolean result = false;
-        try {
-            result = fcItem.onItemUse(fcStack, fcPlayer,
-                    WorldBridge.getOrCreate(sl),
-                    pos.getX(), pos.getY(), pos.getZ(), side, hitX, hitY, hitZ);
-        } catch (Throwable t) {
-            // Packet handler: PacketUtils rethrows, which crashes the integrated server. No return:
-            // FC may already have edited the world and the held stack, so the write-back still runs.
-            ProxyItem.logFcFailureOnce("onItemUse", fcItem.itemID, t);
-        }
-        if (creative) {
-            fcStack.setItemDamage(damageBefore);
-            fcStack.stackSize = sizeBefore;
-        }
-
-        if (fcPlayer.inventory instanceof InventoryBridge invBridge) {
-            invBridge.writeBackCurrentItem(fcStack);
-        }
-
-        if (result) {
-            cir.setReturnValue(InteractionResult.CONSUME);
-        }
+    /**
+     * FCMOD-INTEGRATION(1.20.1): fc_item_use_order
+     *
+     * <p><b>Feature:</b> 1.20.1 / Forge's order and gates for a right-click on a block,
+     * {@code ServerPlayerGameMode.useItemOn} (ServerPlayerGameMode.java:317-370): the RightClickBlock event (:323; a
+     * cancel ends the click, :324), the spectator branch (:325-332), {@code onItemUseFirst} (:335-338), the sneak rule
+     * (:339-340), the clicked block's {@code use} (:343, which ends the click when it consumes, :344-347), then, unless
+     * the event denied the item (:351) or it is on cooldown (:350), the item step {@code ItemStack.useOn} (creative
+     * :355, survival :358). Apart from the off hand and the Forge gates this is 4.B's order:
+     * ItemInWorldManager.activateBlockOrUseItem activates the block unless the player sneaks with an item, and uses the
+     * held item only when the activation declined (vanilla/server ItemInWorldManager.java:376-407).</p>
+     *
+     * <p><b>Conflict with FC:</b> FC's {@code onItemUse} ran at HEAD of useItemOn, ahead of all of it, so that vanilla
+     * items with FC replacements would also reach blocks without Stage 2. Whenever the FC item acted it consumed the
+     * click before any activation, FC or 1.20.1: flint and steel on a lever or on weedy FC crops, an axe on a note
+     * block, any item on a millstone. It also ran before the event (claim mods' cancel and DENY did not stop it) and the
+     * spectator check, it ran a second time after Stage 2 declined on the same block, it wrote back only the selected
+     * slot, and neither dispatch point awarded 4.B's item-used stat (vanilla/server ItemStack.java:127-130).</p>
+     *
+     * <p><b>Integration pattern:</b> D (FC-extend): FC's item use runs where 1.20.1 calls the held item, and nowhere
+     * else. One click runs at most one FC block activation and at most one FC item use, at whichever comes first of
+     * Stage 2 (ProxyBlock.use / BlockBehaviorMixin.btw$use, inside block use) and the item step (here), main hand only,
+     * through the single FC {@code onItemUse} point {@code ProxyBlock.tryPlaceHeldItem} (the DENY check, the per-click
+     * mark, the 1.5.2 creative restore, the stat) and one write-back routine. A click frame on the {@code PlayerBridge}
+     * carries the DENY verdict (FcItemUseOrder) and the mark between them.</p>
+     *
+     * <p><b>Rebalance:</b> none; 4.B's order. Holding a tool, flint and steel or a stick while right-clicking a lever,
+     * a door, a chest, a crop or an FC machine activates it; placing a tool into such a block takes a sneak-click, as
+     * in 4.B. Under a {@code useItem} DENY, Stage 2 no longer places FC blocks or runs FCItemDye. Residuals where
+     * 1.20.1's {@code use} of a vanilla class with an FC identity now comes before the FC item (redstone ore, an empty
+     * flower pot, signs, a tuning fork on a note block; TNT primed by flint and steel costs 1 durability, a fire charge
+     * primes it at once) are accepted pending the activation audit (INTEGRATIONS #033).</p>
+     *
+     * <p><b>Injection strategy:</b> {@link Inject} at HEAD opens the click frame and never cancels
+     * ({@code btw$beginClick}); a cancellable {@link Inject} at INVOKE {@code ItemStack.useOn} with {@code require = 2}
+     * runs FC's item use for the blocks Stage 2 did not serve, and refuses 1.20.1's BlockItem fallback where Stage 2's
+     * FC placement refused (placement_validity) ({@code btw$fcItemStep}); the RETURN inject finishes a block FC's Stage 2
+     * placed and closes the frame ({@code btw$afterUseItemOn}). The item step comes after the event,
+     * the spectator check, the sneak rule, block use, the DENY return and the cooldown, and before Forge's adventure
+     * gate and snapshot capture (ForgeHooks.onPlaceItemIntoWorld, ForgeHooks.java:573, :584), whose adventure rule FC's
+     * own {@code canPlayerEdit} already applies (Modern-Common EntityPlayer.java:292-299). Callback injectors are
+     * applied before {@code @Redirect}s, so another mod's redirect of the same call stays compatible.</p>
+     *
+     * <p><b>Alternative considered and rejected:</b> FC inside {@code ProxyItem.useOn} plus an {@code Item.useOn}
+     * mixin, which would run FC under the snapshot capture that defers {@code onPlace} (ForgeHooks.java:584, :644);
+     * keeping HEAD and re-implementing the event, spectator, sneak and block-use steps there; HEAD of
+     * {@code ItemStack.useOn}, which has no click boundary for the per-click state (deployers never call useItemOn) and
+     * changes every third-party caller; a {@code @Redirect} of {@code useOn}, which is exclusive and fails against
+     * another mod's redirect.</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: the click frame opens first, before any early return of useItemOn
+    @Inject(method = "useItemOn", at = @At("HEAD"))
+    private void btw$beginClick(ServerPlayer serverPlayer, Level world, ItemStack mcStack, InteractionHand hand,
+                                BlockHitResult hitResult, CallbackInfoReturnable<InteractionResult> cir) {
+        PlayerBridge.getOrCreate(serverPlayer).beginUseClick(serverPlayer.server.getTickCount());
     }
 
     /**
-     * Runs AFTER vanilla useItemOn completes. For BlockItem placements on
-     * integrated server, the client prediction places the block with correct
-     * facing, but the server's BlockItem.place() fails canPlace() because
-     * the block is already there. This ensures blocks always get the correct
-     * facing from the server player's look direction.
+     * 1.20.1's item step (ServerPlayerGameMode.java:350-358) for an FC item: FC {@code onItemUse} for a non-block item
+     * with an FC identity (FC items, and vanilla items FC replaces: hoes, shears, flint and steel, tools), used in the
+     * main hand on a block whose activation did not consume the click. That covers every block without Stage 2 (a
+     * 1.20.1 class that overrides {@code use}, or a block with no FC identity), every block when the player sneaks with
+     * an item (4.B: vanilla/server ItemInWorldManager.java:380), and a block whose {@code use} declined without running
+     * Stage 2 (Dynamic Trees' branches return a non-consuming FAIL, DT BranchBlock.java:196-203). FC true ends the
+     * click (CONSUME); FC false lets 1.20.1's {@code useOn} run, as before (an axe strip or a hoe till where FC
+     * declined).
      */
+    // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: FC onItemUse runs at 1.20.1's item step, after the event, the spectator check, the sneak rule and block use (4.B's order)
+    @Inject(method = "useItemOn", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/item/ItemStack;useOn(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;"),
+            cancellable = true, require = 2)
+    private void btw$fcItemStep(ServerPlayer serverPlayer, Level world, ItemStack mcStack, InteractionHand hand,
+                                BlockHitResult hitResult, CallbackInfoReturnable<InteractionResult> cir) {
+        if (mcStack.isEmpty() || !(world instanceof ServerLevel sl)) return;
+        // The FC player exposes only the main hand (InventoryBridge.getCurrentItem; 1.5.2 has no off hand). The
+        // off-hand item's FC code would act on, and write back, the main-hand snapshot (an off-hand FC seed planted by
+        // decrementing the main-hand tool's stack). The off hand stays vanilla.
+        if (hand != InteractionHand.MAIN_HAND) return;
+        // BlockItems place through 1.20.1 here (their FC route is Stage 2), unless Stage 2 refused them.
+        if (mcStack.getItem() instanceof BlockItem) {
+            // FCMOD-INTEGRATION(1.20.1): placement_validity: FC's Stage 2 refusal of a 4.B ItemBlock-family placement is final; 1.20.1's BlockItem does not place it instead
+            // 4.B's client never sent a placement its own check refused (vanilla/client PlayerControllerMP.java:425-433,
+            // FCItemPlacesAsBlock.CanItemBeUsedByPlayer -> canPlaceItemBlockOnSide, Common :132-135, :180-203), so the
+            // server's refusal was the end. Here the 1.20.1 client predicted the placement and shrank its stack: the held
+            // slot is resent (INV-RESYNC's resendHeldSlot; the ghost block is cleared by the two block updates
+            // ServerGamePacketListenerImpl sends after every useItemOn). Not keyed on every FC item: a door or sign
+            // "false" is a port gap (ProxyBlock.isItemBlockFamily), and deployers that call useOn directly are untouched.
+            PlayerBridge fcPlayer = PlayerBridge.getOrCreate(serverPlayer);
+            // Tied to the clicked block: a foreign blockstate.use nested in this click that runs Stage 2 elsewhere records
+            // a verdict that is not this click's
+            if (fcPlayer.stage2() == PlayerBridge.Stage2.REFUSED && fcPlayer.fcItemUseRanAt(hitResult.getBlockPos())) {
+                if (fcPlayer.inventory instanceof InventoryBridge invBridge) invBridge.resendHeldSlot();
+                // A RETURN inject does not run after an injector cancels: close this click's frame before the cancel
+                fcPlayer.endUseClick();
+                cir.setReturnValue(InteractionResult.FAIL);
+            }
+            return;
+        }
+
+        // ProxyItems (FC non-block items: tools, seeds, ...) and vanilla items with FC replacements (hoe, shears, ...)
+        int legacyId = ProxyRegistry.getItemId(mcStack.getItem());
+        if (legacyId <= 0 || legacyId >= btw.modern.Item.itemsList.length) return;
+        btw.modern.Item fcItem = btw.modern.Item.itemsList[legacyId];
+        if (fcItem == null) return;
+
+        BlockPos pos = hitResult.getBlockPos();
+        PlayerBridge fcPlayer = PlayerBridge.getOrCreate(serverPlayer);   // synced from the real player
+        // Stage 2 already ran FC onItemUse at this block in this click and FC declined: 1.20.1's useOn runs as the
+        // fallback, as before, and FC never runs twice in one click.
+        if (fcPlayer.fcItemUseRanAt(pos)) return;
+        btw.modern.ItemStack fcStack = fcPlayer.getCurrentEquippedItem();
+        if (fcStack == null) return;
+
+        // FCMOD-INTEGRATION(1.20.1): bone_meal: bone meal keeps BoneMealItem.useOn at the item step, its one route for sneaking, the off hand and targets without Stage 2
+        // FC dye 15 is bone meal (FCItemDye.onItemUse acts on nothing else, Client FCItemDye.java:34-47). Running it here
+        // would put FCItemDye ahead of BoneMealItemMixin (BoneMealPolicy.onBoneMealUseOn: the soil relay for 1.20.1
+        // plants and the client prediction). Activation still comes first, 4.B's order (vanilla/server
+        // ItemInWorldManager.java:376-407): Stage 1, then Stage 2, which runs FCItemDye inside block use. 1.20.1 white
+        // dye reads as FC (351, 15|0x100) = 271 through LegacyVariants.MODERN_SPELLING, never FC dye 15; isFcBoneMeal
+        // stays for bone meal's 4.B activation order. White dye takes this step like any other dye, and FCItemDye
+        // declines it (Client FCItemDye.java:36).
+        if (BoneMealPolicy.isFcBoneMeal(fcItem, fcStack)) return;
+
+        int side = hitResult.getDirection().get3DDataValue();
+        Vec3 hitLoc = hitResult.getLocation();
+        float hitX = (float) (hitLoc.x - pos.getX());
+        float hitY = (float) (hitLoc.y - pos.getY());
+        float hitZ = (float) (hitLoc.z - pos.getZ());
+
+        // Snapshot openContainer before the FC call to detect GUI opens; the criterion gets the stack as clicked
+        btw.modern.Container prevContainer = fcPlayer.openContainer;
+        ItemStack used = mcStack.copy();
+        // The single FC onItemUse point: the DENY check, the per-click mark, the 1.5.2 creative restore (it replaces the
+        // count restore at :355-356 that the cancel below skips) and 4.B's ITEM_USED stat
+        boolean result = ProxyBlock.tryPlaceHeldItem(fcStack, serverPlayer, fcPlayer, WorldBridge.getOrCreate(sl),
+                pos, side, hitX, hitY, hitZ);
+        ContainerBridge.checkAndOpenContainer(fcPlayer, prevContainer);
+        // Stage 2's write-back: every slot FC changed (InventoryBridge.writeBackAll), not only the selected one
+        fcPlayer.syncInventoryToReal();
+        if (!result) return;
+        // INV-RESYNC: as Stage 2 (ProxyBlock.use), the client sees the held stack FC left once it is written back, as
+        // after every 1.5.2 place packet (NetServerHandler.java:551-569)
+        if (fcPlayer.inventory instanceof InventoryBridge invBridge) invBridge.resendHeldSlot();
+
+        // As Stage 2 (ProxyBlock.use): send the FC block entity's change (cook stack, spit, metadata) at once
+        if (sl.getBlockEntity(pos) instanceof ProxyBlockEntity pbe) {
+            pbe.syncToClients();
+        }
+        CriteriaTriggers.ITEM_USED_ON_BLOCK.trigger(serverPlayer, pos, used);
+        // A RETURN inject does not run after an injector cancels: close this click's frame before the cancel
+        fcPlayer.endUseClick();
+        cir.setReturnValue(InteractionResult.CONSUME);
+    }
+
+    /**
+     * Runs after useItemOn completes, at each of its returns. When this click's FC Stage 2 placed the held block
+     * (the click frame's PLACED record, ProxyBlock.tryPlaceHeldItem), it finishes that block, as 1.20.1's
+     * getStateForPlacement would have: the look-based facing, for the Modern-Common bases that do not yet set one
+     * (no onBlockPlacedBy on BlockPumpkin, no onBlockPlaced on BlockTrapDoor, BlockLever, BlockButton), and the redstone
+     * state of a trapdoor or fence gate placed against a live signal. Last, it closes the click frame btw$beginClick
+     * opened (fc_item_use_order).
+     *
+     * <p>FCMOD-INTEGRATION(1.20.1): placement_validity (decision 6(b)): the facing is written only for FC's own
+     * placement and only to a facing the block survives in. It used to be written after EVERY BlockItem useItemOn:
+     * 1.20.1's own placements (whose getStateForPlacement is authoritative: stairs, doors, gates and beds face the
+     * player's way, StairBlock.java:170, DoorBlock.java:112, FenceGateBlock.java:116, BedBlock.java:178; observers face
+     * the look direction; a hook faces away from its wall) came out reversed, a click that placed nothing rotated the
+     * block that was already there, and whether it ran depended on the stack size (it read the held stack after the
+     * place, and the last item leaves it empty). The record names the placed cell, read before FC ran. An FC-placed
+     * tripwire hook is never rewritten: FC's onBlockPlaced already faces it away from the clicked wall (Modern-Common
+     * BlockTripWireSource, 1.5.2 vanilla/server BlockTripWireSource.java:88-113), and the player's look could turn it
+     * onto another solid block beside the target. FC-route stairs stay reversed until decision 6(c) retires the rewrite
+     * (FCBlockStairsBase.PreBlockPlacedBy already faces them).</p>
+     */
+    // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: the click frame closes here, after the FC placement is finished, at every return of useItemOn
     @Inject(method = "useItemOn", at = @At("RETURN"))
-    private void btw$fixBlockFacing(ServerPlayer serverPlayer, Level world,
-                                     ItemStack mcStack, InteractionHand hand,
-                                     net.minecraft.world.phys.BlockHitResult hitResult,
-                                     CallbackInfoReturnable<InteractionResult> cir) {
-        if (!(mcStack.getItem() instanceof net.minecraft.world.item.BlockItem bi)) return;
-        if (!(world instanceof ServerLevel)) return;
+    private void btw$afterUseItemOn(ServerPlayer serverPlayer, Level world,
+                                    ItemStack mcStack, InteractionHand hand,
+                                    BlockHitResult hitResult,
+                                    CallbackInfoReturnable<InteractionResult> cir) {
+        PlayerBridge fcPlayer = PlayerBridge.getOrCreate(serverPlayer);
+        try {
+            if (!(world instanceof ServerLevel)) return;
+            // FCMOD-INTEGRATION(1.20.1): placement_validity: only a block FC's Stage 2 placed in this click is finished here
+            if (fcPlayer.stage2() != PlayerBridge.Stage2.PLACED) return;
+            net.minecraft.core.BlockPos placePos = fcPlayer.stage2At();
+            if (placePos == null) return;
+            net.minecraft.world.level.block.state.BlockState placed = world.getBlockState(placePos);
 
-        net.minecraft.core.BlockPos placePos = hitResult.getBlockPos().relative(hitResult.getDirection());
-        net.minecraft.world.level.block.state.BlockState placed = world.getBlockState(placePos);
-
-        if (!placed.is(bi.getBlock())) return;
-
-        if (placed.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.FACING)) {
-            net.minecraft.core.Direction correct = net.minecraft.core.Direction.orderedByNearest(serverPlayer)[0].getOpposite();
-            net.minecraft.world.level.block.state.BlockState fixed = placed.setValue(
-                    net.minecraft.world.level.block.state.properties.BlockStateProperties.FACING, correct);
-            if (!fixed.equals(placed)) {
-                world.setBlock(placePos, fixed, 2);
+            // FCMOD-INTEGRATION(1.20.1): placement_validity: an FC-placed tripwire hook keeps the facing FC's onBlockPlaced gave it (Modern-Common BlockTripWireSource, 1.5.2 vanilla/server BlockTripWireSource.java:88-113); decision 6(c) retires the rewrite for the hook
+            // In a corner the player's look could turn it onto the other solid block beside the target.
+            if (!(placed.getBlock() instanceof net.minecraft.world.level.block.TripWireHookBlock)) {
+                net.minecraft.world.level.block.state.BlockState fixed = placed;
+                if (placed.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.FACING)) {
+                    net.minecraft.core.Direction correct = net.minecraft.core.Direction.orderedByNearest(serverPlayer)[0].getOpposite();
+                    fixed = placed.setValue(
+                            net.minecraft.world.level.block.state.properties.BlockStateProperties.FACING, correct);
+                } else if (placed.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)) {
+                    net.minecraft.core.Direction correct = serverPlayer.getDirection().getOpposite();
+                    fixed = placed.setValue(
+                            net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING, correct);
+                }
+                // C': never to a facing the block cannot stay in (a block hung on a wall, such as a lever or a button,
+                // keeps facing away from it: its canSurvive reads the block behind its facing)
+                if (!fixed.equals(placed) && fixed.canSurvive(world, placePos)) {
+                    world.setBlock(placePos, fixed, 2);
+                }
             }
-        } else if (placed.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)) {
-            net.minecraft.core.Direction correct = serverPlayer.getDirection().getOpposite();
-            net.minecraft.world.level.block.state.BlockState fixed = placed.setValue(
-                    net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING, correct);
-            if (!fixed.equals(placed)) {
-                world.setBlock(placePos, fixed, 2);
+
+            // FCMOD-INTEGRATION(1.20.1): placement_validity: an FC-placed trapdoor or fence gate against a live signal opens and powers, as 1.20.1's getStateForPlacement does (ruling 4; hook delta G2)
+            // FC's ItemBlock sets oak trapdoor 96 and gate 107 closed, where TrapDoorBlock.java:129-131 and
+            // FenceGateBlock.java:115-119 open and power them at placement; 1.20.1 redstone only acts on a change of
+            // power, so they stayed closed until a neighbour changed. Doors: the iron door places through 1.20.1, the
+            // oak door too (ProxyBlock.isPortGapDoorItem).
+            net.minecraft.world.level.block.state.BlockState now = world.getBlockState(placePos);
+            if ((now.getBlock() instanceof net.minecraft.world.level.block.TrapDoorBlock
+                    || now.getBlock() instanceof net.minecraft.world.level.block.FenceGateBlock)
+                    && now.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.POWERED)
+                    && !now.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.POWERED)
+                    && world.hasNeighborSignal(placePos)) {
+                world.setBlock(placePos, now
+                        .setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.POWERED, true)
+                        .setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.OPEN, true), 2);
             }
+        } finally {
+            fcPlayer.endUseClick();
         }
     }
 
@@ -331,12 +461,22 @@ public abstract class ServerPlayerGameModeMixin {
 
         // Call FC's onItemRightClick — FC decides what happens
         btw.modern.ItemStack result;
+        // INV-RESYNC: vanilla's use runs next and owns this stack (the items-wave caveat: FC's returned stack is not
+        // applied). A sync nested in FC's call keeps FC's objects but writes none of its edits (shadow scope), and they
+        // are dropped when FC returns, as every sync dropped them before, never written on top of vanilla's.
+        InventoryBridge shadow = fcPlayer.inventory instanceof InventoryBridge ib ? ib : null;
+        if (shadow != null) shadow.beginShadow();
         try {
             result = fcItem.onItemRightClick(fcStack, fcWorld, fcPlayer);
         } catch (Throwable t) {
             // Packet handler: PacketUtils rethrows, which crashes the integrated server.
             ProxyItem.logFcFailureOnce("onItemRightClick", fcItem.itemID, t);
             return;
+        } finally {
+            if (shadow != null) {
+                shadow.discardPendingEdits();
+                shadow.endShadow();
+            }
         }
 
         // If FC returned a different stack (consumed item, created new item), update

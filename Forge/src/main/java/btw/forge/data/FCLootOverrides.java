@@ -99,6 +99,12 @@ public class FCLootOverrides extends GlobalLootModifierProvider {
         // (an unripe CropBlock with no FC id on soil that takes crops, or on the loose dirt a break untilled) is
         // decided at run time by btw.forge.farming.FcSoil, not written into the JSON.
         this.add("immature_crops_drop_nothing", new FCImmatureCropLootModifier(new LootItemCondition[0]));
+
+        // ---- Leaves drop like FC's (INTEGRATIONS #035) ----
+        // FCMOD-INTEGRATION(1.20.1): leaves_drop_like_fc: one condition-free modifier; which leaves rolls it rewrites
+        // (#minecraft:leaves, the block's own table or a hook's) and the sapling each gets are decided at run time
+        // by btw.forge.LeafDrops, not written into the JSON.
+        this.add("leaves_drop_like_fc", new FCLeavesLootModifier(new LootItemCondition[0]));
     }
 
     private void removeFromTable(String name, ResourceLocation tableId,

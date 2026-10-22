@@ -13,8 +13,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * Modern-Common cannot compile against (FCItemArmorMod, FCClientModelCowUdder).
  *
  * <p>At runtime every btw.modern.Entity* class a renderer sees is the frozen 1.5.2 copy
- * (Forge/build.gradle removeModernCommonShadowedClasses in dev, the jar exclude list in the
- * jar), so the member exists; only the compile-time stub lacks it. This is the same
+ * (the shadow list, Forge/build.gradle modernCommonRuntime, keeps the stub out of the dev view
+ * and the jar alike), so the member exists; only the compile-time stub lacks it. This is the same
  * pattern ModelWolf/ModelBat/ModelIronGolem already use, with the lookups cached per
  * (class, member). A missing member or a failing call logs once and yields the caller's
  * default, so nothing here ever throws into a render.</p>

@@ -37,5 +37,9 @@ public final class BTWLootModifiers {
     public static final RegistryObject<Codec<FCImmatureCropLootModifier>> IMMATURE_CROP =
             LOOT_MODIFIERS.register("immature_crop", FCImmatureCropLootModifier.CODEC);
 
+    // FCMOD-INTEGRATION(1.20.1): leaves_drop_like_fc: every leaves block drops by 4.B's leaf rule on every loot path (LeafDrops, INTEGRATIONS #035)
+    public static final RegistryObject<Codec<FCLeavesLootModifier>> LEAVES =
+            LOOT_MODIFIERS.register("fc_leaves", FCLeavesLootModifier.CODEC);
+
     private BTWLootModifiers() {}
 }

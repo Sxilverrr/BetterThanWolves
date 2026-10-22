@@ -160,9 +160,15 @@ public class ProxyRegistry {
     }
 
     static {
-        variants(5, 3, Blocks.OAK_PLANKS, Blocks.SPRUCE_PLANKS, Blocks.BIRCH_PLANKS, Blocks.JUNGLE_PLANKS);
+        // FCMOD-INTEGRATION(1.20.1): modern_woods: FC planks subtypes are FC wood types: 0-3 FC's, 4 blood wood (no
+        // 1.20.1 block: oak, as before), 5-8 acacia, dark oak, mangrove and cherry (ModernWoods). Item level only:
+        // the four modern planks keep no FC identity (getBlockId 0), so an FC-placed 5:5 is plain acacia planks.
+        variants(5, 15, Blocks.OAK_PLANKS, Blocks.SPRUCE_PLANKS, Blocks.BIRCH_PLANKS, Blocks.JUNGLE_PLANKS, null,
+                Blocks.ACACIA_PLANKS, Blocks.DARK_OAK_PLANKS, Blocks.MANGROVE_PLANKS, Blocks.CHERRY_PLANKS);
         variants(6, 3, Blocks.OAK_SAPLING, Blocks.SPRUCE_SAPLING, Blocks.BIRCH_SAPLING, Blocks.JUNGLE_SAPLING);
         variants(17, 3, Blocks.OAK_LOG, Blocks.SPRUCE_LOG, Blocks.BIRCH_LOG, Blocks.JUNGLE_LOG);
+        // log2 (ModernWoods): species = metadata bits 0-1 = FC wood type - 5, as log 17's species are FC's 0-3
+        variants(ModernWoods.LOG2_ID, 3, Blocks.ACACIA_LOG, Blocks.DARK_OAK_LOG, Blocks.MANGROVE_LOG, Blocks.CHERRY_LOG);
         variants(18, 3, Blocks.OAK_LEAVES, Blocks.SPRUCE_LEAVES, Blocks.BIRCH_LEAVES, Blocks.JUNGLE_LEAVES);
         // {default, chiseled, smooth}: 1.5.2 "smooth" sandstone is 1.20.1 cut sandstone
         variants(24, 3, Blocks.SANDSTONE, Blocks.CHISELED_SANDSTONE, Blocks.CUT_SANDSTONE);
@@ -229,7 +235,10 @@ public class ProxyRegistry {
      * table maps 95/137/152 (1.5.2 ids with no block created here) and 159/170-173 (1.6+ ids) to empty slots
      * (triage HAI-4: "tempBlock is null" in PathFinder.GetPathWeightAtLocation).
      * Modern-only blocks must keep returning 0 HERE so they never run FC block code; FC reads of the live
-     * world use {@link #getWorldBlockId} instead.
+     * world use {@link #getWorldBlockId} instead. One intended exception, the modern logs with FC identity: the
+     * acacia, dark oak, mangrove and cherry logs answer log2 ({@link ModernWoods#LOG2_ID}, 165, FC wood types 5-8),
+     * a plain FCBlockLog, so FC's log code runs on them as it runs on oak (id 17). They answer 0 when log2 was not
+     * built ({@link ModernWoods#isBuilt}: id 165 taken at start-up), so another block at 165 never receives them.
      */
     public static int getBlockId(Block block) {
         if (block instanceof ProxyBlock pb) {
@@ -237,7 +246,8 @@ public class ProxyRegistry {
         }
         ensureVanillaBlockMapInitialized();
         Integer id = vanillaBlockToLegacyId.get(block);
-        return id != null && hasFcBlock(id) ? id : 0;
+        if (id == null || !hasFcBlock(id)) return 0;
+        return id != ModernWoods.LOG2_ID || ModernWoods.isBuilt() ? id : 0;
     }
 
     /** True if btw.modern.Block.blocksList[id] is populated. */
@@ -257,49 +267,105 @@ public class ProxyRegistry {
     /** 1.5.2 Block.wood, the log (vanilla/server Block.java, id 17). */
     private static final int LEGACY_LOG_ID = 17;
 
+    /** A log form FC reads as a log: the log id it reads as (17, or log2 165) and its species within that id (0-3). */
+    private record LogForm(int logId, int species) {}
+
     /**
-     * The bark ("wood") and stripped forms of the four 1.5.2 log species, by species (oak 0, spruce 1, birch 2,
-     * jungle 3: the log variant order). 1.20.1 treats them as the species' logs (BlockTags.LOGS holds up leaves,
-     * LeavesBlock.java:99; BlockTags.JUNGLE_LOGS holds cocoa, CocoaBlock.java:60-63), so FC's world reads see them as
-     * log 17 of that species ({@link #getWorldBlockId}): FCBlockLeaves counts them as support (Server
+     * The bark ("wood") and stripped forms of the eight log species with an FC log, by log id and species: log 17's
+     * oak 0, spruce 1, birch 2, jungle 3 (the log variant order), and log2's acacia 0, dark oak 1, mangrove 2,
+     * cherry 3 (FC wood types 5-8, {@link ModernWoods}). 1.20.1 treats them as the species' logs (BlockTags.LOGS holds
+     * up leaves, LeavesBlock.java:99; BlockTags.JUNGLE_LOGS holds cocoa, CocoaBlock.java:60-63), so FC's world reads see
+     * them as their species' log ({@link #getWorldBlockId}): FCBlockLeaves counts them as support (Server
      * FCBlockLeaves.java:171-181) and FCBlockCocoa / BlockCocoa as a jungle log, where as stand-ins a stripped trunk let
      * its canopy decay and dropped the pods on it. Read path only: no identity mapping, so no FC callback, drop or
-     * harvest runs on them, and FC metadata writes keep the block (WorldBridge.variantStateFor). FC machines that
-     * copy a block by id and metadata (pistons, the block dispenser) recreate the plain log.
+     * harvest runs on them through routing, and FC metadata writes keep the block (WorldBridge.variantStateFor). FC
+     * machines that copy a block by id and metadata (pistons, the block dispenser) recreate the plain log.
      */
-    private static final Map<Block, Integer> LOG_FORM_SPECIES = new IdentityHashMap<>();
+    // FCMOD-INTEGRATION(1.20.1): modern_woods: the wood and stripped forms of acacia, dark oak, mangrove and cherry read as log2 (165), as oak's read as log 17
+    private static final Map<Block, LogForm> LOG_FORMS = new IdentityHashMap<>();
 
     static {
-        logForms(0, Blocks.OAK_WOOD, Blocks.STRIPPED_OAK_LOG, Blocks.STRIPPED_OAK_WOOD);
-        logForms(1, Blocks.SPRUCE_WOOD, Blocks.STRIPPED_SPRUCE_LOG, Blocks.STRIPPED_SPRUCE_WOOD);
-        logForms(2, Blocks.BIRCH_WOOD, Blocks.STRIPPED_BIRCH_LOG, Blocks.STRIPPED_BIRCH_WOOD);
-        logForms(3, Blocks.JUNGLE_WOOD, Blocks.STRIPPED_JUNGLE_LOG, Blocks.STRIPPED_JUNGLE_WOOD);
+        logForms(LEGACY_LOG_ID, 0, Blocks.OAK_WOOD, Blocks.STRIPPED_OAK_LOG, Blocks.STRIPPED_OAK_WOOD);
+        logForms(LEGACY_LOG_ID, 1, Blocks.SPRUCE_WOOD, Blocks.STRIPPED_SPRUCE_LOG, Blocks.STRIPPED_SPRUCE_WOOD);
+        logForms(LEGACY_LOG_ID, 2, Blocks.BIRCH_WOOD, Blocks.STRIPPED_BIRCH_LOG, Blocks.STRIPPED_BIRCH_WOOD);
+        logForms(LEGACY_LOG_ID, 3, Blocks.JUNGLE_WOOD, Blocks.STRIPPED_JUNGLE_LOG, Blocks.STRIPPED_JUNGLE_WOOD);
+        logForms(ModernWoods.LOG2_ID, 0, Blocks.ACACIA_WOOD, Blocks.STRIPPED_ACACIA_LOG, Blocks.STRIPPED_ACACIA_WOOD);
+        logForms(ModernWoods.LOG2_ID, 1, Blocks.DARK_OAK_WOOD, Blocks.STRIPPED_DARK_OAK_LOG,
+                Blocks.STRIPPED_DARK_OAK_WOOD);
+        logForms(ModernWoods.LOG2_ID, 2, Blocks.MANGROVE_WOOD, Blocks.STRIPPED_MANGROVE_LOG,
+                Blocks.STRIPPED_MANGROVE_WOOD);
+        logForms(ModernWoods.LOG2_ID, 3, Blocks.CHERRY_WOOD, Blocks.STRIPPED_CHERRY_LOG, Blocks.STRIPPED_CHERRY_WOOD);
     }
 
-    private static void logForms(int species, Block... blocks) {
-        for (Block b : blocks) LOG_FORM_SPECIES.put(b, species);
+    private static void logForms(int logId, int species, Block... blocks) {
+        LogForm form = new LogForm(logId, species);
+        for (Block b : blocks) LOG_FORMS.put(b, form);
+    }
+
+    /** True when FC has the log {@code logId}: blocksList[17], or log2 once ModernWoods built it. */
+    private static boolean hasLogBlock(int logId) {
+        return hasFcBlock(logId) && (logId != ModernWoods.LOG2_ID || ModernWoods.isBuilt());
     }
 
     /**
-     * 1.5.2 log species (0-3) of a block FC reads as log 17: the four mapped logs and their bark / stripped forms.
-     * -1 for any other block, or when blocksList has no log.
+     * True for a wood or stripped form (no FC identity) that FC's world reads see as log 17 or log2 165: the bark and
+     * stripped forms of the eight species above, while their log exists. False for the logs themselves (identity),
+     * the stems and every modded log.
      */
-    static int getTreeLogSpecies(Block block) {
-        if (!hasFcBlock(LEGACY_LOG_ID)) return -1;
-        Integer form = LOG_FORM_SPECIES.get(block);
-        if (form != null) return form;
-        return getBlockId(block) == LEGACY_LOG_ID ? Math.max(getLegacyVariantMeta(block), 0) : -1;
+    public static boolean isLogForm(Block block) {
+        LogForm form = block != null ? LOG_FORMS.get(block) : null;
+        return form != null && hasLogBlock(form.logId());
+    }
+
+    /**
+     * The FC log id {@code block} is read as: 17 or 165 ({@link ModernWoods#LOG2_ID}) for the eight logs with FC
+     * identity and for their wood and stripped forms ({@link #isLogForm}); -1 for any other block, or when that log
+     * does not exist.
+     */
+    public static int getTreeLogId(Block block) {
+        if (block == null) return -1;
+        LogForm form = LOG_FORMS.get(block);
+        if (form != null) return hasLogBlock(form.logId()) ? form.logId() : -1;
+        int id = getBlockId(block);
+        return id == LEGACY_LOG_ID || id == ModernWoods.LOG2_ID ? id : -1;
+    }
+
+    /**
+     * Log species (0-3, metadata bits 0-1) of a block FC reads as a log ({@link #getTreeLogId}), within its log id:
+     * oak, spruce, birch, jungle for log 17; acacia, dark oak, mangrove, cherry for log2. -1 for any other block, or
+     * when that log does not exist. Not the FC wood type: cherry is species 3 like jungle ({@link #getWoodType}).
+     */
+    public static int getTreeLogSpecies(Block block) {
+        if (block == null) return -1;
+        LogForm form = LOG_FORMS.get(block);
+        if (form != null) return hasLogBlock(form.logId()) ? form.species() : -1;
+        int id = getBlockId(block);
+        return id == LEGACY_LOG_ID || id == ModernWoods.LOG2_ID ? Math.max(getLegacyVariantMeta(block), 0) : -1;
+    }
+
+    /**
+     * FC wood type of a block FC reads as a log: 0-3 (oak, spruce, birch, jungle: log 17's species) or 5-8 (acacia,
+     * dark oak, mangrove, cherry: log2 species + 5, {@link ModernWoods#woodType}), the number FC keys bark, planks and
+     * the work stump on. -1 for any other block (stems, modded logs), or when its log does not exist.
+     */
+    public static int getWoodType(Block block) {
+        int logId = getTreeLogId(block);
+        if (logId < 0) return -1;
+        int species = getTreeLogSpecies(block);
+        if (species < 0) return -1;
+        return logId == ModernWoods.LOG2_ID ? ModernWoods.woodType(species) : species;
     }
 
     /**
      * Legacy id whose FC block hears the removal of {@code block} (BlockBehaviorMixin.btw$onRemove -> breakBlock): its
-     * identity id ({@link #getBlockId}), or log 17 for the bark and stripped log forms FC reads as logs, so cutting a
-     * stripped trunk runs FC's log removal as cutting a log does (BlockLog.breakBlock: the leaf decay check of every
-     * leaf within 4, vanilla/server BlockLog.java:57-85; FCBlockLog adds nothing to it). 0 when FC has no block for it.
+     * identity id ({@link #getBlockId}), or the log id (17 or log2 165) for the bark and stripped log forms FC reads
+     * as logs, so cutting a stripped trunk runs FC's log removal as cutting a log does (BlockLog.breakBlock: the leaf
+     * decay check of every leaf within 4, vanilla/server BlockLog.java:57-85; FCBlockLog adds nothing to it). 0 when
+     * FC has no block for it.
      */
     public static int getRemovalLegacyId(Block block) {
         int id = getBlockId(block);
-        if (id == 0 && LOG_FORM_SPECIES.containsKey(block) && hasFcBlock(LEGACY_LOG_ID)) return LEGACY_LOG_ID;
+        if (id == 0 && isLogForm(block)) return LOG_FORMS.get(block).logId();
         if (id == 0) {
             // A crop twin (beetroots, torchflower and pitcher crops, TwinRegistry): its FC crop hears the removal like
             // FC's own crops, so FC farmland under it untills (FCBlockFarmland.NotifyOfPlantAboveRemoved, S16).
@@ -319,8 +385,8 @@ public class ProxyRegistry {
      * <ul>
      *   <li>an MC double slab reads as the 1.5.2 double-slab id 43 / 125 (BlockStep / BlockWoodSlab
      *       isDoubleSlab; the bottom/top half is reported through metadata bit 8);</li>
-     *   <li>the bark and stripped forms of the oak, spruce, birch and jungle logs read as log 17 of their species
-     *       ({@link #LOG_FORM_SPECIES});</li>
+     *   <li>the bark and stripped forms of the oak, spruce, birch and jungle logs read as log 17 of their species,
+     *       those of the acacia, dark oak, mangrove and cherry logs as log2 165 ({@link #LOG_FORMS});</li>
      *   <li>a post-1.5.2 plant that grows by an FC twin ({@link TwinRegistry}: acacia, cherry and dark oak saplings,
      *       the planted mangrove propagule, azaleas, beetroots, the torchflower crop, the pitcher crop's lower half,
      *       crimson and warped fungi) reads as its twin's id, so the twin's FC tick finds itself at its cell;</li>
@@ -341,8 +407,8 @@ public class ProxyRegistry {
             int twin = TwinRegistry.worldIdFor(state);
             if (twin > 0) {
                 id = twin;
-            } else if (LOG_FORM_SPECIES.containsKey(state.getBlock())) {
-                id = LEGACY_LOG_ID;
+            } else if (isLogForm(state.getBlock())) {
+                id = LOG_FORMS.get(state.getBlock()).logId();
             } else {
                 id = ModernBlockStandIn.idFor(state, level, pos);
                 if (id == 0 && state.getFluidState().is(FluidTags.WATER)) {
@@ -436,6 +502,13 @@ public class ProxyRegistry {
         vanillaBlockToLegacyId.put(Blocks.SPRUCE_LOG, 17);
         vanillaBlockToLegacyId.put(Blocks.BIRCH_LOG, 17);
         vanillaBlockToLegacyId.put(Blocks.JUNGLE_LOG, 17);
+        // FCMOD-INTEGRATION(1.20.1): modern_woods: ID 165 (free in 1.5.2): log2, the port's second FCBlockLog
+        // (ModernWoods; FC wood types 5-8). Acacia first: the canonical pick. Identity only once log2 is built
+        // (getBlockId); the mapping alone keeps the stand-ins and twins off 165 (isLegacyIdMapped).
+        vanillaBlockToLegacyId.put(Blocks.ACACIA_LOG, ModernWoods.LOG2_ID);
+        vanillaBlockToLegacyId.put(Blocks.DARK_OAK_LOG, ModernWoods.LOG2_ID);
+        vanillaBlockToLegacyId.put(Blocks.MANGROVE_LOG, ModernWoods.LOG2_ID);
+        vanillaBlockToLegacyId.put(Blocks.CHERRY_LOG, ModernWoods.LOG2_ID);
         // ID 18: Leaves
         vanillaBlockToLegacyId.put(Blocks.OAK_LEAVES, 18);
         vanillaBlockToLegacyId.put(Blocks.SPRUCE_LEAVES, 18);

@@ -29,14 +29,17 @@ import java.util.List;
 // FCMOD-INTEGRATION(1.20.1): dynamic_trees: FC's saw, stump remover and fertilizer act on Dynamic Trees through the FC machine hooks
 final class DTBlockHooks implements ModernBlockHooks.Hook {
 
-    /** 1.5.2 Block.planks; its metadata 0-3 is FC's wood species. */
+    /** 1.5.2 Block.planks; its metadata is FC's wood type (0-3 FC's, 5-8 ModernWoods' at item level). */
     private static final int LEGACY_PLANKS_ID = 5;
 
     /**
      * FCBlockSaw cut the block at {@code pos}. A trunk of radius 8 or more (a trunk shell resolves to its core) is
      * felled away from the saw: the cut block gives FC's log saw output (FCBlockSaw.java:618-639: 4 planks of the
-     * wood, 2 sawdust, 1 bark if unstripped) and leaves the payload one log short; the rest falls as a DT harvest. A
-     * species FC never had gives 2 sawdust and keeps its log. Young trunks keep growing.
+     * wood, 2 sawdust, 1 bark if unstripped) and leaves the payload one log short; the rest falls as a DT harvest.
+     * The planks are FC's planks of the family's wood type (0-3, 5-8: acacia, dark oak, mangrove and cherry planks
+     * through LegacyVariants), else the family log's own planks recipe ({@link DTTrees#sawPlanks}: the fungi, modded
+     * families); a family with neither keeps its log. The bark is the shared log rule's ({@link DTTrees#barkSpecies}).
+     * Young trunks keep growing.
      */
     // FCMOD-INTEGRATION(1.20.1): dynamic_trees: the FC saw fells a full-width DT trunk, its cut block sawn into FC's log output
     @Override
@@ -50,9 +53,13 @@ final class DTBlockHooks implements ModernBlockHooks.Hook {
             if (b.getRadius(cs) < 8) return false;
             int meta = DTTrees.fcWoodMeta(b);
             boolean stripped = b.isStrippedBranch();
+            // FCMOD-INTEGRATION(1.20.1): dynamic_trees: a DT family's saw planks and bark follow the shared log rule (logs design decision 7 (a); wood types 5-8 for acacia, dark oak, mangrove, cherry)
+            ItemStack planks = meta >= 0 ? ItemStackHelper.fcIdToMcStack(LEGACY_PLANKS_ID, 4, meta)
+                    : DTTrees.sawPlanks(level, b);
+            if (!planks.isEmpty()) planks.setCount(4);
             BranchDestructionData d = b.destroyBranchFromNode(level, core, sawFacing.getOpposite(), false, null);
             List<ItemStack> drops = new ArrayList<>(d.species.getBranchesDrops(level, d.woodVolume));
-            if (meta >= 0) {
+            if (!planks.isEmpty()) {
                 for (Iterator<ItemStack> it = drops.iterator(); it.hasNext(); ) {
                     ItemStack st = it.next();
                     if (st.is(ItemTags.LOGS)) {
@@ -61,11 +68,11 @@ final class DTBlockHooks implements ModernBlockHooks.Hook {
                         break;
                     }
                 }
-                pop(level, core, ItemStackHelper.fcIdToMcStack(LEGACY_PLANKS_ID, 4, meta));
+                pop(level, core, planks);
             }
             FallingTreeEntity.dropTree(level, d, drops, FallingTreeEntity.DestroyType.HARVEST);
             pop(level, core, FCLogRules.sawdust(2));
-            if (!stripped) pop(level, core, FCLogRules.bark(meta));
+            if (!stripped) pop(level, core, FCLogRules.bark(DTTrees.barkSpecies(b)));
             DynamicTreesCompat.trace("saw cut at {} (wood {}, stripped {}): payload {}", core, meta, stripped, drops);
             return true;
         } catch (RuntimeException | LinkageError t) {

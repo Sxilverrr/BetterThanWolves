@@ -14,23 +14,55 @@ around it.
 
 ## [Unreleased]
 
-Not released yet. These fixes were made on 2026-10-10, 2026-10-11, 2026-10-14 and 2026-10-15, in eight
-implementation waves on top of 1.3.0-alpha.3 (`48e9825`). The five waves of 2026-10-10 address the
-CurseForge feedback triage and an earlier design pass; they were committed as `f6ec9be`, and `d55db5d`
-set the version to 1.4.0-alpha.5. The 2026-10-11 wave fixes bugs the maintainer found in mechanical
-power, sounds and the BTW creative tab, after an audit that proved each root cause against BTW's 1.5.2
-code before anything was changed. The 2026-10-14 wave makes BTW's own rules decide how blocks that keep
-a Minecraft id grow, spread, decay, burn and fall; its root cause was proven with a scripted in-world
-test on a dedicated server before anything was changed, and the result was checked the same way
-afterwards. The 2026-10-15 wave carries out three rulings by the maintainer: bone meal works as in 4.B,
-plants added after 1.5.2 follow the 4.B rules of their nearest BTW relative, and blocks that 4.B removed
-stay removed. It was checked the same way, with scripted in-world tests before and after the change.
-`docs/curseforge-feedback-triage.md` has a status table for every triage finding; the ids
-in parentheses refer to it, to the design pass and to the 2026-10-11 audit (`STUB_CATALOGUE.md`
-entries (an) to (at)). The 2026-10-10 and 2026-10-11 waves build and pass the link and bridge audits,
-the 2026-10-14 wave builds and passes the link and bridge audits, the 2026-10-15 wave builds and passes
-the link audit, and a dedicated server boots a fresh world without errors. None of the client-side fixes
-has been checked in game yet (see Known issues).
+Not released yet. These fixes were made on 2026-10-10, 2026-10-11, 2026-10-14, 2026-10-15, 2026-10-17
+and 2026-10-18, in ten implementation waves on top of 1.3.0-alpha.3 (`48e9825`), plus a fix for a player
+report. The five waves of 2026-10-10 address the CurseForge feedback triage and an earlier design pass;
+they were committed as `f6ec9be`, and `d55db5d` set the version to 1.4.0-alpha.5. The 2026-10-11 wave
+fixes bugs the maintainer found in mechanical power, sounds and the BTW creative tab, after an audit
+that proved each root cause against BTW's 1.5.2 code before anything was changed. The 2026-10-14 wave
+makes BTW's own rules decide how blocks that keep a Minecraft id grow, spread, decay, burn and fall; its
+root cause was proven with a scripted in-world test on a dedicated server before anything was changed,
+and the result was checked the same way afterwards. The first 2026-10-15 wave carries out three rulings
+by the maintainer: bone meal works as in 4.B, plants added after 1.5.2 follow the 4.B rules of their
+nearest BTW relative, and blocks that 4.B removed stay removed. It was checked the same way, with
+scripted in-world tests before and after the change. `docs/curseforge-feedback-triage.md` has a status
+table for every triage finding; the ids in parentheses refer to it, to the design pass and to the
+2026-10-11 audit (`STUB_CATALOGUE.md` entries (an) to (at)). The 2026-10-10 and 2026-10-11 waves build
+and pass the link and bridge audits, the 2026-10-14 wave builds and passes the link and bridge audits,
+the first 2026-10-15 wave builds and passes the link audit, and a dedicated server boots a fresh world
+without errors. Most of the client-side fixes have not been checked in game yet (see Known issues).
+
+Two more waves bring the rest of Minecraft 1.20.1, and six optional mods, under BTW's rules. The second
+2026-10-15 wave (`3985147`) covers hunger and food, mining, crafting, the food bar's place in the HUD
+and plants from other mods. The wave of 2026-10-17 and 2026-10-18 (committed together with the
+hold-to-craft fix and merged as `0292e38`) adds Dynamic Trees, Serene Seasons, AppleSkin, Cold Sweat,
+Legendary Survival Overhaul (LSO) and Pam's HarvestCraft 2. Both were proven as the waves before them,
+at a larger scale. Their gaps were first recorded by scripted in-world tests on a dedicated server
+running the old code, and the same tests ran on the new code, with each mod alone and with all of them
+together. Development clients joined those servers for what a server cannot show: the food bar's place
+in the HUD, AppleSkin's tooltips and previews, Cold Sweat's gauges and LSO's frost tint. The bugs that
+code review and these runs found were fixed and the runs repeated; in the final runs of 2026-10-18 every
+check passes except the two that record the dropped white dye issue (fixed on 2026-10-20, see Fixed).
+Last, the release jar booted a fresh world on a clean Forge 1.20.1-47.3.0 server, once alone and once
+with the release jars of all six mods and the Dynamic Trees and Serene Seasons add-ons for HarvestCraft:
+no crash, no mixin error and no error from BTW (the only errors came from HarvestCraft's and Dynamic
+Trees' own recipe data). That boot also confirmed a fix from the review: the Dynamic Trees integration
+now starts from release jars, where a method it looked up by its development name does not exist.
+`INTEGRATIONS.md` describes these parts in entries #020 to #032; the numbers #020 to #032 in parentheses
+below refer to them.
+
+The work of 2026-10-19 to 2026-10-21 finishes the follow-ups of those waves and fixes the bugs that a
+CurseForge comment of 2026-10-19 reported. `docs/curseforge-feedback-triage-2026-10-19.md` triages that
+comment and gives the status of each finding; the CF2- ids in parentheses below refer to it. Rulings by
+the maintainer on 2026-10-19 and 2026-10-20 decided the newer woods, the Nether stems, beds, bed and
+door drops and the 1.20.1 dyes (see Changed), and kept 1.20.1's redstone for doors, trapdoors and fence
+gates. It was proven as the waves before it: every gap was first recorded by a scripted in-world test on
+the old code, and the same test ran on the new code. A development client joined the dedicated server
+for what a server cannot show: the item count after placing a block, the hotbar, sleeping through the
+night and the newer woods' textures. Each stage builds and passes the link and bridge audits, and on
+2026-10-21 the regression tests of the earlier waves ran again on the final code with the same results
+(the random growth tests within their expected spread). No release jar was booted for this work, and it
+is not committed. `INTEGRATIONS.md` entries #033 to #040 describe it.
 
 ### Fixed
 
@@ -245,7 +277,8 @@ decide for every one of these blocks:
   Their faint 1.20.1 glow had kept them from ever spreading. Mushrooms on mycelium sometimes grow into
   huge mushrooms (see Known issues for their textures).
 - **Leaves** decay the BTW way: only after a log or leaves near them are removed, and only when no log
-  is within 4 blocks. They drop only saplings (1 in 20, jungle 1 in 40), never apples or sticks.
+  is within 4 blocks. They drop only saplings (1 in 20, jungle 1 in 40), never apples or sticks (in fact
+  BTW's leaves dropped oak leaves until 2026-10-20; see the follow-ups below).
   Stripped logs and wood (bark blocks) of oak, spruce, birch and jungle hold up leaves and cocoa pods as
   logs do.
 - **Fire** burns by BTW's rules: logs smoulder instead of burning away, BTW's wicker and wooden blocks
@@ -283,8 +316,8 @@ a world on a dedicated server before and after the change.
   - used on a crop whose soil has weeds, it pulls the weeds first and is kept, as in BTW;
   - it makes no particles or sound, as in BTW; the fertilised soil's look shows that it worked;
   - it no longer skips Minecraft's right-click checks, so protection mods can stop it.
-- **White dye** no longer works as bone meal when you use it (dropped white dye still does; see Known
-  issues).
+- **White dye** no longer works as bone meal when you use it (dropped white dye still did until
+  2026-10-20; see the follow-ups below).
 - **Dispensers.** A vanilla dispenser now shoots bone meal out as an item, as in BTW, and the item
   fertilises the farmland it lands on. BTW's block dispenser now spits out items it has no use for
   (bone meal, dyes, string, ...), as in BTW; before, it clicked and kept them.
@@ -313,6 +346,140 @@ a world on a dedicated server before and after the change.
   chest, torch and others could be crafted again, found in chests and structures and picked from the
   creative tabs. They now stay removed (see Changed). The Minecraft recipes that 4.B removed or
   replaced with its own are gone too.
+
+Hunger, mining, crafting and the HUD (second 2026-10-15 wave):
+
+Parts of Minecraft 1.20.1 that BTW's code never reached still ran 1.20.1's rules. By the maintainer's
+rulings, hunger and harvesting now cost what they cost in 4.B, and BTW's workbench offers every other
+recipe after BTW's own. Unless marked otherwise, each gap below was first shown by a scripted in-world
+test on the old code, and the test passes now; the HUD was checked with a development client.
+
+- **Hunger costs** (#021). Walking cost no hunger, a jump was charged twice, and swimming, a melee hit
+  and taking damage cost less than in 4.B. They now cost 4.B's exhaustion: 1.0 per 100 m walked (was 0),
+  1.5 per 100 m swum (was 1.0), 0.2 per jump and 1.0 per sprint jump (were 0.25 and 1.2), and 0.3 per
+  landed hit or hit taken (was 0.1; damage that ignores armour still costs nothing). Armour weight now
+  raises every cost, BTW's own (jumping, harvesting) included, and creative and invulnerable players pay
+  nothing. Hunger costs that other mods add straight to Minecraft's food data never reached BTW's hunger
+  bar; they now do, under the same rule.
+- **Healing and health** (#021). `/gamerule naturalRegeneration false` did not stop BTW's healing; it
+  now does. When Minecraft or another mod left a player with a fraction of a health point, BTW's sync
+  rounded it down (7.5 became 7), and a player left with less than 1 died. The real health is now kept,
+  and BTW counts anything under 1 as 1.
+- **Drinking while food-poisoned** (#021). In 4.B a food-poisoned player cannot drink, but potions,
+  honey bottles and other mods' drinks could still be drunk. Every drink is now refused while you are
+  food-poisoned. Splash and lingering potions are thrown, not drunk, and still work.
+- **Breaking blocks** (#022).
+  - Breaking a BTW block skipped Forge's block-break event, so claim and protection mods could not stop
+    it and other mods never heard of the break. The event now comes first, as for every other block,
+    with 1.20.1's adventure and spectator rules. Each chewing hit on a log counts as one break.
+  - Creative players got drops from BTW blocks, and logs were chewed instead of removed. A creative
+    break now just removes the block, as in 4.B.
+  - BTW's own break effects never ran. A broken mining charge now drops itself, a vase holding blasting
+    oil explodes when broken without Silk Touch, and BTW animals near a block a survival player breaks
+    panic, as in 4.B (the vase and the animals are checked by code review only).
+  - BTW's health, hunger, fat and gloom penalties did not slow the mining of blocks added after 1.5.2
+    (deepslate, tuff, copper ore, ...). They now do, on server and client (checked by code review only:
+    the test player cannot carry a penalty).
+  - BTW's pickaxes, axes, shovels, hoes and mattocks were not the right tool for blocks added after
+    1.5.2: a steel pickaxe on deepslate diamond ore, or a mattock on deepslate, dropped nothing. They
+    now dig those blocks at BTW's speed for the tool and get their drops (the diamond, the cobbled
+    deepslate).
+- **Crafting** (#025).
+  - BTW's workbench, work stump and soulforge knew only BTW's own recipes, and 499 of 1.20.1's 822
+    crafting recipes need a 3x3 grid, so those recipes, and every 3x3 recipe of other mods, could not be
+    crafted anywhere. These grids now fall back to every recipe that Minecraft and other mods register,
+    after BTW's own (a BTW recipe always wins), and leave each recipe's leftovers (a honey bottle leaves
+    its glass bottle). The lantern (with a nether-coal torch), chains, glass panes and gold blocks can
+    now be made. Recipes that 4.B removed stay removed.
+  - Ink sac, cocoa beans, lapis lazuli and bone meal now dye wool and carpets at the BTW workbench, as
+    in 4.B, and make 1.20.1's black, brown, blue and white stained glass, terracotta, concrete powder
+    and candles. The grindstone (stone slabs) and dark prismarine (black dye) can be made too.
+  - The blast furnace, smoker and furnace minecart take a brick oven in place of the furnace, and the
+    crossbow takes an iron nugget in place of the tripwire hook (a stoked crucible melts a hook into one
+    nugget), so all four can be made from new materials.
+  - Raw mutton, rabbit and salmon could not be cooked: the furnace is gone, and BTW's brick oven and
+    campfire knew only 1.5.2's foods. Any edible item that has a 1.20.1 cooking recipe and no BTW one
+    now cooks in the brick oven and on the BTW campfire, foods from other mods included.
+- **The food bar in the HUD** (#023). BTW drew its food row outside Minecraft's HUD stack, so air
+  bubbles, a ridden animal's hearts and other mods' bars were drawn over it. The row now takes the food
+  bar's place in that stack: everything that stacks above the food bar sits above BTW's row, and under
+  water the hunger and gloom text moves up above the bubbles. BTW still draws the row while you ride, as
+  1.5.2 did. The food pips also shook on the frame rate instead of the game clock (about 7 times too
+  often at 144 fps). Checked with a development client in survival and creative, under water, riding and
+  at each hunger penalty.
+
+Found by the integration tests (2026-10-17):
+
+- **Blocks that take their shape from a neighbour** read as air to BTW's machines. Minecraft caches each
+  block's collision shape in an empty world, where such a block has none. Dynamic Trees' trunk shells
+  (the outer ring of a thick trunk) were affected, so BTW's saw and stump remover never reached them.
+  BTW now asks for the shape at the block's real position when the cached one is empty.
+
+Reported on CurseForge (comment of 2026-10-19):
+
+- **Placed blocks never ran out, phantom items, placed blocks back after death.** Most solid blocks
+  (gravel and other slabs, dirt, cobblestone, planks, pressure plates, loose snow), placed without
+  sneaking against a block BTW handles, stayed in the server's inventory: a nested refresh of BTW's view
+  of the inventory threw the count change away. Gravel slabs placed on gravel slabs never ran out, the
+  hotbar showed fewer items than the server held (a later shift-click revealed them), and a death
+  dropped the "placed" blocks. Placing while hanging on a ladder lost the count for any block, rails
+  included. BTW now keeps the stacks it holds across a refresh, as 1.5.2's single inventory did, and
+  resends the held slot after a BTW placement (CF2-I1, CF2-I2, CF2-I3, CF2-I5; 1.3.0-alpha.3 had an
+  older trigger of the same symptom, CF2-P10). Dyeing a windmill now uses up the dye. Checked with a
+  development client joined to a dedicated server.
+- **Beds and doors duplicated.** Breaking a bed gave two beds, one of them red, and breaking a door's
+  top half gave two doors; duplicated iron doors melt in a stoked crucible into iron and gold. By the
+  maintainer's ruling, beds and the oak and iron doors now break and drop as in 1.20.1: one item from
+  either half, a bed keeps its colour, and creative breaks drop nothing. A saw cutting an oak door's top
+  gives one door, and a mining charge that breaks a door, or a bed whose head it reaches first, now
+  leaves the item (it left nothing) (CF2-DR1, CF2-DR6; #039).
+- **Flowers on stone and slabs.** BTW's "cannot be placed here" check was a stub: flowers, saplings,
+  mushrooms and grass could be placed on stone and slabs, and a block could be placed into a cell that
+  was not free. BTW's placement now makes 4.B's checks (see the placement fix below). Flowers that
+  earlier versions placed on stone or slabs pop, as in 4.B (CF2-P8a, CF2-P8b).
+- **Beds: no message at night, and every click set the spawn.** A bed click at night failed with an
+  error in the log and showed nothing, and every bed click, day or night, set the spawn point. Beds now
+  let you sleep but never set the spawn (see Changed) (CF2-U1).
+
+Follow-ups (2026-10-19 to 2026-10-21):
+
+- **White dye** is never fertiliser, chicken feed, dog food or the farmer's bone-meal trade, on any
+  path: dropped, from either dispenser, in a hopper, at a grid, in the cauldron or in a trade (#017).
+  Lily of the valley and the 1.20.1 bone meal -> white dye recipe give real white dye at BTW's grids
+  (they gave bone meal). An ink sac put into a BTW container no longer merges into another dye's stack.
+  BTW villager trades check subtypes, as in 4.B (the brown wool knit and blood wood sapling trades).
+- **Dyes and other BTW items with subtypes stack in BTW hoppers and chests**, as in 4.B: wool, candles,
+  vases and slabs took a new slot for each item. 1.20.1's black, brown and blue dye keep their identity
+  in BTW hoppers, chests, cauldrons and dispensers (they became ink sacs, plantable cocoa beans and
+  lapis); cornflowers no longer give lapis and wither roses no longer give ink sacs at BTW's grids; nine
+  blue dyes no longer make a lapis block (#038).
+- **BTW leaves** drop their own sapling (they dropped oak leaves); shears and Silk Touch give the
+  leaves; blood wood leaves drop a sapling 1 time in 20 (it was every break); BTW's block dispenser
+  takes the right species of leaves (#035).
+- **Right-click order** (#033). A right-click uses the clicked block before the held BTW item, as in
+  4.B: flint and steel on a lever now flips the lever. Claim and protection mods that cancel a
+  right-click or deny the item now stop BTW items too, an off-hand click on a block never uses the
+  main-hand BTW item, and a successful use counts in the item-used statistic and its advancement
+  trigger. A few blocks still answer first the 1.20.1 way (see Known issues).
+- **Placement follows 4.B's rules** (#040). BTW's own placement now makes 4.B's checks: the target cell
+  must be free or replaceable, the clicked side must hold the block, no mob or player may stand in the
+  way (dropped items and XP orbs no longer count, nor do they block BTW's mob spawns), and you cannot
+  place a block while in mid-air (on a ladder or in water you can). A refusal is final: Minecraft's
+  placement no longer takes over, and your hand shows the right count. A tripwire hook from `/give`
+  places as in 4.B: on the side of a full block, facing away from it, whichever way you look. Falling
+  sand no longer deletes rails. Stairs, doors, beds, gates and observers placed the Minecraft way are no
+  longer turned round. An oak door is no longer used up without being placed. BTW-placed logs, the newer
+  woods included, lie along the clicked side. An oak trapdoor or fence gate placed against a live
+  redstone signal opens, as in 1.20.1. A block placed from the last item of a stack is turned like any
+  other. Windmills and water wheels are refused where a mob or player stands. Swimming or riding players
+  can place through BTW's code, as in 4.B, and BTW squids see a swimming player as in water (both
+  checked by code reading only) (CF2-P8a).
+- **Crashes.** Breaking, burning or blowing up a beacon or ender chest no longer fails with an error (a
+  broken beacon was lost), and TNT next to a beacon no longer stops the server (#036).
+- **Farmland** is trampled by 4.B's rule: a chance that starts at a fall of 0.75 blocks, checked once
+  per fall. Minecraft's own check, from 0.5 blocks, ran as well (#036).
+- **Tools BTW breaks** while mining a modern block, a bed or a door now tell other mods they broke
+  (Forge's player-destroyed-item event).
 
 Other fixes:
 
@@ -449,9 +616,32 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   II and Absorption. The enchanted golden apple gives BTW's Regeneration IV, Resistance and Fire
   Resistance. Cookies and pumpkin pie can be eaten when full, BTW wolves eat cooked meat, and BTW
   pigs eat baked potatoes.
-- **Food stack size inside BTW.** BTW's own item handling (its hoppers, for example) now stacks these
-  foods to 16, as 4.B did and as it already did for raw meat. The player's inventory and Minecraft
-  containers still stack them to 64 (see Known issues).
+- **Foods stack to their 4.B size everywhere** (#024). Every food now stacks to its 4.B size in the
+  player's inventory and in every container: 16 for most foods, BTW's own size for a BTW food that has
+  one (cured meat 32), and 16 for foods from other mods. Larger stacks that already exist stay as they
+  are but no longer grow. Foods that stack to 1 in 1.20.1, such as mushroom stew and the milk bucket,
+  stay at 1.
+- **Minecraft foods that 1.5.2 did not have now feed the value of their nearest BTW food** (#024):
+  mutton as BTW's own mutton, rabbit as BTW's chicken, salmon and the other fish as BTW's fish, rabbit
+  stew as the hearty stew. Before, they fed 1.20.1's value. Points of BTW's 60-point hunger bar:
+
+  | Food | Now | Was |
+  |---|---|---|
+  | Raw mutton, raw salmon | 9 | 6 |
+  | Tropical fish, pufferfish | 9 | 3 |
+  | Cooked mutton, cooked salmon | 12 | 18 |
+  | Cooked rabbit | 12 | 15 |
+  | Beetroot soup, suspicious stew | 9 | 18 |
+  | Honey bottle | 6 | 18 |
+  | Sweet berries, glow berries | 3 | 6 |
+  | Chorus fruit | 3 | 12 |
+
+  Raw rabbit (9), rabbit stew (30), beetroot and dried kelp (3) keep their amount. Raw mutton, rabbit,
+  salmon, tropical fish and pufferfish now carry BTW's food poisoning (a 30% chance, 60 s), as BTW's raw
+  meat does. BTW wolves eat mutton, rabbit and rabbit stew, BTW pigs eat beetroot and BTW chickens
+  beetroot seeds. Foods from other mods still feed 3 points per 1.20.1 hunger point, unless a
+  `btw_foods` table gives them a BTW value (see Added). BTW's own donut, kibble, stews and chocolate
+  milk now report their BTW values to other mods that read food values.
 - **Movement.** BTW's block speed modifiers apply to players (B4):
   - about 20% faster on hard surfaces;
   - 80% speed on sand, farmland, loose snow and plants;
@@ -518,11 +708,13 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   - Removed blocks that are already in a world, or placed with commands, are left alone. Operators can
     still `/give` and `/setblock` them, as in 4.B.
 - **Minecraft recipes that BTW 4.B removed or replaced are gone.** All of 4.B's recipe removals now
-  apply: 108 crafting recipes, 20 smelting, blasting, smoking and campfire recipes, extending maps and
+  apply: 109 crafting recipes, 20 smelting, blasting, smoking and campfire recipes, extending maps and
   repairing two tools in the crafting grid. For example:
   - planks come from chopping logs with an axe or from the saw, bread from baking bread dough, stone
     axes, pickaxes and shovels from sharp stone, and diamond tools and armour from diamond ingots;
   - the enchanting table, the brewing stand and eyes of ender come only from BTW villagers;
+  - oak fences come only from BTW's own recipes (six oak planks, or three oak mouldings): 1.20.1's
+    planks-and-sticks recipe is removed too, because 4.B replaced the 1.5.2 fence recipe with its own;
   - ores, sand, cobblestone, logs and netherrack no longer cook in a furnace, blast furnace, smoker or
     campfire. BTW's kiln, crucible and other routes take over where 4.B has one.
 - **BTW creative tab and JEI follow 4.B.** BTW items that 4.B kept out of its creative inventory,
@@ -531,14 +723,107 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   Whether to list them anyway is the maintainer's decision.
 - **Block item looks.** BTW blocks that have no item drawing of their own now show 1.5.2's plain cube
   item instead of the placed block's model, as in 4.B.
-- **Network.** The server and every client must run the same build of this port (network protocol
-  4, and the same set of BTW sound events). 1.3.0-alpha.3 clients and servers are refused.
+- **Hunger and healing follow BTW 4.B** (see Fixed). Walking costs hunger, armour weight raises every
+  hunger cost, and the hunger costs other mods add now drain BTW's hunger bar.
+  `/gamerule naturalRegeneration false` now stops BTW's healing too.
+- **Breaking BTW blocks** (see Fixed). Claim and protection mods now apply to BTW blocks. In creative
+  mode a BTW block is just removed, with no drops, and with a sword in hand it is not broken at all, as
+  with every block in 1.20.1's creative mode.
+- **The BTW workbench also makes Minecraft's and other mods' recipes** (see Fixed), after BTW's own.
+  Where a 1.20.1 recipe differs from 1.5.2's, the 1.20.1 one applies (see Known issues for the golden
+  apples).
+- **Plants from other mods follow BTW's rules on BTW soil** (#026). Crops planted on BTW farmland or
+  planters need light and watered soil, stop growing while weeds grow (particles at their base show the
+  weeds, and right-clicking the crop pulls them), grow twice as fast on fertilised soil, never grow in
+  the End, and turn farmland back into loose dirt when they are removed, as BTW's own crops do. Their
+  growth chance is BTW's carrot chance, 0.1, spread over the crop's own number of stages (set in
+  `btw_plant_rules`). Saplings from other mods grow by BTW's sapling rule (light, four stages, never in
+  the End); Nether and End saplings lose their own conditions. A bee visit gives these crops one BTW
+  growth chance. Unripe crops on BTW soil that are not BTW's own, beetroot and torchflower crops
+  included, now drop nothing, as BTW's unripe crops; ripe crops and the pitcher crop keep their drops.
+- **With the optional mods installed** (#027 to #032):
+  - older versions are refused at launch, through the version ranges BTW declares to Forge: Dynamic
+    Trees before 1.20.1-1.4.10, AppleSkin before 2.5.0, Cold Sweat before 2.4.1, LSO before
+    1.20.1-2.4.7, HarvestCraft Crops before 1.0.3 and HarvestCraft Trees before 1.0.2;
+  - bone meal on a plant from another mod that stands on BTW ground (grass, dirt, sand, farmland,
+    planters) is BTW fertiliser for that ground, as on BTW's own plants: on grass or sand it does
+    nothing and is kept. Before, it grew LSO's fern crops, for example;
+  - HarvestCraft food, in points of BTW's 60-point bar: Crops and Trees items give 3, or 6 above 4
+    nutrition; meals give 6, 9, 15, 24 or 30 by nutrition (up to 4, 8, 16 and 25, and above), BTW's
+    hearty stew being the cap. Raw ground beef and pork give 12 and the other raw ground meats 9, all
+    with BTW's food poisoning; cooked ground beef and pork give 15 and the others 12, as BTW's raw and
+    cooked meats. Meals crafted from raw meat can poison too. HarvestCraft itself makes its seeds
+    edible, and the crops band values them at 3 points, where 4.B values its only edible seed, pumpkin
+    seeds, at 1. Which value they should have is an open question for the maintainer;
+  - HarvestCraft recipes: dough costs 3 flour, as BTW's own dough (a mixing bowl, 3 flour, water and
+    salt make 1 dough; it was 2 dough from 1 flour). The grain bread recipe now takes 3 flour and a
+    water bucket, and the bakeware bread recipe takes HarvestCraft dough; both make BTW bread dough,
+    which bakes in the brick oven. HarvestCraft flour is made from BTW flour, and flour plants are
+    milled into BTW flour. The cattail torch makes an unlit BTW torch instead of being removed with the
+    vanilla torch. String from fibre is gone: fibre crops give 2 hemp fibres each in the millstone. As a
+    side effect, Food Extended's nut butters and cornmeal can now be made at the BTW workbench;
+  - HarvestCraft tree fruit and the fruit and pods of Dynamic Trees and its HarvestCraft add-on grow a
+    quarter as often, at the pace BTW gives sweet berries, which ripen like cocoa, and never in the End;
+    bone meal does nothing on them, as on BTW's cocoa.
+- **Network.** The server and every client must run the same build of this port (network protocol 5, and
+  the same set of BTW sound events). 1.3.0-alpha.3 clients and servers are refused. The server sends its
+  food table to every client, so tooltips and stack sizes agree.
+- **Acacia, dark oak, mangrove and cherry are BTW woods** (#034). Their logs chew like BTW's, and they
+  have their own bark for tanning (2, 5, 2 and 8 bark per leather), work stumps, saw planks, chopping
+  and BTW fuel values; Minecraft's log -> 4 planks recipe is removed for them, as for oak. Their logs
+  cost BTW's harvest hunger, and a bare hand no longer takes a whole log.
+- **Crimson and warped stems, and other mods' logs, follow BTW's log rule** (#034): they come off whole
+  only with an axe, chew without one, and take BTW's saw and stump remover. Stems give no bark and leave
+  no work stump; other mods' logs pay oak bark unless a data pack tags them (see Added). The bark and
+  stripped forms of BTW's woods (oak wood, stripped logs, ...) dig and chew like BTW logs. An axe strip
+  pays bark only for a barked log of another mod; for BTW's woods the chew or the saw pays it.
+- **Dynamic Trees** (#027, #034): trees of the four newer woods give their own bark, work stump and saw
+  planks; Nether fungi give no bark and leave no work stump; other mods' tree families pay their bark
+  tag, or oak bark, and the saw gives the planks their log makes.
+- **Leaves of the newer trees and of Dynamic Trees follow BTW's leaf rule** (#035), and so do other
+  mods' leaves whose sapling BTW can find: they drop only their sapling or seed, 1 time in 20 (1 in 40
+  for jungle-type leaves), with no sticks, no apples from Minecraft's leaves and no Fortune bonus.
+  Explosions no longer reduce leaf drops. Mangrove leaves drop propagules.
+- **Beds let you sleep** (#037) through the night, with 1.20.1's rules and messages, and they still
+  explode in the Nether and the End, whatever you hold; but a bed never sets the spawn point, day or
+  night. A bed spawn set before this version is used for one more respawn and then dropped. BTW's
+  hostile mobs within 8 blocks keep you awake, as Minecraft's do. The night skip moves BTW's clocks, the
+  moon phase and gloom nights (and Serene Seasons' calendar) on, as in 1.20.1. Phantoms stay off. 4.B
+  had no sleeping at all; this middle path is the maintainer's ruling.
+- **Beds and doors break and drop as in 1.20.1** (#039; see Fixed): one item, a bed keeps its colour,
+  and creative breaks drop nothing. BTW still charges its harvest hunger and tool wear, and nearby BTW
+  animals still panic.
+- **Iron and snow golems can no longer be built** from a pumpkin or jack o'lantern, by hand or by a
+  dispenser, as in 4.B (#036). Jack o'lanterns placed from now on go out next to water.
+- **The anvil** opens BTW's 3x3 crafting station when clicked, as in 4.B; an empty-handed sneak-click
+  opens Minecraft's repair menu (#036).
+- **The enchanting table opens** (#036). 4.B kept it and only removed its recipe; the port had blocked
+  it.
+- **Fence gates** update their neighbours when opened or closed, as in 4.B, and keep 1.20.1's sounds and
+  the sculk vibration (#036).
+- **Lava meeting water hardens as in 4.B** (#036): a source into obsidian; flowing lava within two
+  blocks of its source (four in the Nether) into a drop-less lava pillow; lava flowing down onto water
+  into a pillow. Thinner and falling lava stays lava, and water no longer flows into lava, so a lava
+  fall beside water stays lava. Cobblestone and stone generators make pillows.
+- **Black, brown and blue dye are colours only** (#038), by the maintainer's ruling: the book and quill,
+  polished lapis, chocolate, chocolate milk and the librarian's ink sac trade need the ink sac, lapis
+  lazuli or cocoa beans, as in 4.B. The three dyes now also dye BTW candles, wool, vases and wool slabs
+  in the 2x2 grid, and black dye passes wicker and slat filters like the other dye powders. Where a
+  recipe asks for one of the 1.20.1 dyes, the ink sac, lapis lazuli or cocoa beans still stand in for it
+  at BTW's grids.
+- **With Legendary Survival Overhaul**, LSO's sleep recovery now applies, since beds sleep (#031; not
+  checked in a run).
 - CurseForge description:
   - removed the "field manual" instruction;
   - filled in the issue tracker;
   - marked the wiki and original-BTW links as maintainer TODOs;
   - described the actual JEI coverage;
-  - added a "Known Differences from BTW 4.B" section, updated for this release (CTX-4).
+  - added a "Known Differences from BTW 4.B" section, updated for this release (CTX-4);
+  - updated it on 2026-10-21: the Known Differences cover beds, the hardcore respawn, door, trapdoor and
+    fence-gate redstone, the newer woods, the 1.20.1 dyes and the anvil's repair menu; the Dynamic Trees
+    notes follow the new log and leaf rules; "Sleep costs you" and the "Hardcore spawn, costly sleep,
+    FC's death penalties" line are gone, since neither 4.B nor the port has costly sleep and the
+    hardcore respawn is not ported.
 
 ### Added
 - JEI: soulforge and campfire recipe categories, FC's special crafting recipes in the crafting
@@ -558,6 +843,80 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
 - BTW's 1.5.2 sounds as 508 sound events, one per 1.5.2 sound name, playing the 1.5.2 sound files
   that Minecraft 1.20.1 still ships, with a 1.20.1 subtitle where one fits. They can be played with
   `/playsound`, for example `/playsound betterthanwolves:mob.zombiepig.zpig master @s`.
+- Optional support for six mods (#027 to #032). None is bundled in the jar or required, and BTW plays
+  the same without them. Each integration starts only when its mod is installed, and switches itself off
+  with a log line, instead of crashing, if its mod throws an error or has changed; the one exception is
+  the small fix that keeps Serene Seasons from eating bone meal, which silently does nothing if Serene
+  Seasons changes that code (#028). Tested versions are in brackets.
+  - **Dynamic Trees** (1.20.1-1.4.10 and 1.4.11; #027): living trees follow BTW's log rules. Without an
+    axe that fells BTW logs, each hit chews the trunk (bark first, then sticks and sawdust) and a
+    chewed-through tree drops no logs; an axe fell costs BTW's hunger and 1 durability per log, and
+    Fortune's bonus logs are kept. The trunk base is a BTW stump: the iron chisel turns a dead one into
+    a work stump, and the stump remover clears it. The BTW saw fells a full-width trunk: the cut block
+    gives BTW's sawn planks, sawdust and bark, and the rest of the tree falls. Trees of oak, spruce,
+    birch, jungle and, since 2026-10-20, acacia, dark oak, mangrove and cherry give their own bark, work
+    stump and planks; Nether fungi give no bark and leave no work stump, and other families pay their
+    bark tag, or oak bark, and give the planks their log makes (#034). Bone meal only fertilises the
+    tree's soil, from either hand. Saplings grow by BTW's sapling rule, and Dynamic Trees' Nether fungi
+    grow 1 time in 50 as BTW's mushrooms do, which Dynamic Trees itself never does. Since 2026-10-20 its
+    leaves drop by BTW's leaf rule: the species' seed 1 time in 20 (1 in 40 for jungle-type trees), no
+    sticks and no Fortune bonus, with Dynamic Trees' seasonal seed chance still applied (#035).
+  - **Serene Seasons** (9.1.0.3; #028): seasons reach BTW's own crops. BTW wheat grows in summer and
+    autumn, hemp in spring and summer; out of season Serene Seasons' setting applies (no growth, one
+    growing day in six, or the crop is destroyed). A lit BTW light bulb counts as greenhouse glass for
+    the crops below it. The season's temperature also drives BTW's snow, ice and farmland rules, and
+    bone meal stays BTW fertiliser out of season instead of being used up by Serene Seasons. Its
+    calendar and season sensor can be made at the BTW workbench.
+  - **AppleSkin** (2.5.1, client only; #029): AppleSkin shows BTW's food model. Tooltips give a food's
+    points on BTW's 60-point bar, the fat it adds, its food-poisoning chance and the penalty it changes;
+    the held-food preview and the exhaustion underlay sit on BTW's food row; the health hint shows what
+    a meal heals by BTW's rules; the F3 line reads BTW's food, fat and exhaustion. Foods AppleSkin
+    cannot see, such as pumpkin seeds and milk, get the tooltip too.
+  - **Cold Sweat** (2.4.3.2; #030): BTW's fires (from 6 °F for embers to 35 °F for a stoked fire), the
+    hibachi, the brick oven, BTW's torches and candles, smouldering logs, burning ladders and
+    lava-cracked loose stone warm the player, and so do Minecraft's lit candles, candle cakes and
+    lantern, as BTW's candle and torch. BTW's wool, padded, tanned and gimp clothing insulates, BTW's
+    cloth and leather work as Cold Sweat sewing insulation, BTW's soups and mushroom stew warm over
+    time, and BTW's fuels burn in Cold Sweat's hearth and boiler at their BTW value against coal.
+    Freezing costs BTW hunger (up to 0.05 exhaustion a second, and BTW burns fat before food), but never
+    during Cold Sweat's Grace or in peaceful mode.
+  - **Legendary Survival Overhaul** (1.20.1-2.4.7; #031): LSO data for BTW's heat sources, clothing
+    (cold resistance, heat resistance for plate, limb protection for padded and plate), hot meals,
+    drinks and heater fuels; burning torches warm when held, and BTW fat gives up to 2 points of cold
+    resistance. LSO's Cold Hunger tints BTW's food pips frost blue instead of drawing a second food bar.
+    With LSO's default settings LSO's own healing replaces BTW's 30-second heal and is paid in BTW
+    hunger, but heals only above 24 of 60 food, as BTW does.
+  - **Pam's HarvestCraft 2** (Crops 1.0.3, Trees 1.0.2, Food Core 1.0.5, Food Extended 1.0.1, and the
+    Dynamic Trees and Serene Seasons add-ons for it; #032): HarvestCraft runs on BTW's farming and food.
+    Crops and saplings follow BTW's soil, growth and sapling rules, meals feed on BTW's scale (see
+    Changed), seeds, grains and vegetables feed BTW's animals, flour plants and fibre crops go through
+    the millstone, gardens spread with BTW dung instead of bone meal, and tree fruit ripens at BTW's
+    cocoa pace. HarvestCraft items that BTW's rules govern say so in their tooltip.
+- General rules that data packs and other mods can use (#020, #022 to #028, #032, #034, #035; formats in
+  `BRIDGE_SPEC.md`):
+  - `btw_foods` data gives any item a BTW food value, animal-food value, poisoning chance or wolf-meat
+    flag, by item or tag, with Forge load conditions, and `tiers` value a whole mod's foods by nutrition
+    band;
+  - `btw_recipe_replacements` replaces or removes another mod's recipe by id, and `btw_machine_recipes`
+    adds millstone recipes for an item tag;
+  - `btw_plant_rules` sets the growth chance of modded crops on BTW soil;
+  - the block tags `#betterthanwolves:fc_soil_plants` (a modded wild plant follows BTW's wild-plant
+    rules), `#betterthanwolves:dung_spreads` (BTW dung spreads it) and
+    `#betterthanwolves:paced_like_sweet_berries` (it grows at BTW's sweet-berry pace, never in the End);
+  - BTW's own wheat and hemp post Forge's crop-growth events, so season mods can stop or allow their
+    growth;
+  - code hooks for integrations: other mods' saplings and fungi can grow by BTW's sapling or mushroom
+    rule (`TwinRegistry.registerModdedSapling`), modded blocks can answer BTW's saw, stump remover and
+    fertiliser (`ModernBlockHooks`), season and climate mods can drive BTW's crops, snow and ice
+    (`SeasonGate`, `BTWClimate`), and client mods can draw on BTW's food row (`FoodHudExtension`);
+  - for temperature mods, BTW's heat sources now include lava-cracked loose cobblestone and stone brick,
+    which 4.B counts as warm, and Minecraft's torch, lantern, candles and candle cakes by their nearest
+    BTW relative;
+  - the block tags `#betterthanwolves:bark/<wood>` (`oak`, `spruce`, `birch`, `jungle`, `blood_wood`,
+    `acacia`, `dark_oak`, `mangrove`, `cherry`) and `#betterthanwolves:bark/none` decide which bark a
+    log BTW has no wood type for pays, or that it pays none; an untagged log pays oak bark (#034);
+  - an integration can decide what its leaves drop under BTW's leaf rule with `LeafDrops.register`,
+    using Minecraft types only (#035).
 - Development tooling:
   - `tools/LinkAudit.java` checks the class precedence of the built jar and reports Minecraft class
     references in frozen BTW code;
@@ -567,22 +926,53 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
     client handler and fails if that forwarding chain breaks;
   - `:Forge:generateLegacySoundsJson` (run by hand) builds `sounds.json` from the 1.5.2 and 1.20.1
     asset indexes, and `:Forge:generateBtwTextureAnimations` (part of every build) turns BTW's 1.5.2
-    texture animation files into `.png.mcmeta` files.
+    texture animation files into `.png.mcmeta` files;
+  - `-PbtwDevMods=<tokens>` puts optional mods on the development runtime (`dynamictrees`,
+    `dynamictrees-latest`, `sereneseasons`, `appleskin`, `coldsweat`, `lso`, `harvestcraft`, `dtphc2`,
+    `ss-hc2crops`); the build stops on an unknown token, on both Dynamic Trees tokens at once, and on an
+    add-on without the mods it needs;
+  - two more `jar` task guards: every class in the jar must be BTW's own (no bundled mod, no nested
+    jar), and `betterthanwolves.mixins.json` must list exactly the mixin classes in the jar;
+  - the start-up self-audit also checks BTW's table of heat sources, clothing, meals and fuels
+    (`[SELF-AUDIT/thermal]`) and the BTW ids in the optional-mod data files against the server's BTW ID
+    config (`[SELF-AUDIT/compat-refs]`);
+  - development runs load a filtered copy of Modern-Common (`:Forge:syncDevModernCommon`, built from the
+    jar's own shadow list through one copySpec) instead of deleting classes from Modern-Common's build
+    output, and BTW's bytecode passes run inside `extractFcClasses` (2026-10-19). A build with unchanged
+    sources rewrites no class directory that a running server loads, which ends the
+    `NoClassDefFoundError` crash of a development server when a client is built beside it, and the
+    "cannot access EntityLiving" compile failure. `removeModernCommonShadowedClasses`,
+    `openUpEntityAccess`, `widenFcHookDescriptors`, `extendFcPathingBuildRange` and
+    `extendFcTreeBuildRange` are no longer tasks, so an `-x` list that names them fails; LinkAudit gains
+    a DEV FILTER CHECK;
+  - `deriveModernWoodTextures` (`Forge/gradle/modern-woods.gradle`, part of every build) derives the
+    four newer woods' work-stump textures from BTW's work-stump overlay and the 1.20.1 logs, and
+    rewrites a file only when its pixels and bytes differ; `-PbtwClientExtraJar=<path>` names the 1.20.1
+    client jar it reads, and a missing input only warns;
+  - the start-up self-audit also checks the four newer woods at legacy id 165 (`[SELF-AUDIT/wood]`), the
+    beds and doors that take 1.20.1 drops (`[SELF-AUDIT/pairdrops]`) and which code owns each block hook
+    (`[SELF-AUDIT/hook]`).
 
 ### Known issues
-- **Not checked on a client yet.** A dedicated server has been run on a fresh world three times
-  (twice on 2026-10-10, once after the 2026-10-11 wave): it boots with no errors, BTW initialises
-  and vanilla mobs are replaced. For the 2026-10-14 wave it ran three more times with scripted
-  in-world tests of BTW's growth, fire and falling-block rules, and for the 2026-10-15 wave with
-  scripted tests of bone meal, the newer plants and the removed blocks. The maintainer has played
-  development builds, which is how the 2026-10-11 bugs were found, and the last session ran a build from
-  the middle of that wave (its log shows the BTW tab built with 355 entries), but none of the in-game
-  checks has been run on the final code. Every rendering fix (red tint, mob renderers and animations,
-  held items, chests and baskets, block and item models, animated textures), every client-side sound,
-  the creative tab and JEI are checked by code review only, and so is how BTW blocks draw their faces
-  next to other blocks now that BTW's table of opaque blocks is filled (2026-10-14). So are the arm
-  swing when bone meal is used, bone meal from the off hand, and the removed items' absence from the
-  vanilla creative tabs and JEI (2026-10-15). Multiplayer is untested too.
+- **Mostly not checked on a client yet.** A dedicated server has been run on a fresh world three times
+  (twice on 2026-10-10, once after the 2026-10-11 wave): it boots with no errors, BTW initialises and
+  vanilla mobs are replaced. For the 2026-10-14 wave it ran three more times with scripted in-world
+  tests of BTW's growth, fire and falling-block rules, and for the first 2026-10-15 wave with scripted
+  tests of bone meal, the newer plants and the removed blocks. The maintainer has played development
+  builds, which is how the 2026-10-11 bugs were found, and the last session ran a build from the middle
+  of that wave (its log shows the BTW tab built with 355 entries), but none of the in-game checks has
+  been run on the final code. Every rendering fix (red tint, mob renderers and animations, held items,
+  chests and baskets, block and item models, animated textures), every client-side sound, the creative
+  tab and JEI are checked by code review only, and so is how BTW blocks draw their faces next to other
+  blocks now that BTW's table of opaque blocks is filled (2026-10-14). So are the arm swing when bone
+  meal is used, bone meal from the off hand, and the removed items' absence from the vanilla creative
+  tabs and JEI (2026-10-15). A development client has checked only the food bar's place in the HUD
+  (2026-10-15), the AppleSkin, Cold Sweat and LSO displays (2026-10-17), hold-to-craft (2026-10-18), and
+  from 2026-10-19 to 2026-10-21 the item count after placing a block (also from a ladder and after
+  death), windmill dyeing, sleeping through the night, the hand after a refused placement, and the newer
+  woods' textures and dig speed. No client has been run from a launcher install with the release jar,
+  and no release jar has been booted at all for the work of 2026-10-19 to 2026-10-21. Multiplayer is
+  untested too.
 - **Re-entering a world.** No cause was found. It has not been tested whether a world now always
   shuts down cleanly and releases its `session.lock`. If a world will not open again, please report
   it with `logs/latest.log` and any crash report.
@@ -598,16 +988,12 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   with its own right-click action, Minecraft's placement runs with BTW's facing and variant, but
   without BTW's item-specific placement code: slabs do not join into a double slab, saplings ignore
   BTW's soil rules, a burning torch does not light the block you click, and BTW's "cannot be placed
-  here" checks are not made (MISSED-1). Placing against any other block uses BTW's code.
-- **Dropped white dye fertilises BTW farmland and planters** like bone meal, and is used up. Used by
-  hand it does nothing. BTW reads 1.20.1's white dye as its own bone meal (see the dye note below), and
-  the check that stops this for dropped items is still missing.
-- **The blast furnace, smoker, furnace minecart and crossbow cannot be crafted from new materials**:
-  their recipes need a furnace or a tripwire hook, which BTW 4.B removed. A furnace mined with Silk
-  Touch (as in 4.B) or a hook from an older world still works in them. A BTW route for these recipes
-  is planned.
-- A tripwire hook given with `/give` cannot be placed. This is an older placement problem, not part of
-  the removal of the hook.
+  here" checks are not made (MISSED-1). Placing against any other block uses BTW's code, with 4.B's
+  placement checks since 2026-10-21.
+- **The enchanted golden apple cannot be crafted, and the golden apple costs 8 gold ingots.** In 4.B, 8
+  gold nuggets make a golden apple and 8 gold blocks an enchanted one. The BTW workbench makes these
+  Minecraft recipes in their 1.20.1 form, which has no enchanted golden apple. A 4.B recipe for it is a
+  planned follow-up.
 - Dead bushes on grass blocks or dirt (1.20.1 places some in swamps and giant taigas) are removed when
   a block next to them changes, because BTW lets dead bushes grow only on sand. Dead bushes on sand,
   red sand and terracotta stay.
@@ -627,7 +1013,6 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   squid's tentacle attack, and villager and witch particles (R8).
 - BTW's Hardcore Buoy option has no effect: dropped items float as in 1.20.1. The "Obstructed"
   player-names option hides only players' name tags behind walls, not named mobs'.
-- Foods stack to 64 in the player's inventory, not to BTW's 16.
 - BTW mobs do not trigger pressure plates or tripwire, do not travel through nether or end portals,
   and are not slowed by soul sand. Moving piston blocks are solid cubes to them (SW-M1).
 - Lightning does not charge BTW creepers or turn BTW pigs into zombie pigmen: Minecraft's lightning
@@ -637,12 +1022,98 @@ Most of these restore BTW 4.B behaviour, but players will notice them.
   composite bow.
 - When BTW stores or changes items that 1.20.1 split into separate items, some come back as their
   1.5.2 equivalent:
-  - black, brown, blue and white dye become ink sac, cocoa beans, lapis lazuli and bone meal;
   - smooth sandstone becomes cut sandstone;
   - stone slabs become smooth stone slabs;
-  - blue orchids, tulips, wet sponge and coloured beds collapse the same way.
+  - blue orchids, tulips, wet sponge and coloured beds collapse the same way (a broken bed keeps its
+    colour since 2026-10-20, when beds began to drop as in 1.20.1);
+  - at the BTW workbench this means: the blue orchid, azure bluet, oxeye daisy, allium and tulip dyes
+    and the flower banner pattern make nothing; a dyed bed comes out red; and smooth sandstone slabs and
+    stairs and stone slabs come out as cut sandstone slabs, sandstone stairs and smooth stone slabs;
+  - the same collapse reaches placed flowers: a blue orchid, allium, azure bluet, tulip or oxeye daisy
+    drops a poppy when it is broken or pops, and one placed without sneaking against a block BTW handles
+    becomes a poppy (CF2-DR3, CF2-P8c).
 - BTW's own items can only be used from the main hand.
 - Minecraft water can wash away BTW vine traps and placed buckets, which 1.5.2 protected.
+- Right-click order (#033): a few blocks that have their own 1.20.1 right-click act before the held BTW
+  item: redstone ore, an empty flower pot, signs, a note block clicked with a tuning fork, and TNT
+  (flint and steel takes 1 durability when it primes TNT, and a fire charge primes it at once). This is
+  accepted for now; a review of such blocks is next. After a BTW item is used on a block, the same click
+  can also run the item's use-in-the-air action, which 4.B never did. When a BTW item declines a click,
+  Minecraft's own use of the item can still run: flint and steel lights a fire while you are in mid-air,
+  where 4.B refuses. With an empty main hand, a sneak-click with an item in the off hand does not
+  activate the block (1.20.1's rule; 4.B activates it).
+- Placement (#040): glass counts as a full block for BTW's placement, so a tripwire hook can be hung on
+  glass, which 4.B refuses. Stairs placed without sneaking against a block BTW handles (oak stairs on
+  stone, for example) face the wrong way round, and oak trapdoors placed that way always sit in the
+  lower half and face by your look, not by the side you clicked. A tripwire hook placed through BTW's
+  code shows as attached only after a block next to it changes. Placements through BTW's code post no
+  block-place event, so other mods that watch placements do not see them. Other mods' block placers that
+  act as a fake player can be refused against blocks BTW handles, because 4.B's mid-air rule sees them
+  as airborne (Create's deployer is not affected); the maintainer ruled on 2026-10-20 to keep the rule
+  for them.
+- A door whose top half burns first may drop itself (1.20.1; 4.B dropped nothing).
+- Dyes stored in BTW containers before this update read back as the 4.B items: white dye as bone meal,
+  and black, brown and blue dye as the ink sac, cocoa beans and lapis lazuli. A world opened again in an
+  older build does not read the dyes that this build stored correctly.
+- In the 2x2 grid, BTW's colour recipes accept a candle, wool, vase or wool slab of any colour, where
+  4.B needs the white one. This is older than this update, which adds the three 1.20.1 dyes to those
+  recipes.
+- The newer woods have no BTW sidings, mouldings or corners yet (approved as a follow-up, FU-W1).
+  Crimson and warped stems chew into BTW's chewed log, which looks like oak, as every chewed log does in
+  4.B. Acacia logs stored by BTW before this update do not stack with new ones until they pass through a
+  Minecraft inventory. The newer woods' work stumps use textures made from Minecraft's at build time, so
+  resource packs do not change them (their bark items do follow resource packs).
+- Right-clicking a note block, furnace, ender chest or beacon runs Minecraft's own action, and breaking
+  an ender chest or beacon runs Minecraft's own break, until BTW's block entities are bridged.
+- BTW 4.B's random hardcore respawn is not ported. With beds no longer setting the spawn, you respawn at
+  the world spawn, or at a charged respawn anchor (CF2-U1-HS).
+- BTW's own code learns of a `/difficulty` change only at the next player tick, and not at all while no
+  player is online; until then BTW's mobs go by the old difficulty.
+- Other problems from the 2026-10-19 CurseForge comment are still open: a falling block shows as an
+  orange outline until it lands (CF2-R1); the cobweb's breaking crack looks stretched (CF2-R3); loose
+  snow slabs give off long-lived campfire smoke instead of 4.B's faint wisps (CF2-R5b); items from a
+  broken block can shoot out in odd directions (CF2-DR2); a mining charge drops nothing from the blocks
+  it destroys, beds and doors aside (CF2-DR5); and deepslate and raw ores work as in plain 1.20.1
+  (CF2-PR-DEEP, CF2-PR-ORE). The triage gives the status of each.
+- Hunger costs that still differ from 4.B:
+  - food poisoning (the hunger effect) drains a fifth of 4.B's hunger: 1.20.1 charges 0.005 exhaustion
+    per tick and level, 1.5.2 charged 0.025;
+  - breaking a block added after 1.5.2 costs 0.005, a fifth of 4.B's 0.025. That includes the bark and
+    stripped forms of BTW's woods, crimson and warped stems and other mods' logs. BTW's own blocks, the
+    four newer woods' logs (since 2026-10-20) and beds and doors (which now break as in 1.20.1) cost
+    4.B's amount;
+  - a jump onto a ladder costs a jump's hunger, which 4.B did not charge;
+  - with only your feet in water, BTW blocks already mine at the under-water speed (4.B slowed mining
+    only with your head under water).
+- With the optional mods:
+  - Dynamic Trees: a thick trunk (radius 9 to 24, wider than one block) loses one radius per chewing
+    hit, so a 3x3 trunk takes about 9 hits where BTW's logs would take 45, and a chewed trunk can grow
+    thick again. The stump remover and the chisel work only on a dead stump: on a living tree the
+    remover would delete the whole tree without drops. Tree families from other mods pay oak bark unless
+    a data pack puts their log in a `#betterthanwolves:bark/<wood>` tag. Dynamic Trees' growth potions,
+    and fertilisers other than bone meal, keep their own effects. Its `replaceVanillaSapling` option is
+    not supported: BTW grows oak, spruce, birch and jungle saplings with its own tree code, which never
+    tells Dynamic Trees that a sapling grew.
+  - Serene Seasons: with 9.3.0.27, Cold Sweat switches its own season temperatures off (it takes Serene
+    Seasons 9.1.0.0 to 9.3.0.26 only), so use 9.1.0.3 with Cold Sweat. With the older 9.0.0.46 line,
+    BTW's season tags are not used: that version's own rule gates every crop by its block name. In
+    spring Serene Seasons melts ice into water sources, ice a player placed included. Blocks that BTW
+    draws itself with a grass tint stay summer green.
+  - AppleSkin: other mods that listen to AppleSkin see BTW food in AppleSkin's units (a third of BTW's
+    points, rounded up) and a saturation made from BTW's fat value. The health hint assumes BTW's
+    healing is on, because the client is not told the `naturalRegeneration` rule. Numbers use the
+    system's decimal separator, as AppleSkin's own do.
+  - Cold Sweat: its cold and heat damage sets off blasting oil you carry, as any damage does in BTW. 4.B
+    has no recipe for wool boots, so only three of the four wool pieces can be made in survival.
+    Waterskins do not warm on BTW's campfire spit; Cold Sweat's boiler, which burns BTW fuels, heats
+    them.
+  - Cold Sweat and LSO together both simulate body temperature from the same BTW sources, so their
+    effects stack, and BTW logs one warning. Recommended: let Cold Sweat own temperature and set LSO's
+    "Temperature Enabled" to false (LSO's thirst, limbs and health keep working).
+  - LSO: drinking water by hand still works while you are food-poisoned; only drink items are refused.
+  - HarvestCraft and Dynamic Trees log a few errors about their own data at start-up (for HarvestCraft:
+    the melon pie, honey muffin and caramel cupcake recipes, and its fern, grass and tall-grass drops).
+    They come from those mods, not from BTW.
 - Minor visual and sound gaps:
   - the composite bow shows no draw animation;
   - placed tools show their 1.20.1 texture;

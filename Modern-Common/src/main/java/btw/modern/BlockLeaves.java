@@ -39,4 +39,68 @@ public class BlockLeaves extends Block {
             }
         }
     }
+
+    // --- 1.5.2 BlockLeaves drops (vanilla/server BlockLeaves.java:184-287) ---
+    // FCBlockLeaves and FCBlockBloodWoodLeaves inherit these. With Block's defaults FC's own harvest, decay, machines
+    // and block dispenser gave oak leaves (id 18, damage 0) for every species, never a sapling, and blood wood leaves
+    // dropped their sapling on every break. dropBlockAsItemWithChance (:200-244, Fortune and apples) is not ported:
+    // both FC subclasses replace it (Server FCBlockLeaves.java:62-85, Client FCBlockBloodWoodLeaves.java:97-118).
+
+    /**
+     * 1.5.2 BlockLeaves.quantityDropped (vanilla/server BlockLeaves.java:184-187): 1 in 20. FCBlockBloodWoodLeaves
+     * reads it through quantityDroppedWithBonus; FCBlockLeaves rolls its own 1/20 (1/40 jungle) instead.
+     */
+    @Override
+    public int quantityDropped(java.util.Random random) {
+        return random.nextInt(20) == 0 ? 1 : 0;
+    }
+
+    /** 1.5.2 BlockLeaves.idDropped (vanilla/server BlockLeaves.java:192-195): the sapling (id 6). */
+    @Override
+    public int idDropped(int metadata, java.util.Random random, int fortune) {
+        return Block.sapling.blockID;
+    }
+
+    /** 1.5.2 BlockLeaves.damageDropped (vanilla/server BlockLeaves.java:266-269): the wood species. */
+    @Override
+    public int damageDropped(int metadata) {
+        return metadata & 3;
+    }
+
+    /**
+     * 1.5.2 BlockLeaves.harvestBlock (vanilla/server BlockLeaves.java:250-260): shears take the species' leaves and
+     * nothing else; any other harvest is Block's (silk touch, then the sapling roll). 1.5.2 Item.shears is item 359,
+     * which the modern shears convert to (ProxyRegistry). FCBlockBloodWoodLeaves handles its own shears first.
+     */
+    @Override
+    public void harvestBlock(World world, EntityPlayer player, int i, int j, int k, int metadata) {
+        if (!world.isRemote && player != null && player.getCurrentEquippedItem() != null
+                && player.getCurrentEquippedItem().itemID == Item.shears.itemID) {
+            player.addStat(StatList.mineBlockStatArray[this.blockID], 1);
+            this.dropBlockAsItem_do(world, i, j, k, new ItemStack(Block.leaves.blockID, 1, metadata & 3));
+        } else {
+            super.harvestBlock(world, player, i, j, k, metadata);
+        }
+    }
+
+    /**
+     * 1.5.2 BlockLeaves.createStackedBlock (vanilla/server BlockLeaves.java:284-287): this block with the species bits,
+     * not damageDropped (blood wood's is its sapling subtype). It is the silk-touch drop (Block.harvestBlock) and
+     * what FC's block dispenser takes (FCBlockLeaves.GetStackRetrievedByBlockDispenser).
+     */
+    @Override
+    public ItemStack createStackedBlock(int metadata) {
+        return new ItemStack(this.blockID, 1, metadata & 3);
+    }
+
+    /**
+     * 1.5.2's value for leaves: Block.canSilkHarvest() is renderAsNormalBlock() && !isBlockContainer (vanilla/server
+     * Block.java:1182-1185), true for leaves (:551-554; BlockLeavesBase overrides only isOpaqueCube). Modern-Common
+     * Block answers false for every block (Block.java:378); restoring 1.5.2's general rule there needs its own
+     * silk-touch audit of every FC full cube (the Modern-Common drop-parity follow-up), which then removes this.
+     */
+    @Override
+    public boolean canSilkHarvest() {
+        return true;
+    }
 }

@@ -650,9 +650,11 @@ public abstract class Block {
     }
 
     public void dropBlockAsItemWithChance(World world, int x, int y, int z, int metadata, float chance, int fortune) {
-        if (ModernTwins.isTwin(blockID)) {
+        // FCMOD-INTEGRATION(1.20.1): vanilla_pair_drops: a bed or door at its live cell drops that cell's 1.20.1 loot (World.UsesModernBlockLoot), as a twin does
+        if (ModernTwins.isTwin(blockID) || world.UsesModernBlockLoot(x, y, z, blockID)) {
             // A twin stands for a live 1.20.1 plant (FCBlockSapling / FCBlockMushroom twins inherit this): that plant's
-            // loot, rolled once against chance as the stand-ins do, instead of an item of the twin's own id.
+            // loot, rolled once against chance as the stand-ins do, instead of an item of the twin's own id. A ruled bed
+            // or door is its own live 1.20.1 block: its half's loot, so one item per bed or door with the partner pop.
             if (!world.isRemote && (chance >= 1.0F || world.rand.nextFloat() <= chance)) {
                 world.DropModernBlockLoot(x, y, z);
             }
@@ -1529,7 +1531,18 @@ public abstract class Block {
         }
     }
     public boolean DropComponentItemsOnBadBreak(World world, int i, int j, int k, int iMetadata, float fChanceOfDrop) { return false; }
-    public void DropItemsOnDestroyedByExplosion(World world, int i, int j, int k, Explosion explosion) {}
+    // FCMOD-INTEGRATION(1.20.1): vanilla_pair_drops: 1.5.2's base body (vanilla/server Block.java:1730-1747) where the live 1.20.1 block owns the loot (FCExplosionMining.DestroyBlock on a bed or door); every other block keeps the empty stub until CF2-DR5 ports the body for all by dropping the UsesModernBlockLoot clause
+    public void DropItemsOnDestroyedByExplosion(World world, int i, int j, int k, Explosion explosion) {
+        if (world == null || world.isRemote || !world.UsesModernBlockLoot(i, j, k, blockID)
+                || !canDropFromExplosion(explosion)) {
+            return;
+        }
+        float fChance = explosion != null ? 1F / explosion.explosionSize : 1F;   // null: the mining charge
+        int iMetadata = world.getBlockMetadata(i, j, k);
+        if (!DropComponentItemsOnBadBreak(world, i, j, k, iMetadata, fChance)) {
+            dropBlockAsItemWithChance(world, i, j, k, iMetadata, fChance, 0);
+        }
+    }
 
     // --- BTW-added: Dirt dug ---
 

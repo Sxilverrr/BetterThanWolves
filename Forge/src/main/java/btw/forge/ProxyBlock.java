@@ -567,6 +567,11 @@ public class ProxyBlock extends Block implements EntityBlock {
     public InteractionResult use(BlockState state, Level level, BlockPos pos,
                                  Player player, InteractionHand hand, BlockHitResult hit) {
         if (level instanceof ServerLevel sl) {
+            // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: Stage 1 and Stage 2 run for the main hand only, as 1.5.2's one hand; the off-hand pass leaves the block alone
+            // An OFF_HAND use (the 1.20.1 client's second pass after a main-hand pass that did not consume,
+            // Minecraft.java:1662, :1698-1720, or another mod's call) would re-run Stage 1 and use the MAIN-hand FC item
+            // (the FC player has only the main hand): a second activation or a stuck main-hand tool from one click.
+            if (hand != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
             btw.modern.World world = WorldBridge.getOrCreate(sl);
             PlayerBridge fcPlayer = PlayerBridge.getOrCreate(player);
             fcPlayer.syncFromReal();
@@ -586,7 +591,7 @@ public class ProxyBlock extends Block implements EntityBlock {
                     fcPlayer, side, hitX, hitY, hitZ);
 
             if (!result) {
-                // Stage 2: FC item use on block (creative restore: tryPlaceHeldItem)
+                // Stage 2: FC item use on block (DENY, click mark, creative restore and stat: tryPlaceHeldItem)
                 result = tryPlaceHeldItem(fcHeld, player, fcPlayer, world, pos, side, hitX, hitY, hitZ);
             }
 
@@ -596,6 +601,9 @@ public class ProxyBlock extends Block implements EntityBlock {
             // Sync FC item state (damage, stackSize) back to MC inventory.
             if (fcPlayer.inventory instanceof InventoryBridge invBridge) {
                 invBridge.writeBackAll();
+                // INV-RESYNC: the client sees the held stack FC left, as after every 1.5.2 place packet
+                // (NetServerHandler.java:551-569)
+                if (result) invBridge.resendHeldSlot();
             }
 
             // Force immediate tile entity sync to clients so visual changes
@@ -612,8 +620,10 @@ public class ProxyBlock extends Block implements EntityBlock {
             // This prevents MC from calling use() again for the off hand
             return (result || containerOpened) ? InteractionResult.SUCCESS : InteractionResult.PASS;
         }
-        // CLIENT: return SUCCESS so MC sends the interaction packet to the server.
-        // Returning PASS causes MC to skip the server-side block activation entirely.
+        // CLIENT: the client cannot predict FC's activation, so it claims the click. MultiPlayerGameMode.useItemOn sends
+        // ServerboundUseItemOnPacket whatever this returns (MultiPlayerGameMode.java:284-296); the SUCCESS only stops
+        // the client's own item step, its use-item packet and its off-hand pass (Minecraft.java:1698-1707), so the
+        // server decides the click alone.
         return InteractionResult.SUCCESS;
     }
 
@@ -623,15 +633,151 @@ public class ProxyBlock extends Block implements EntityBlock {
      * (:394-402; Stage 1, onBlockActivated, is never restored). 1.20.1 restores the creative count only around
      * ItemStack.useOn (ServerPlayerGameMode.useItemOn), not around Block.use, where the bridge runs this, so
      * without the restore the write-back that follows commits FC's in-place decrement / damage (a block placed
-     * against FC terrain, a planted seed, flint and steel) to a creative inventory. Shared with
-     * BlockBehaviorMixin.btw$use (vanilla-id blocks with an FC replacement).
+     * against FC terrain, a planted seed, flint and steel) to a creative inventory.
+     *
+     * <p>FCMOD-INTEGRATION(1.20.1): fc_item_use_order: this is the single FC {@code onItemUse} point of a click on a
+     * block. Its callers are Stage 2 inside the clicked block's use (ProxyBlock.use; BlockBehaviorMixin.btw$use for
+     * vanilla-id blocks with an FC replacement) and 1.20.1's item step for the blocks Stage 2 did not serve
+     * (ServerPlayerGameModeMixin.btw$fcItemStep). In order: a RightClickBlock {@code useItem} DENY of this click
+     * refuses with nothing recorded (FcItemUseOrder; 1.20.1 refuses its own item step on it,
+     * ServerPlayerGameMode.java:351); the click frame records that FC ran here, so the item step never runs it a second
+     * time; and a true result awards {@code Stats.ITEM_USED} for the clicked item, as 1.5.2 tryPlaceItemIntoWorld did
+     * (vanilla/server ItemStack.java:127-130). The ITEM_USED_ON_BLOCK criterion is not triggered here: a Stage 2
+     * success makes block use consume, which triggers it (ServerPlayerGameMode.java:344-345), and the item step
+     * triggers it itself.</p>
+     *
+     * <p>FCMOD-INTEGRATION(1.20.1): placement_validity: two more steps. An FC door item ({@code FCItemDoor}) is declined
+     * before FC runs, with nothing recorded, so 1.20.1's DoorItem places the door (see {@link #isPortGapDoorItem}). And
+     * when the clicked item is a 1.20.1 BlockItem whose FC item is of the 4.B ItemBlock family
+     * ({@link #isItemBlockFamily}), the click frame records FC's verdict ({@link PlayerBridge.Stage2}): PLACED, with the
+     * cell FC put the held block in, or REFUSED (false, or a throw) for a player who may build. A REFUSED placement is
+     * final: the item step does not let 1.20.1's BlockItem place it instead (ServerPlayerGameModeMixin.btw$fcItemStep).
+     * An adventure-mode refusal records nothing, so 1.20.1's CanPlaceOn rule decides at the item step.</p>
      */
     public static boolean tryPlaceHeldItem(btw.modern.ItemStack fcHeld, Player player, PlayerBridge fcPlayer,
                                            btw.modern.World world, BlockPos pos, int side,
                                            float hitX, float hitY, float hitZ) {
         if (fcHeld == null) return false;
-        // 1.20.1 white dye reads as FC dye 15; only bone meal is FC fertilizer (BoneMealPolicy)
+        // Only bone meal is FC fertilizer (BoneMealPolicy). 1.20.1 white dye reads as FC (351, 15|0x100) = 271 through
+        // LegacyVariants.MODERN_SPELLING, never FC dye 15, so FCItemDye declines it; this guard keeps any other spelling
+        // that reads as dye 15 away from FCItemDye.
         if (!BoneMealPolicy.mayUseAsFcItem(player.getMainHandItem(), fcHeld)) return false;
+        // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: a claim mod's useItem DENY stops FC item use here as 1.20.1 stops its item step; a refusal records nothing
+        if (fcPlayer.isFcUseDenied()) return false;
+        // FCMOD-INTEGRATION(1.20.1): placement_validity: the oak door (FC item 324) is placed by 1.20.1's DoorItem until the door codec exists (hook delta A8/G3); declining records nothing, it is a port gap, not a 4.B verdict
+        if (isPortGapDoorItem(fcHeld)) return false;
+        // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: FC onItemUse runs once per click; the item step skips a block it already ran at
+        fcPlayer.markFcItemUse(pos);
+        // The clicked item, read before FC runs: FC may use up the stack
+        net.minecraft.world.item.Item mcItem = player.getMainHandItem().getItem();
+        // FCMOD-INTEGRATION(1.20.1): placement_validity: FC's verdict on a 1.20.1 BlockItem of the 4.B ItemBlock family is recorded on the click frame (PLACED with its cell, or REFUSED)
+        // The two cells FC's ItemBlock can place in (the clicked cell when it is ground cover or replaceable, else the
+        // one beside the clicked face, Modern-Common ItemBlock.java:163-175) are read before FC runs, so the record
+        // names the cell FC filled, whatever the stack holds afterwards (the last item of a stack leaves it empty).
+        Block heldBlock = mcItem instanceof net.minecraft.world.item.BlockItem bi && isItemBlockFamily(fcHeld)
+                ? bi.getBlock() : null;
+        Level level = heldBlock != null ? player.level() : null;
+        BlockPos sidePos = heldBlock != null ? pos.relative(Direction.from3DDataValue(side)) : null;
+        BlockState clickedBefore = level != null ? level.getBlockState(pos) : null;
+        BlockState sideBefore = level != null ? level.getBlockState(sidePos) : null;
+        boolean used = runFcItemUse(fcHeld, player, fcPlayer, world, pos, side, hitX, hitY, hitZ);
+        // FCMOD-INTEGRATION(1.20.1): fc_item_use_order: 4.B's item-used stat, awarded once on both routes (vanilla/server ItemStack.java:127-130)
+        if (used && player instanceof net.minecraft.server.level.ServerPlayer sp) {
+            sp.awardStat(net.minecraft.stats.Stats.ITEM_USED.get(mcItem));
+        }
+        if (heldBlock != null) {
+            if (used) {
+                BlockPos placedAt = null;
+                BlockState sideNow = level.getBlockState(sidePos);
+                BlockState clickedNow = level.getBlockState(pos);
+                if (sideNow != sideBefore && sideNow.is(heldBlock)) {
+                    placedAt = sidePos;
+                } else if (clickedNow != clickedBefore && clickedNow.is(heldBlock)) {
+                    placedAt = pos;
+                }
+                fcPlayer.setStage2(PlayerBridge.Stage2.PLACED, placedAt);
+            } else if (player.getAbilities().mayBuild) {
+                // FCMOD-INTEGRATION(1.20.1): placement_validity: REFUSED only for a player who may build; an adventure-mode refusal is not 4.B's verdict and records nothing: FC's canPlayerEdit refuses every placement without mayBuild (CapabilitiesBridge.java:24, allowEdit), and 1.5.2 had no CanPlaceOn, so 1.20.1's rule decides it at the item step (ForgeHooks.onPlaceItemIntoWorld)
+                fcPlayer.setStage2(PlayerBridge.Stage2.REFUSED);
+            }
+        }
+        return used;
+    }
+
+    /** {@code net.minecraft.src.btw.item.FCItemPlacesAsBlock} (Common), resolved once; FC classes are not on the
+     *  bridge's compile path (Forge/build.gradle compiles against Api and Modern-Common only). */
+    private static volatile Class<?> fcItemPlacesAsBlockClass;
+    /** {@code net.minecraft.src.btw.item.FCItemDoor} (Common), resolved once. */
+    private static volatile Class<?> fcItemDoorClass;
+    /** Set once a class above could not be resolved, so the failure is logged a single time per class. */
+    private static final java.util.Set<String> FC_CLASS_FAILURES = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Marks a class that is not there (the lookup is not retried). */
+    private static final Class<?> FC_CLASS_MISSING = Void.class;
+
+    /** The FC class {@code name}, or null; looked up once, logged once when it is missing. */
+    private static Class<?> fcClass(String name) {
+        try {
+            return Class.forName(name);
+        } catch (ReflectiveOperationException | LinkageError | RuntimeException e) {
+            if (FC_CLASS_FAILURES.add(name)) {
+                LOGGER.warn("[PLACEMENT] FC class {} not found ({}); placement treats no item as one", name,
+                        e.toString());
+            }
+            return null;
+        }
+    }
+
+    private static Class<?> fcItemPlacesAsBlockClass() {
+        Class<?> c = fcItemPlacesAsBlockClass;
+        if (c == null) {
+            c = fcClass("net.minecraft.src.btw.item.FCItemPlacesAsBlock");
+            fcItemPlacesAsBlockClass = c = c != null ? c : FC_CLASS_MISSING;
+        }
+        return c != FC_CLASS_MISSING ? c : null;
+    }
+
+    private static Class<?> fcItemDoorClass() {
+        Class<?> c = fcItemDoorClass;
+        if (c == null) {
+            c = fcClass("net.minecraft.src.btw.item.FCItemDoor");
+            fcItemDoorClass = c = c != null ? c : FC_CLASS_MISSING;
+        }
+        return c != FC_CLASS_MISSING ? c : null;
+    }
+
+    /**
+     * True when {@code fcHeld}'s item places a block the 4.B way, so that its onItemUse "false" is 4.B's verdict on the
+     * placement: Modern-Common {@code ItemBlock} (1.5.2's ItemBlock extends FCItemPlacesAsBlock, vanilla/server
+     * ItemBlock.java:16-19; its port ports that onItemUse, Modern-Common ItemBlock.java:144-223, and covers the
+     * ItemMultiTextureTile / ItemBlockWithMetadata / ItemColored stubs FC extends) and Common
+     * {@code FCItemPlacesAsBlock} (FCItemRedstone, bricks, candles, ...). Not the FC door and sign items, whose
+     * Modern-Common bases are stubs (ItemDoor.placeDoorBlock, ItemSign), nor headless items (a plain Item).
+     */
+    static boolean isItemBlockFamily(btw.modern.ItemStack fcHeld) {
+        btw.modern.Item item = fcHeld != null ? fcHeld.getItem() : null;
+        if (item == null) return false;
+        if (item instanceof btw.modern.ItemBlock) return true;
+        Class<?> placesAsBlock = fcItemPlacesAsBlockClass();
+        return placesAsBlock != null && placesAsBlock.isInstance(item);
+    }
+
+    /**
+     * Hook delta A8/G3 (recon R18(ii)), until the door codec of hook P4: FCItemDoor.onItemUse (Common
+     * FCItemDoor.java:33-53) calls Modern-Common ItemDoor.placeDoorBlock, an empty stub (ItemDoor.java:13), then uses
+     * up the door and returns true, so a top-face click consumed an oak door and placed nothing. FCItemDoor is abstract
+     * and FCItemDoorWood (item 324, BTWLifecycle.java:1486) its only subclass; the iron door (330) is a plain Item and
+     * already reaches 1.20.1.
+     */
+    static boolean isPortGapDoorItem(btw.modern.ItemStack fcHeld) {
+        btw.modern.Item item = fcHeld != null ? fcHeld.getItem() : null;
+        Class<?> door = item != null ? fcItemDoorClass() : null;
+        return door != null && door.isInstance(item);
+    }
+
+    /** FC onItemUse through tryPlaceItemIntoWorld, with the 1.5.2 creative restore (see {@link #tryPlaceHeldItem}). */
+    private static boolean runFcItemUse(btw.modern.ItemStack fcHeld, Player player, PlayerBridge fcPlayer,
+                                        btw.modern.World world, BlockPos pos, int side,
+                                        float hitX, float hitY, float hitZ) {
         // Runs inside the use-item packet handler with no catch above it: an FC onItemUse failure is logged
         // once and treated as "nothing placed" instead of taking the server down.
         if (!player.isCreative()) {
@@ -645,6 +791,12 @@ public class ProxyBlock extends Block implements EntityBlock {
         }
         int damage = fcHeld.getItemDamage();
         int size = fcHeld.stackSize;
+        // INV-RESYNC: a shadow scope keeps fcHeld the slot's own object through any nested sync until the restore
+        // below lands on it. Without it two nested syncs after FC's decrement (FCItemBlockAestheticVegetation's
+        // AngerPigmen, then FCEntityPigZombie.AngerNearbyPigmen) wrote the used-up stack and then dropped the object,
+        // and a creative player's last item was lost.
+        InventoryBridge shadow = fcPlayer.inventory instanceof InventoryBridge ib ? ib : null;
+        if (shadow != null) shadow.beginShadow();
         try {
             return fcHeld.tryPlaceItemIntoWorld(fcPlayer, world, pos.getX(), pos.getY(), pos.getZ(),
                     side, hitX, hitY, hitZ);
@@ -654,6 +806,7 @@ public class ProxyBlock extends Block implements EntityBlock {
         } finally {
             fcHeld.setItemDamage(damage);
             fcHeld.stackSize = size;
+            if (shadow != null) shadow.endShadow();
         }
     }
 

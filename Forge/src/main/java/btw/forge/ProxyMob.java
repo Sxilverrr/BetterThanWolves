@@ -733,6 +733,8 @@ public class ProxyMob extends Mob
                 // Errors from FC interact (e.g. villager trade generation hitting
                 // a bridge gap) must not crash the interaction packet handler.
                 FCPuppetSupport.logFailureOnce(LOGGER, "FC interact()", fcEntity, t);
+                // INV-RESYNC: a failed FC call lands nothing; the next sync dropped its edits, it would now write them
+                pb.discardInventoryEdits();
             }
         }
         return super.mobInteract(player, hand);

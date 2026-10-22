@@ -1,7 +1,14 @@
 package btw.forge.compat.dynamictrees;
 
+import btw.forge.LeafDrops;
 import btw.forge.ModernBlockHooks;
 import btw.forge.TwinRegistry;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.storage.loot.LootContext;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.eventbus.api.IEventBus;
 import org.apache.logging.log4j.LogManager;
@@ -47,6 +54,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *             stages, then DT's own tree, with SeasonGate asked at the grow step); DT Nether fungi are FC fungus
  *             twins (1 in 50, never in the End), which DT itself never grows from random ticks.</li>
  *         <li>Axe stripping (right click) pays FC bark and 1 durability.</li>
+ *         <li>DT leaves drop by BTW's leaf rule ({@link DTLeafDrops}, through {@link LeafDrops}): only the species'
+ *             seed, at FCBlockLeaves's 1 in 20 (1 in 40 when the family's log is FC's jungle), with DT's seasonal
+ *             seed chance as a veto; no sticks and no Fortune bonus, on a direct break and in a fell alike.</li>
  *       </ul></li>
  *   <li><b>Alt rejected:</b> mapping DT branches onto legacy id 17 (FC's world code would rewrite DT states and never
  *       see radius, rooty soil or shells); loot-only rules (no chew stages, no stump, no wear); shipping a DT tree
@@ -55,22 +65,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *       the absolute-target wear correction gives the same result with events only).</li>
  *   <li><b>Declared deviations:</b> the stump remover and the work-stump chisel act only on dead DT stumps (FC's
  *       remover writes air, which would collapse a living DT tree with no drops; a chisel on a living stump chews
- *       it); a species FC never had gives no bark and takes the oak work stump; thick trunks (radius 9-24) chew one
+ *       it); bark, work stump and saw planks follow the shared log rule (FCLogRules, ModernLogRules: the acacia, dark
+ *       oak, mangrove and cherry families are FC wood types 5-8, the crimson and warped fungi give no bark and no work
+ *       stump, other modded families pay their bark tag or oak bark); thick trunks (radius 9-24) chew one
  *       radius per hit; DT growth may thicken a chewed trunk again; Dendro potions, enhanced fertilizer and any
  *       non-bone-meal item a pack adds to {@code #dynamictrees:fertilizer} keep DT's substance effects; direct
  *       {@code performBonemeal} callers on branches and rooty soil keep DT's effect; with
- *       {@code enableStripRadiusReduction=false} a full trunk takes one extra chew hit. DT's leaf loot and apples
- *       are unchanged (maintainer decisions D2 and #7); DT's Fortune bonus logs stay (D1 (b)).</li>
+ *       {@code enableStripRadiusReduction=false} a full trunk takes one extra chew hit. DT leaves of a fruit species
+ *       (no leaf seeds) keep DT's verdict and drop no seed, and orphan leaves drop their family's common seed (leaves
+ *       D5 (c)); DT's apples and other fruit are unchanged (#7); DT's Fortune bonus logs stay (D1 (b)), but leaves get
+ *       no Fortune bonus (leaves D9 (a), 4.B).</li>
  * </ul>
  *
  * <p><b>Soft dependency</b> (SR1): every Dynamic Trees reference lives in this package; no class here carries a
  * Forge mod or automatic bus-subscriber annotation (Forge would load it without DT); the shared seams
- * ({@link ModernBlockHooks.Hook}, {@link TwinRegistry.ModdedSapling}) see only Minecraft types. {@link #init} is the
- * only entry, reached by BTWCompat's direct invokestatic. It probes DT's API by reflection before it registers
- * anything and sets {@link #active} last. Every handler, hook and twin method catches RuntimeException and
- * LinkageError, calls {@link #fail} and answers inertly; after a switch-off Dynamic Trees keeps its own rules (DT
- * saplings and fungi still grow at FC's pace through DT's own body) and BTW and every other integration keep
- * running.</p>
+ * ({@link ModernBlockHooks.Hook}, {@link TwinRegistry.ModdedSapling}, {@link LeafDrops.Hook}) see only Minecraft
+ * types. {@link #init} is the only entry, reached by BTWCompat's direct invokestatic. Its first act is the leaf drop
+ * hook, which names no DT type and answers KEEP until the integration is active, so {@code #dynamictrees:leaves}
+ * (inside {@code #minecraft:leaves}) is never left to LeafDrops' name rule after a failed probe or a switch-off. Then
+ * it probes DT's API by reflection before it registers anything else, and sets {@link #active} last. Every handler,
+ * hook and twin method catches RuntimeException and LinkageError, calls {@link #fail} and answers inertly; after a
+ * switch-off Dynamic Trees keeps its own rules (DT saplings and fungi still grow at FC's pace through DT's own body,
+ * and DT leaves drop DT's own loot) and BTW and every other integration keep running.</p>
  *
  * <p>Trace: {@code -Dbtw.compat.dt.trace=true} logs {@code [DT]} lines for chews, fells (log count), wear targets,
  * strip bark, saw cuts and sapling verdicts.</p>
@@ -88,15 +104,24 @@ public final class DynamicTreesCompat {
 
     private static final AtomicBoolean FAILED = new AtomicBoolean();
 
+    /** DT's leaves tag ({@code dtphc2} adds its leaves to it); DT puts it inside {@code #minecraft:leaves}. */
+    private static final TagKey<Block> DT_LEAVES =
+            TagKey.create(Registries.BLOCK, new ResourceLocation("dynamictrees", "leaves"));
+
     private DynamicTreesCompat() {}
 
     /**
-     * The only entry point (BTWCompat, during mod construction, before FC init). Probes DT's API, registers the two
-     * Forge-bus handlers, the FC machine hook and the sapling twin kind, then switches the integration on.
-     * {@code modBus} is unused. Logs nothing itself: BTWCompat logs the {@code #027 enabled} line when this returns.
+     * The only entry point (BTWCompat, during mod construction, before FC init). Registers the leaf drop hook first
+     * (Minecraft types only, inert until {@link #active}), then probes DT's API ({@link DTTrees#probe},
+     * {@link DTLeafDrops#probe}), registers the two Forge-bus handlers, the FC machine hook and the sapling twin kind,
+     * and switches the integration on. {@code modBus} is unused. Logs nothing itself: BTWCompat logs the
+     * {@code #027 enabled} line when this returns.
      */
     public static void init(IEventBus modBus) {
+        // FCMOD-INTEGRATION(1.20.1): dynamic_trees: DT leaves stay DT's (KEEP) unless the integration is active; registered before the probe so a failed probe never hands them to the name rule
+        LeafDrops.register(s -> s.is(DT_LEAVES), new LeafHook());
         DTTrees.probe();
+        DTLeafDrops.probe();
         MinecraftForge.EVENT_BUS.register(new DTHarvestHandler());
         MinecraftForge.EVENT_BUS.register(new DTGrowthHandler());
         ModernBlockHooks.register(DTTrees::isHookTarget, new DTBlockHooks());
@@ -120,6 +145,23 @@ public final class DynamicTreesCompat {
     static void trace(String format, Object... args) {
         if (TRACE) {
             LOGGER.info("[DT] " + format, args);
+        }
+    }
+
+    /**
+     * The leaf drop hook for {@code #dynamictrees:leaves}: {@link DTLeafDrops#resolve} while the integration is
+     * active, KEEP (DT's own leaf loot) otherwise. Its signature names no DT type, so it is safe to register before
+     * the probe.
+     */
+    private static final class LeafHook implements LeafDrops.Hook {
+        @Override
+        public LeafDrops.Resolution resolve(BlockState leaves, LootContext ctx) {
+            return active ? DTLeafDrops.resolve(leaves, ctx) : LeafDrops.KEEP;
+        }
+
+        @Override
+        public String toString() {
+            return "Dynamic Trees leaves (#027)";
         }
     }
 }

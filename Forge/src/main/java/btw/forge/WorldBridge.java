@@ -225,17 +225,19 @@ public class WorldBridge extends btw.modern.WorldServer {
         // Derive metadata from MC 1.20.1 BlockState properties for vanilla blocks
         int derived = deriveVanillaMetadata(level, state, pos);
 
-        // The persisted overlay holds the FC bits the state cannot (never stored where the MC state is the whole
-        // truth, see isMetaFullyDerived), valid only while the block FC wrote is still there and still derives
+        // The persisted overlay holds the FC bits the state cannot (never stored or read where the MC state is the
+        // whole truth, see isMetaFullyDerived), valid only while the block FC wrote is still there and still derives
         // to what it derived to after FC's write
         FcMetaOverlay overlay = vanillaMetaOverrides;
         if (overlay != null) {
             FcMetaOverlay.MetaOverride override = overlay.get(pos);
             if (override != null) {
-                if (override.block() == state.getBlock() && override.derivedAtWrite() == derived) {
+                // FCMOD-INTEGRATION(1.20.1): placement_validity: a fully derived block never reads the overlay, so an entry saved before its block joined isMetaFullyDerived (a hook FC placed before the hook codec: meta 0 saved against a derived 2) is dropped, not read
+                if (override.block() == state.getBlock() && override.derivedAtWrite() == derived
+                        && !isMetaFullyDerived(state.getBlock())) {
                     return override.meta();
                 }
-                overlay.remove(pos, override); // MC changed the block behind FC's back: derive instead
+                overlay.remove(pos, override); // MC changed the block behind FC's back, or its state is the whole truth: derive instead
             }
         }
         return derived;
@@ -275,6 +277,9 @@ public class WorldBridge extends btw.modern.WorldServer {
      * the same way) and stairs: every 1.5.2 meta bit round-trips through the derive/apply pair. So it does for
      * the plants and fire whose ticks TickPolicy routes to FC: crops (AGE), nether wart, cactus, sugar cane, fire,
      * farmland (MOISTURE), cocoa and vines, which 1.20.1 also changes itself (bone meal, its own survival ticks).
+     * Tripwire hooks: every 1.5.2 bit (direction, attached, powered) round-trips, and 1.20.1's tripwire ticks change
+     * ATTACHED and POWERED without passing through WorldBridge (placement_validity, the hook codec). getBlockMetadata
+     * never reads an entry for these either: one saved before its block joined this list is dropped on its next read.
      */
     private static boolean isMetaFullyDerived(net.minecraft.world.level.block.Block block) {
         // The FC plant twins' blocks never are (beetroots and the torchflower crop are CropBlocks): their FC stage /
@@ -291,7 +296,8 @@ public class WorldBridge extends btw.modern.WorldServer {
                 || block instanceof net.minecraft.world.level.block.FireBlock
                 || block instanceof net.minecraft.world.level.block.FarmBlock
                 || block instanceof net.minecraft.world.level.block.CocoaBlock
-                || block instanceof net.minecraft.world.level.block.VineBlock;
+                || block instanceof net.minecraft.world.level.block.VineBlock
+                || block instanceof net.minecraft.world.level.block.TripWireHookBlock;
     }
 
     /**
@@ -359,15 +365,10 @@ public class WorldBridge extends btw.modern.WorldServer {
                     // Y = 0 (default, vertical)
                 }
 
-                // Stump detection: vertical log with solid non-log block below
-                if ((meta & 12) == 0) { // only for vertical logs
-                    BlockPos below = pos.below();
-                    BlockState belowState = level.getBlockState(below);
-                    boolean logBelow = belowState.getBlock() instanceof net.minecraft.world.level.block.RotatedPillarBlock
-                            && ProxyRegistry.getTreeLogSpecies(belowState.getBlock()) >= 0;
-                    if (!logBelow && !belowState.isAir() && belowState.isSolidRender(level, below)) {
-                        meta = 12; // stump: both orientation bits set (3 << 2)
-                    }
+                // Stump detection: one rule for every log (FCLogRules.isStump: vertical, on a solid block that is not
+                // air and not in #minecraft:logs), shared with the class-F/S log rule (ModernLogRules).
+                if ((meta & 12) == 0 && FCLogRules.isStump(level, pos, state)) {
+                    meta = 12; // stump: both orientation bits set (3 << 2)
                 }
 
                 // Wood type (1.5.2 log species, bits 0-1)
@@ -527,6 +528,19 @@ public class WorldBridge extends btw.modern.WorldServer {
         // bits 0-1) = FACING.get2DDataValue. The jack o'lantern's player-placed bit 8 lives in the overlay.
         if (block instanceof net.minecraft.world.level.block.CarvedPumpkinBlock) {
             return state.getValue(net.minecraft.world.level.block.CarvedPumpkinBlock.FACING).get2DDataValue();
+        }
+
+        // FCMOD-INTEGRATION(1.20.1): placement_validity: the tripwire hook codec (131)
+        // Tripwire hooks: 1.5.2 BlockTripWireSource meta = the direction the hook faces, away from its wall (0=S, 1=W,
+        // 2=N, 3=E: the clicked side, vanilla/server BlockTripWireSource.java:88-113) | 4 attached | 8 powered (:166-170)
+        // = FACING.get2DDataValue | ATTACHED | POWERED. Must precede the generic HORIZONTAL_FACING branch (2-5, attached
+        // and powered lost), whose values FCBlockTripWireSource's bounds read as the wrong wall (meta & 3, Server
+        // FCBlockTripWireSource.java:39-66: an east hook read as west). Reversed in applyFcMetadataToVanillaBlock.
+        if (block instanceof net.minecraft.world.level.block.TripWireHookBlock) {
+            int meta = state.getValue(net.minecraft.world.level.block.TripWireHookBlock.FACING).get2DDataValue();
+            if (state.getValue(net.minecraft.world.level.block.TripWireHookBlock.ATTACHED)) meta |= 4;
+            if (state.getValue(net.minecraft.world.level.block.TripWireHookBlock.POWERED)) meta |= 8;
+            return meta;
         }
 
         // Wall torches: FC uses 1=east, 2=west, 3=south, 4=north, 5=floor
@@ -790,6 +804,18 @@ public class WorldBridge extends btw.modern.WorldServer {
                             (metadata & 8) != 0
                                     ? net.minecraft.world.level.block.state.properties.Half.TOP
                                     : net.minecraft.world.level.block.state.properties.Half.BOTTOM);
+        }
+
+        // FCMOD-INTEGRATION(1.20.1): placement_validity: the tripwire hook codec (131)
+        // Tripwire hooks: reverse of deriveVanillaMetadata's 1.5.2 hook encoding (0=S, 1=W, 2=N, 3=E | 4 attached
+        // | 8 powered). The generic HORIZONTAL_FACING branch below read meta & 7 as a 3D facing: an FC hook facing south
+        // or west (0/1 = DOWN/UP) kept the default north, one facing east (3) came out south.
+        if (block instanceof net.minecraft.world.level.block.TripWireHookBlock) {
+            return current
+                    .setValue(net.minecraft.world.level.block.TripWireHookBlock.FACING,
+                            net.minecraft.core.Direction.from2DDataValue(metadata & 3))
+                    .setValue(net.minecraft.world.level.block.TripWireHookBlock.ATTACHED, (metadata & 4) != 0)
+                    .setValue(net.minecraft.world.level.block.TripWireHookBlock.POWERED, (metadata & 8) != 0);
         }
 
         // Blocks with HORIZONTAL_FACING (furnace, chest, ladder, etc.)
@@ -1841,22 +1867,184 @@ public class WorldBridge extends btw.modern.WorldServer {
         return result;
     }
 
-    
+    /**
+     * 1.5.2 World.checkNoEntityCollision(AxisAlignedBB) (vanilla/server World.java:1990-1993): the two-argument rule
+     * with no entity excluded. FCMOD-INTEGRATION(1.20.1): placement_validity (decision 5(a)): it answered false for any
+     * entity in the box, items and XP orbs included, so FC's IsTargetFreeOfObstructingEntities
+     * (Common FCItemPlacesAsBlock.java:217-223), its mob spawn checks (Modern-Common EntityLiving.java:393) and the
+     * ghast's and the beacon's checks refused where 4.B did not.
+     */
     public boolean checkNoEntityCollision(AxisAlignedBB aabb) {
-        net.minecraft.world.phys.AABB forgeAABB = toForgeAABB(aabb);
-        return level.getEntities((net.minecraft.world.entity.Entity) null,
-                forgeAABB, e -> true).isEmpty();
+        return checkNoEntityCollision(aabb, null);
     }
 
-    
+    /**
+     * 1.5.2 World.checkNoEntityCollision(AxisAlignedBB, Entity) (vanilla/server World.java:1998-2013): true unless a live
+     * entity other than {@code except} that prevents entity spawning is in the box. Modern-Common World's body is a stub
+     * that answered true (World.java:669-671), so the windmill and the water wheel (FCEntityMechPower.java:294-298) and
+     * every FCItemPlacesAsBlock placement (canPlaceEntityOnSide, below) ignored entities.
+     *
+     * <p>FCMOD-INTEGRATION(1.20.1): placement_validity: 1.5.2's preventEntitySpawning is 1.20.1's
+     * {@code Entity.blocksBuilding} (living entities, boats, minecarts, falling blocks, primed TNT and end crystals:
+     * LivingEntity.java:236, Boat:94, AbstractMinecart:93, FallingBlockEntity:69, PrimedTnt:26, EndCrystal:30), plus the
+     * FC object's own flag for the FC entities whose 1.20.1 proxy does not block building (windmills, water wheels,
+     * platforms, dynamite, mining charges: Server FCEntityMechPower.java:52, ...). Removed entities and spectators never
+     * count (1.20.1's own placement test, Level.isUnobstructed, skips both), nor does {@code except}'s 1.20.1
+     * counterpart. Never throws (the falling-block and dispenser callers have no guard): a failure is logged once and
+     * counts as a collision, so it refuses, as canPlaceEntityOnSide's own guard does.</p>
+     */
+    public boolean checkNoEntityCollision(AxisAlignedBB aabb, btw.modern.Entity except) {
+        if (aabb == null) return true;
+        try {
+            net.minecraft.world.entity.Entity exceptMc = except == null ? null
+                    : except instanceof PlayerBridge pb ? pb.getRealPlayer()
+                    : except instanceof ItemEntityBridge ib ? ib.getRealEntity()
+                    : fcToForgeEntity.get(except);
+            for (net.minecraft.world.entity.Entity e : level.getEntities(
+                    (net.minecraft.world.entity.Entity) null, toForgeAABB(aabb),
+                    net.minecraft.world.entity.EntitySelector.NO_SPECTATORS)) {
+                if (e.isRemoved() || e == exceptMc) continue;
+                // A puppet (VanillaMobReplacer, chunk loading) is not in fcToForgeEntity: compare its FC object
+                if (except != null && exceptMc == null && extractFcEntity(e) == except) continue;
+                if (e.blocksBuilding) return false;
+                btw.modern.Entity fc = extractFcEntity(e);
+                if (fc != null && fc != except && !fc.isDead && fc.preventEntitySpawning) return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            warnOncePerThrowSite("ENTITY-COLLISION", "checkNoEntityCollision", t);
+            return false;
+        }
+    }
+
+    /**
+     * 1.5.2 World.canPlaceEntityOnSide (vanilla/server World.java:3377-3407, FCMOD): whether block {@code blockID} may
+     * be placed at (x, y, z) against {@code side}. Callers: item placement (Modern-Common ItemBlock and ItemReed, Common
+     * FCItemPlacesAsBlock and FCItemBloodMossSpores), both block-dispenser paths and FC falling blocks
+     * ({@code skipEntities}). In 1.5.2's order:
+     * <ol>
+     *   <li>the entity check: the new block's collision box holds no entity that prevents spawning, other than an
+     *       {@code entity} that is not a player ({@link #checkNoEntityCollision(AxisAlignedBB, btw.modern.Entity)};
+     *       skipped for {@code skipEntities}). The placing player counts: 1.5.2 excluded it here, but 4.B's client never
+     *       sent a placement its own pre-check refused, and that pre-check passes a null entity (Common
+     *       FCItemPlacesAsBlock.canPlaceItemBlockOnSide :202, Modern-Common ItemReed :162). The 1.20.1 client never runs
+     *       it, so the server does: no block goes into the placing player's own space (as Modern-Common
+     *       ItemBlock.java:177-181);</li>
+     *   <li>a free target: air, water, lava, fire, a replaceable material, FC's detector logic blocks or stoked
+     *       fire;</li>
+     *   <li>an anvil may take a circuits cell (a rail, wire, a torch);</li>
+     *   <li>otherwise the target must be free and the new block's {@code canPlaceBlockOnSide} must agree (the soil of a
+     *       plant, the wall of a hook, the support of a rail).</li>
+     * </ol>
+     *
+     * <p>FCMOD-INTEGRATION(1.20.1): placement_validity (decisions 1(a) and 2(a); triage CF2-P8a). The port's body only
+     * checked that no entity of any kind stood in the cell, and answered true for {@code skipEntities}: no free-target
+     * test and no canPlaceBlockOnSide, so the FC route put flowers on stone and slabs, a hook into the superflat grass
+     * and any block over a flower, and falling sand deleted rails. Port rules:</p>
+     * <ul>
+     *   <li>a cell FC does not model (no legacy id and no twin: post-1.5.2 and modded blocks, water-holders, bark and
+     *       stripped logs) is free by 1.20.1's own rule for the item, {@code BlockState.canBeReplaced(BlockPlaceContext)}
+     *       (BlockBehaviour.java:238-240), so block overrides answer (candles, sea pickles, modded plants), falling back
+     *       to {@code canBeReplaced()} (:809-811);</li>
+     *   <li>water, lava, fire and the anvil are the Modern-Common statics, which BTWLifecycle rebinds to FC's
+     *       blocks;</li>
+     *   <li>FC's detector logic blocks and stoked fire are read once by reflection (their ids are configurable, Client
+     *       FCBetterThanWolves.java:1007/1069/1093);</li>
+     *   <li>the FC calls are guarded: a throw is logged once and refuses, as the falling-block and dispenser callers
+     *       have no guard.</li>
+     * </ul>
+     */
     public boolean canPlaceEntityOnSide(int blockID, int x, int y, int z,
                                         boolean skipEntities, int side,
                                         btw.modern.Entity entity, ItemStack stack) {
-        if (skipEntities) return true;
-        net.minecraft.world.phys.AABB checkBox = new net.minecraft.world.phys.AABB(
-                x, y, z, x + 1, y + 1, z + 1);
-        return level.getEntities((net.minecraft.world.entity.Entity) null,
-                checkBox, e -> true).isEmpty();
+        btw.modern.Block[] blocks = btw.modern.Block.blocksList;
+        btw.modern.Block newBlock = blockID > 0 && blockID < blocks.length ? blocks[blockID] : null;
+        if (newBlock == null) return false; // 1.5.2: par1 > 0, and blocksList[par1] dereferenced unguarded
+        BlockPos pos = new BlockPos(x, y, z);
+        try {
+            if (!skipEntities) {
+                AxisAlignedBB box = newBlock.getCollisionBoundingBoxFromPool(this, x, y, z);
+                // FCMOD-INTEGRATION(1.20.1): placement_validity: the placing player counts, as 4.B's client pre-check did (null entity: Common FCItemPlacesAsBlock.canPlaceItemBlockOnSide :202, Modern-Common ItemReed :162); the 1.20.1 client never runs it, so the server does (as Modern-Common ItemBlock.java:177-181)
+                btw.modern.Entity except = entity instanceof btw.modern.EntityPlayer ? null : entity;
+                if (box != null && !checkNoEntityCollision(box, except)) return false;
+            }
+
+            BlockState cur = level.getBlockState(pos);
+            btw.modern.Block old = null;
+            boolean free;
+            if (cur.isAir()) {
+                free = true;
+            } else if (ProxyRegistry.getBlockId(cur.getBlock()) == 0 && TwinRegistry.worldIdFor(cur) == 0) {
+                free = isFreeUnmodelledCell(cur, pos, side, stack);
+            } else {
+                int oldId = getBlockId(x, y, z);
+                old = oldId > 0 && oldId < blocks.length ? blocks[oldId] : null;
+                free = old == null || old == btw.modern.Block.waterMoving || old == btw.modern.Block.waterStill
+                        || old == btw.modern.Block.lavaMoving || old == btw.modern.Block.lavaStill
+                        || old == btw.modern.Block.fire
+                        || (old.blockMaterial != null && old.blockMaterial.isReplaceable())
+                        || isFcFreeCellBlock(old);
+            }
+
+            if (!free) {
+                // 1.5.2: var10 != null && var10.blockMaterial == Material.circuits && var11 == Block.anvil
+                return old != null && old.blockMaterial == Material.circuits && newBlock == btw.modern.Block.anvil;
+            }
+            return newBlock.canPlaceBlockOnSide(this, x, y, z, side, stack);
+        } catch (Throwable t) {
+            warnOncePerThrowSite("PLACE-CHECK", "canPlaceEntityOnSide(" + newBlock.getClass().getSimpleName()
+                    + ") at " + pos, t);
+            return false;
+        }
+    }
+
+    /** 1.20.1's replaceable rule for a cell FC does not model, for the item being placed (see canPlaceEntityOnSide). */
+    private boolean isFreeUnmodelledCell(BlockState cur, BlockPos pos, int side, ItemStack stack) {
+        try {
+            net.minecraft.world.item.ItemStack held = stack != null ? ItemStackHelper.toMcStack(stack) : null;
+            net.minecraft.core.Direction dir = net.minecraft.core.Direction.from3DDataValue(side);
+            return cur.canBeReplaced(new net.minecraft.world.item.context.DirectionalPlaceContext(level, pos, dir,
+                    held != null ? held : net.minecraft.world.item.ItemStack.EMPTY, dir));
+        } catch (Throwable t) {
+            warnOncePerThrowSite("PLACE-CHECK", "the 1.20.1 replaceable rule at " + pos, t);
+            return cur.canBeReplaced();
+        }
+    }
+
+    /**
+     * FC's detector logic blocks and stoked fire, which 1.5.2 World.canPlaceEntityOnSide treats as free (FCMOD,
+     * vanilla/server World.java:3399-3402). Read from FCBetterThanWolves by reflection (FC classes are not on the
+     * bridge's compile path: Forge/build.gradle compiles against Api and Modern-Common), and kept once FC has set all
+     * three.
+     */
+    private static volatile btw.modern.Block[] fcFreeCellBlocks;
+
+    private static boolean isFcFreeCellBlock(btw.modern.Block block) {
+        btw.modern.Block[] free = fcFreeCellBlocks;
+        if (free == null) {
+            free = new btw.modern.Block[3];
+            String[] names = {"fcBlockDetectorLogic", "fcBlockDetectorGlowingLogic", "fcBlockFireStoked"};
+            boolean all = true;
+            try {
+                Class<?> fc = Class.forName("net.minecraft.src.btw.core.FCBetterThanWolves");
+                for (int i = 0; i < names.length; i++) {
+                    Object value = fc.getField(names[i]).get(null);
+                    if (value instanceof btw.modern.Block b) {
+                        free[i] = b;
+                    } else {
+                        all = false;
+                    }
+                }
+            } catch (ReflectiveOperationException | LinkageError | RuntimeException e) {
+                warnOncePerThrowSite("PLACE-CHECK", "reading FCBetterThanWolves' detector logic and stoked fire", e);
+                all = false;
+            }
+            if (all) fcFreeCellBlocks = free;
+        }
+        for (btw.modern.Block b : free) {
+            if (b != null && b == block) return true;
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -3034,6 +3222,29 @@ public class WorldBridge extends btw.modern.WorldServer {
         } catch (Throwable t) {
             // Runs inside FC plant ticks: never throw out of them.
             warnOncePerThrowSite("TWIN-LOOT", "the loot of the plant at " + x + "," + y + "," + z, t);
+        }
+    }
+
+    /**
+     * Modern-Common World.UsesModernBlockLoot (vanilla_pair_drops, seam S2): true when the live block at (x, y, z) is a
+     * ruled bed or door ({@link VanillaPairDrops#isRuled}) whose legacy id is {@code blockID}. FC's drop entry points
+     * (Block.dropBlockAsItemWithChance: the saw; Block.DropItemsOnDestroyedByExplosion: FCExplosionMining) then drop
+     * that cell's 1.20.1 loot through {@link #DropModernBlockLoot}: one item per bed or door, the bed's colour kept.
+     * The caller removes the block, and 1.20.1 pops the partner with its own loot.
+     */
+    @Override
+    public boolean UsesModernBlockLoot(int x, int y, int z, int blockID) {
+        ServerLevel live = level;
+        if (live == null || blockID <= 0) return false;
+        try {
+            BlockPos pos = new BlockPos(x, y, z);
+            if (!live.isLoaded(pos)) return false;   // every FC drop asks: never load a chunk for it
+            BlockState state = live.getBlockState(pos);
+            return VanillaPairDrops.isRuled(state) && ProxyRegistry.getBlockId(state.getBlock()) == blockID;
+        } catch (Throwable t) {
+            // Runs inside FC drops (the saw, the mining charge): never throw out of them; FC's own drop goes ahead.
+            warnOncePerThrowSite("PAIR-LOOT", "the pair-drop check at " + x + "," + y + "," + z, t);
+            return false;
         }
     }
 

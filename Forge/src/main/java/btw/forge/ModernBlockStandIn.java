@@ -36,7 +36,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>FC's fire and plant rules read two more properties through the id. Fire: FCBlockFire, which owns the FIRE tick,
  * reads only its own tables (BlockFire.abilityToCatchFire / chanceToEncourageFire, indexed by getBlockId), and FC lava
  * reads Material.getCanBurn (FCBlockLavaStationary.java:64-67). A colliding state that 1.20.1 fire burns (acacia, dark
- * oak, mangrove, cherry and bamboo wood, hay, carpets, scaffolding, beehives, ...) therefore reads as a flammable
+ * oak, mangrove, cherry and bamboo planks, hay, carpets, scaffolding, beehives, ...) therefore reads as a flammable
  * stand-in carrying its 1.20.1 odds, so it keeps burning and feeding fire as it does today, and a 1.20.1 fire source
  * (magma block) keeps FC fire on it burning (DoesInfiniteBurnToFacing). Soil: modern soils answer
  * FC's soil hooks from their 1.20.1 tags (maintainer decision D3), so plants 1.20.1 world generation put on podzol,
@@ -53,10 +53,10 @@ final class ModernBlockStandIn extends btw.modern.Block {
     // Unused by 1.5.2 vanilla (Block.java ends at dropper, 158) and by FC (ParseID defaults start at 175,
     // FCBetterThanWolves.java:914). Kept < 175 so the blocksList[175..] loops (BTWRegistration:85,
     // BlockModelBridge:413/424) never give a stand-in a ProxyBlock or a model. 159 and 170-173 are 1.6+ ids the
-    // vanilla table maps (isLegacyIdMapped), so 160-169 and 174 are free. The FC plant twins (TwinRegistry) share
-    // the range: they are built at FC start-up, before any stand-in, and take the free ids from the top (174, 169,
-    // 168, 167, 166); stand-ins allocate from the bottom (160 solid, 161 collider, then the plant stand-in when the
-    // pack has a modded crop, then the flammable ones).
+    // vanilla table maps (isLegacyIdMapped), so 160-169 and 174 are free. The FC plant twins (TwinRegistry) and log2
+    // (ModernWoods, 165) share the range: both are built at FC start-up, before any stand-in; the twins take the free
+    // ids from the top (174, 169, 168, 167, 166). Stand-ins allocate from the bottom (160 solid, 161 collider, the
+    // plant stand-in when the pack has a modded crop, then the flammable ones).
     static final int FIRST_FREE_ID = 159;
     static final int LAST_FREE_ID = 174;
     /** FCBlockBedrock: immovable, not BD-retrievable, spared by id in EntityWither (vanilla/client EntityWither.java:369-371). */
@@ -210,8 +210,8 @@ final class ModernBlockStandIn extends btw.modern.Block {
 
     /**
      * The plant stand-in, right after the collider, only when the pack has a modded crop (ModernPlantStandIn.isNeeded):
-     * plain BTW keeps four free ids for flammable stand-ins, a pack with modded crops three. A failure leaves modded
-     * crops reading as air, as before.
+     * plain BTW keeps three free ids (162-164) for flammable stand-ins, a pack with modded crops two. A failure leaves
+     * modded crops reading as air, as before.
      */
     // FCMOD-INTEGRATION(1.20.1): modded_plant_rules: one free legacy id for FC's view of modded crops on BTW soil, only when a modded crop exists
     private static void createPlantStandIn(int collider) {
@@ -278,8 +278,8 @@ final class ModernBlockStandIn extends btw.modern.Block {
 
     /**
      * Creates the stand-in for a new (shape, ignite, burn) bucket from the free range (the ids left between
-     * FIRST_FREE_ID and LAST_FREE_ID after the two plain stand-ins, the FC plant twins and, in a pack with modded crops,
-     * the plant stand-in: four, or three), with
+     * FIRST_FREE_ID and LAST_FREE_ID after the two plain stand-ins, the FC plant twins, log2 and, in a pack with modded
+     * crops, the plant stand-in: three, or two), with
      * SetFireProperties(ignite, burn) as FC's own blocks set
      * theirs (vanilla/server Block.java:1975-1981). The last free id is kept for the other shape class until that
      * class has a flammable stand-in: a solid cube and a shaped collider are not interchangeable (collision,
